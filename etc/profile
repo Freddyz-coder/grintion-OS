@@ -1,0 +1,10 @@
+# /etc/profile - Grintion-OS default environment profile
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+export HOME=/root
+export USER=root
+export TERM=${TERM:-linux}
+export PS1='\[\033[1;31m\]grintion-live\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# '
+
+if [ -f /etc/issue ] && [ "$TERM" != "dumb" ]; then
+    cat /etc/issue
+fi

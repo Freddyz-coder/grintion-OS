@@ -1,0 +1,2 @@
+#!/bin/sh
+exec agetty -8 -L tty2 38400 linux

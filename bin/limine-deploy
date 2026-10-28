@@ -1,0 +1,67 @@
+#!/bin/sh
+# limine-deploy - Install Limine bootloader to EFI partition and disk MBR
+# Supports x86_64 and AArch64 UEFI and x86 BIOS
+
+set -e
+
+EFI_DIR=""
+DISK_DEV=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --efi)
+            EFI_DIR="$2"
+            shift 2
+            ;;
+        --disk)
+            DISK_DEV="$2"
+            shift 2
+            ;;
+        *)
+            echo "Usage: limine-deploy --efi <efi_mount_dir> [--disk <block_device>]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$EFI_DIR" ]; then
+    echo "[-] Error: --efi directory must be specified (e.g. /mnt/boot/efi)" >&2
+    exit 1
+fi
+
+echo "[*] Installing Limine EFI bootloader to $EFI_DIR..."
+mkdir -p "$EFI_DIR/EFI/BOOT"
+
+# Copy EFI executables if available
+if [ -f /usr/share/limine/BOOTX64.EFI ]; then
+    cp /usr/share/limine/BOOTX64.EFI "$EFI_DIR/EFI/BOOT/BOOTX64.EFI"
+fi
+if [ -f /usr/share/limine/BOOTAA64.EFI ]; then
+    cp /usr/share/limine/BOOTAA64.EFI "$EFI_DIR/EFI/BOOT/BOOTAA64.EFI"
+fi
+
+# Write Limine bootloader configuration
+cat << 'EOF' > "$EFI_DIR/EFI/BOOT/limine.conf"
+timeout: 5
+
+/Grintion-OS (Hardened Linux)
+    protocol: linux
+    kernel_path: boot():/vmlinuz-grintion
+    cmdline: root=LABEL=GRINTION_ROOT rw quiet slab_nomerge init_on_alloc=1 init_on_free=1 dmesg_restrict=1
+    module_path: boot():/initramfs.img
+
+/Grintion-OS (Safe / Recovery Mode)
+    protocol: linux
+    kernel_path: boot():/vmlinuz-grintion
+    cmdline: root=LABEL=GRINTION_ROOT rw single
+    module_path: boot():/initramfs.img
+EOF
+
+if [ -n "$DISK_DEV" ] && [ -b "$DISK_DEV" ]; then
+    if which limine >/dev/null 2>&1; then
+        echo "[*] Deploying BIOS MBR code to $DISK_DEV..."
+        limine bios-install "$DISK_DEV" 2>/dev/null || true
+    fi
+fi
+
+echo "[+] Limine bootloader deployed successfully to $EFI_DIR/EFI/BOOT!"

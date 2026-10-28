@@ -1,0 +1,12 @@
+#!/bin/sh
+exec 2>&1
+echo "Starting network link daemon..."
+# Bring up network interfaces if dhcpcd or udhcpc is present
+if which dhcpcd >/dev/null 2>&1; then
+    exec dhcpcd -B
+elif which udhcpc >/dev/null 2>&1; then
+    exec udhcpc -b -i eth0
+else
+    # Sleep and wait
+    exec pause
+fi

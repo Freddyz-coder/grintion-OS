@@ -1,0 +1,36 @@
+#!/bin/sh
+# /etc/runit/3 - Grintion-OS Shutdown & Anti-Forensics
+# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
+# Tailored for Paranoid Users
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+echo ""
+echo ">> [1/4] Stopping all supervised services..."
+if [ -d /var/service ]; then
+    for s in /var/service/*; do
+        [ -d "$s" ] && sv -w 5 force-stop "$s" 2>/dev/null
+    done
+fi
+
+echo ">> [2/4] Terminating remaining processes..."
+killall5 -15 2>/dev/null
+sleep 1
+killall5 -9 2>/dev/null
+
+echo ">> [3/4] Flushing caches & unmounting storage..."
+sync
+swapoff -a 2>/dev/null
+
+# Anti-forensics: flush system drop_caches
+if [ -w /proc/sys/vm/drop_caches ]; then
+    echo 3 > /proc/sys/vm/drop_caches
+fi
+
+# Unmount non-virtual filesystems
+umount -r -a -t nosysfs,noproc,nodevtmpfs 2>/dev/null
+
+echo ">> [4/4] Hardware shutdown sequence ready."
+echo ">> Safe to remove ISO / USB drive."
+exit 0

@@ -1,0 +1,15 @@
+[package]
+name = "garb"
+version = "0.1.0"
+release = 1
+description = "Grintion Atomic Reliable Builder & Package Manager (MISS)"
+license = "GPL-3.0"
+arch = ["x86_64", "aarch64"]
+
+[security]
+sha256 = "SELF_MANAGED"
+hardened = true
+features = ["sandboxing", "atomic_tx", "crypto_verification"]
+
+[build]
+install = "install -D -m 755 src/garb/garb.py $PKGDIR/usr/bin/garb"

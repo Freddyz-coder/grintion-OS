@@ -1,0 +1,2 @@
+#!/bin/sh
+exec agetty --noclear -8 -L tty1 38400 linux

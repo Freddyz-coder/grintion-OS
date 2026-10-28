@@ -1,0 +1,34 @@
+#!/bin/sh
+# grintion-chroot - Helper script to safely chroot into target system
+# Binds virtual filesystems and sets clean environment
+
+TARGET="${1:-/mnt}"
+
+if [ ! -d "$TARGET" ]; then
+    echo "[-] Error: Target directory '$TARGET' does not exist." >&2
+    exit 1
+fi
+
+echo "[*] Preparing chroot environment in $TARGET..."
+
+# Bind mounts
+mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
+mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
+mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
+mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
+mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
+mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
+
+# Copy DNS configuration if exists
+[ -f /etc/resolv.conf ] && cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf" 2>/dev/null
+
+echo "[+] Entering chroot ($TARGET). Type 'exit' to return."
+chroot "$TARGET" /bin/sh -l
+
+echo "[*] Cleaning up chroot mounts..."
+umount "$TARGET/run" 2>/dev/null
+umount "$TARGET/dev/pts" 2>/dev/null
+umount "$TARGET/dev" 2>/dev/null
+umount "$TARGET/sys" 2>/dev/null
+umount "$TARGET/proc" 2>/dev/null
+echo "[+] Chroot exited cleanly."

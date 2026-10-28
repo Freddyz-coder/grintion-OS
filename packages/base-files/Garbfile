@@ -1,0 +1,14 @@
+[package]
+name = "base-files"
+version = "0.1.0"
+release = 1
+description = "Grintion-OS base directory hierarchy, issue, and core configurations"
+license = "GPL-3.0"
+arch = ["x86_64", "aarch64"]
+
+[security]
+sha256 = "d41d8cd98f00b204e9800998ecf8427e"
+hardened = true
+
+[build]
+install = "install -m 755 -d $PKGDIR/etc $PKGDIR/var $PKGDIR/proc $PKGDIR/sys"

@@ -1,0 +1,51 @@
+#!/bin/sh
+# /etc/runit/1 - Grintion-OS System Initialization
+# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
+# Designed for Paranoid Users
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+echo ""
+echo ">> [1/4] Grintion-OS Initializing (runit Stage 1)..."
+
+# Mount essential virtual pseudo-filesystems
+mountpoint -q /proc    || mount -t proc proc /proc -o nosuid,noexec,nodev
+mountpoint -q /sys     || mount -t sysfs sys /sys -o nosuid,noexec,nodev
+mountpoint -q /dev     || mount -t devtmpfs dev /dev -o mode=0755,nosuid
+mkdir -p /dev/pts /dev/shm
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+
+# Mount cgroups v2 for container sandboxing (Flatpak / Snap / AppImage)
+if [ -d /sys/fs/cgroup ]; then
+    mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate
+fi
+
+echo ">> [2/4] Applying Paranoid Kernel Security Policies..."
+# Apply hardened sysctl configuration
+if [ -d /etc/sysctl.d ]; then
+    for f in /etc/sysctl.d/*.conf; do
+        [ -f "$f" ] && sysctl -p "$f" >/dev/null 2>&1
+    done
+fi
+
+# Set system hostname
+if [ -f /etc/hostname ]; then
+    read -r HOSTNAME < /etc/hostname
+    hostname "$HOSTNAME"
+else
+    hostname "grintion-live"
+fi
+
+# Bring up loopback interface
+ip link set up dev lo 2>/dev/null || ifconfig lo up 2>/dev/null
+
+echo ">> [3/4] Initializing entropy & hardware clock..."
+# Seed random generator if available
+if [ -f /var/lib/random-seed ]; then
+    cat /var/lib/random-seed > /dev/urandom 2>/dev/null
+fi
+
+echo ">> [4/4] Hardware & device initialization complete."
+exit 0
