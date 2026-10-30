@@ -1,0 +1,15 @@
+[package]
+name = "openbox"
+version = "3.6.1"
+release = 1
+description = "Openbox stacking window manager"
+license = "GPL-2.0"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["xorg-server", "libxml2", "pango"]
+
+[build]
+configure = "./configure --prefix=/usr --disable-nls"
+compile = "make -j$(nproc)"
+install = "make DESTDIR=$PKGDIR install"

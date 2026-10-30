@@ -2,28 +2,17 @@
        █▓█
       █▓▒▓█
      █▓▒@▒▓█
-    █▓▒@@▒▓█
+    █▓▒@@@▒▓█
    █▓▒@+-+@▒▓█
-  █▓▒@+-----+@▒▓█
- █▓▒@+---/-\--+@▒▓█
-█▓▒@+---/     \--+@▒▓█
-     ▓▒@   @▒▓         
-    ▓▒@       @▒▓
-   ▓▒@           @▒▓
-  ▓▒@               @▒▓
- █@█           █@█
+  █▓▒@+---+@▒▓█
+ █▓▒@+-/-\-+@▒▓█
+█▓▒@+-/   \-+@▒▓█
+    ▓▒@   @▒▓         
+   ▓▒@     @▒▓
+  ▓▒@       @▒▓
+ ▓▒@         @▒▓
+█@█           █@█
 
-  =============================================================
-  Grintion-OS Live RAM Environment (MISS Philosophy)
-  Arch: \m  | Kernel: \r  | Terminal: \l
-  =============================================================
-  Designed for Paranoid Users • Zero Telemetry • Pure Linux
-
-  [DIY QUICK-START]:
-  * Type 'diy-guide' for a complete installation walkthrough.
-  * Type 'grintion-install' to launch the guided installer.
-  * Package manager: 'garb' (try: 'garb search <term>')
-  * Universal containers: 'garb sandbox run <appimage|flatpak|snap>'
-  * Default live user: root (no password)
-  =============================================================
+Grintion-OS (x86_64) - Hardened Linux
+Philosophy: MISS | Ephemeral RAM Rootfs Active
 

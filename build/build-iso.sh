@@ -71,13 +71,15 @@ interface_branding: Grintion-OS Live (MISS)
 /Grintion-OS (RAM Live - Paranoid Mode)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 quiet slab_nomerge init_on_alloc=1 init_on_free=1 dmesg_restrict=1
+    cmdline: console=tty0 rdinit=/init quiet slab_nomerge init_on_alloc=1 init_on_free=1 dmesg_restrict=1
+    initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 
 /Grintion-OS (Safe Graphics / Fallback Mode)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 nomodeset
+    cmdline: console=tty0 rdinit=/init nomodeset
+    initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 EOF
 

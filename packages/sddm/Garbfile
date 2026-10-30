@@ -1,0 +1,15 @@
+[package]
+name = "sddm"
+version = "0.21.0"
+release = 1
+description = "Simple Desktop Display Manager (login manager)"
+license = "GPL-2.0"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["xorg-server", "qt6-base"]
+
+[build]
+configure = "cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_MAN_PAGES=OFF"
+compile = "cmake --build build -j$(nproc)"
+install = "DESTDIR=$PKGDIR cmake --install build"

@@ -1,0 +1,102 @@
+#!/bin/sh
+# grintion-persist - Create and configure persistent storage for Grintion-OS
+# Supports SSD, HDD, and USB drives
+# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
+
+set -e
+
+cat << 'EOF'
+       █▓█
+      █▓▒▓█
+     █▓▒@▒▓█
+    █▓▒@+@▒▓█
+   █▓▒@+++@▒▓█
+  █▓▒@+++++@▒▓█
+ █▓▒@++/+\++@▒▓█
+█▓▒@++/    \+@▒▓█
+    ▓▒@   @▒▓
+   ▓▒@     @▒▓
+  ▓▒@       @▒▓
+ ▓▒@         @▒▓
+█@█           █@█
+
+==============================================================
+         Grintion-OS Persistent Live Storage Creator
+==============================================================
+EOF
+
+echo ""
+echo "This tool configures a persistent partition on an SSD, HDD, or USB."
+echo "Changes to /etc, /home, /root, and garb packages will survive reboots."
+echo ""
+echo "Available storage partitions:"
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT | grep -E "part|disk"
+echo ""
+
+printf "Enter target partition for persistence (e.g. /dev/sda3 or /dev/nvme0n1p3): "
+read -r TARGET_PART
+
+if [ ! -b "$TARGET_PART" ]; then
+    echo "[-] Error: '$TARGET_PART' is not a valid block device." >&2
+    exit 1
+fi
+
+# Validate partition size (warn if less than 1GB)
+PART_SIZE=$(blockdev --getsize64 "$TARGET_PART" 2>/dev/null || echo 0)
+if [ "$PART_SIZE" -lt 1073741824 ]; then
+    echo ""
+    echo "[!] Warning: Partition is smaller than 1GB ($((PART_SIZE/1048576))MB)."
+    echo "    Persistence may run out of space quickly."
+    printf "Continue anyway? (y/N): "
+    read -r SMALL_CONFIRM
+    [ "$SMALL_CONFIRM" = "y" ] || exit 0
+fi
+
+echo ""
+echo "WARNING: All data on $TARGET_PART will be formatted with ext4!"
+printf "Type 'YES' to format $TARGET_PART as GRINTION_PERSIST: "
+read -r CONFIRM
+
+if [ "$CONFIRM" != "YES" ]; then
+    echo "[*] Aborted by user."
+    exit 0
+fi
+
+echo "[1/4] Formatting $TARGET_PART with ext4 (LABEL=GRINTION_PERSIST)..."
+mkfs.ext4 -F -L GRINTION_PERSIST "$TARGET_PART"
+
+echo "[2/4] Mounting $TARGET_PART temporarily..."
+TEMP_MOUNT="/mnt/persist_tmp"
+mkdir -p "$TEMP_MOUNT"
+mount "$TARGET_PART" "$TEMP_MOUNT"
+
+echo "[3/4] Initializing persistence directory structure..."
+mkdir -p "$TEMP_MOUNT/etc_upper" "$TEMP_MOUNT/etc_work"
+mkdir -p "$TEMP_MOUNT/home" "$TEMP_MOUNT/root"
+mkdir -p "$TEMP_MOUNT/var_lib_garb"
+
+# Copy current live user state if desired
+if [ -d /root ] && [ "$(ls -A /root 2>/dev/null)" ]; then
+    cp -a /root/* "$TEMP_MOUNT/root/" 2>/dev/null || true
+fi
+
+# Set secure permissions for paranoid users
+chmod 700 "$TEMP_MOUNT/root"
+chmod 755 "$TEMP_MOUNT/home"
+
+echo "[4/4] Finalizing persistence partition..."
+umount "$TEMP_MOUNT"
+rmdir "$TEMP_MOUNT" 2>/dev/null || true
+
+echo ""
+echo "=============================================================="
+echo "[+] SUCCESS: Persistence successfully enabled on $TARGET_PART!"
+echo "=============================================================="
+echo "Grintion-OS will automatically detect 'LABEL=GRINTION_PERSIST'"
+echo "on boot and mount your persistent data for:"
+echo "  - /etc (passwords, network configs, runit services)"
+echo "  - /home and /root (user files, ssh keys, personal data)"
+echo "  - /var/lib/garb (installed packages and package database)"
+echo ""
+echo "You can keep booting the live ISO from USB/SSD with full persistence!"
+echo "=============================================================="

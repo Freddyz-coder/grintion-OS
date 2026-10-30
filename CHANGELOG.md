@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0-alpha] - 2026-10-30
+
+### Added
+- **Networking Stack**:
+  - `dhcpcd` DHCP client with automatic runit service for wired networks.
+  - `wpa_supplicant` + `wpa_cli` + `iw` for WiFi support with runit service (`etc/sv/wpa_supplicant`).
+  - `curl`, `wget`, `ping`, `ss`, `dig`, `nslookup`, `rfkill` included in live rootfs.
+  - Default DNS resolver (`/etc/resolv.conf`) pre-configured with Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`).
+  - Improved `etc/sv/network/run` with interface readiness delay and better `dhcpcd` flags.
+
+- **Expanded Linux Commands** (50+ new binaries in rootfs):
+  - Process monitoring: `ps`, `top`, `htop`, `kill`, `killall`, `free`, `dmesg`, `uptime`.
+  - User management: `passwd`, `useradd`, `userdel`, `groupadd`, `groupdel`, `su`, `sudo`, `chpasswd`.
+  - Editors & pagers: `nano`, `vi`, `less`, `more`.
+  - Kernel modules: `lsmod`, `modprobe`, `insmod`, `rmmod`, `depmod`, `modinfo`.
+  - Hardware info: `lspci`, `lsusb`, `lsblk`.
+  - Text processing: `wc`, `sort`, `uniq`, `tr`, `cut`, `tee`, `xargs`, `file`, `which`, `diff`.
+  - System control: `hostname`, `reboot`, `poweroff`, `halt`, `shutdown`, `sysctl`.
+  - Archiving: `bzip2`, `xz`, `unzip`, `cpio`.
+
+- **Driver Support Infrastructure**:
+  - Kernel module loading tools (`modprobe`, `insmod`, `lsmod`, `depmod`) in live rootfs.
+  - Automatic kernel module deployment during rootfs build (network, GPU, USB, HID, NVMe, SCSI, SATA, filesystem, sound).
+  - Module autoloading on boot via runit stage 1 (usbhid, ahci, nvme, sd_mod, ext4, vfat).
+  - Udev-less coldplug device detection via sysfs uevent triggering.
+  - New garb packages: `linux-firmware`, `mesa`, `alsa-lib`, `alsa-utils`.
+
+- **Fastfetch Integration**:
+  - Grintion-OS ASCII logo displayed via `fastfetch` on login with system information.
+  - Custom configuration at `/etc/fastfetch/config.jsonc`.
+  - Logo art stored at `/etc/grintion-logo.txt`.
+  - Falls back to `/etc/issue` if fastfetch is not installed.
+
+- **Desktop Environment / Window Manager / Login Manager Support** (via garb):
+  - New garb package manifests (Garbfiles) for user-installable graphical environments:
+    - Display servers: `xorg-server`, `xorg-xinit`, `wayland`
+    - Login manager: `sddm` (with runit service at `etc/sv/sddm`)
+    - Window managers: `i3`, `sway`, `openbox`
+    - Desktop environments: `xfce4`, `plasma-desktop`
+  - Nothing pre-installed — fully DIY per MISS philosophy.
+
+- **Networking garb package** (`packages/networking/Garbfile`): meta-package for core networking stack.
+
+### Improved
+- **`grintion-install`**:
+  - Now copies kernel and initramfs to installed system's `/boot`.
+  - Added EFI partition entry to generated `/etc/fstab`.
+  - Renumbered installation steps (4→7 steps for clarity).
+
+- **`grintion-persist`**:
+  - Added partition size validation with warning if target is smaller than 1GB.
+  - Interactive confirmation before proceeding with small partitions.
+
+- **`/etc/profile`**:
+  - Runs `fastfetch` on interactive login if available, falls back to displaying `/etc/issue`.
+
+- **runit stage 1 (`/etc/runit/1`)**:
+  - Added kernel module autoloading step (usbhid, ahci, nvme, sd_mod, ext4, vfat).
+  - Added udev-less coldplug device detection.
+  - Renumbered init stages from 4 to 5 steps.
+
+- **`build/make-rootfs.sh`**:
+  - Expanded BINARIES array from ~15 to 70+ essential tools.
+  - Added kernel module infrastructure deployment.
+  - Added DNS resolver and WiFi configuration directory setup.
+  - Added fastfetch config and logo file deployment.
+  - Auto-enables network runit service.
+
+---
+
 ## [0.1.0-alpha] - 2026-10-28
 
 ### Added
@@ -51,8 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Planned / Roadmap]
 
-### Planned for v0.2.0-beta
+### Planned for v0.3.0-beta
 - Multi-arch automated ARM64 ISO/raw image generation pipeline.
 - Hardware cryptographic token support (YubiKey / Nitrokey) integrated directly into `runit` stage 1 disk unlocking.
 - Zero-leak RAM wiping daemon utilizing `kexec` and secure memory zeroing before warm reboot.
 - Pre-built repository mirrors with BLAKE3 cryptographic ledger.
+- Firewall integration (`nftables` / `iptables`) with default paranoid rulesets.

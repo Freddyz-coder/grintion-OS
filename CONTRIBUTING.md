@@ -26,16 +26,52 @@ Grintion-OS/
 ├── CONTRIBUTING.md         # Contribution guidelines
 ├── LICENSE                 # Project license
 ├── Makefile                # Master build controller
-├── bin/                    # Helper utilities (grintion-chroot, diy-installer)
+├── bin/                    # Helper utilities
+│   ├── garb                # garb package manager
+│   ├── grintion-install    # Interactive DIY installer
+│   ├── grintion-persist    # Persistent storage configurator
+│   ├── grintion-chroot     # Chroot helper
+│   └── limine-deploy       # Bootloader installer
 ├── build/                  # Build scripts for kernel, rootfs, and ISO
 │   ├── build-iso.sh        # Generates bootable hybrid ISO
 │   └── make-rootfs.sh      # Assembles base RAM rootfs
 ├── etc/                    # Default system configuration files
+│   ├── fastfetch/          # Fastfetch configuration
+│   │   └── config.jsonc    # Custom fastfetch config with logo
+│   ├── grintion-logo.txt   # ASCII logo for branding
 │   ├── issue               # Console login banner with ASCII logo
+│   ├── motd                # Message of the day
+│   ├── profile             # Shell environment profile
+│   ├── resolv.conf         # DNS resolver (generated at build)
 │   ├── runit/              # Runit 3-stage init scripts (1, 2, 3)
 │   ├── sv/                 # Runit service definitions
+│   │   ├── agetty-tty1/    # TTY1 getty
+│   │   ├── agetty-tty2/    # TTY2 getty
+│   │   ├── network/        # DHCP network service
+│   │   ├── syslog/         # System logger
+│   │   ├── wpa_supplicant/ # WiFi service
+│   │   └── sddm/           # Login manager service
 │   └── sysctl.d/           # Paranoid kernel sysctl hardening
 ├── packages/               # Garb package manifest repository
+│   ├── alsa-lib/           # ALSA sound library
+│   ├── alsa-utils/         # ALSA utilities
+│   ├── base-files/         # Base directory hierarchy
+│   ├── garb/               # garb package manager
+│   ├── gnu-coreutils/      # GNU coreutils
+│   ├── i3/                 # i3 tiling WM
+│   ├── linux/              # Linux kernel
+│   ├── linux-firmware/     # Hardware firmware blobs
+│   ├── mesa/               # GPU drivers
+│   ├── networking/         # Networking meta-package
+│   ├── openbox/            # Openbox WM
+│   ├── plasma-desktop/     # KDE Plasma DE
+│   ├── runit/              # runit init system
+│   ├── sddm/              # SDDM login manager
+│   ├── sway/              # Sway Wayland compositor
+│   ├── wayland/           # Wayland protocol
+│   ├── xfce4/             # XFCE4 DE
+│   ├── xorg-server/       # X.Org display server
+│   └── xorg-xinit/        # xinit/startx
 └── src/                    # Source code for garb package manager & tools
     └── garb/               # garb package manager implementation
 ```
@@ -78,6 +114,25 @@ install = "make DESTDIR=$PKGDIR install"
 
 ---
 
+## 🌐 Adding a Runit Service
+
+When contributing a new runit service:
+
+1. Create a directory under `etc/sv/<service-name>/`.
+2. Add a `run` script that executes in the foreground using `exec`.
+3. Guard the service with a binary existence check (e.g., `[ -x /usr/bin/sddm ] || exit 1`).
+4. Users enable services manually: `ln -s /etc/sv/<service> /var/service/`.
+
+Example:
+```sh
+#!/bin/sh
+exec 2>&1
+[ -x /usr/bin/my-daemon ] || exit 1
+exec my-daemon --foreground
+```
+
+---
+
 ## 💻 Architecture Support & Testing
 
 All contributions must support or cleanly account for our two target architectures:
@@ -104,3 +159,5 @@ Before submitting a pull request:
 - [ ] Tested building or running in the live environment or chroot.
 - [ ] `CHANGELOG.md` updated with relevant changes under `[Unreleased]`.
 - [ ] Shell scripts formatted cleanly and free of critical warnings.
+- [ ] New packages include a valid `Garbfile` manifest with correct SPDX license identifiers.
+- [ ] New runit services include a `run` script with foreground execution and binary guard.

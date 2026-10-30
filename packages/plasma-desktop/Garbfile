@@ -1,0 +1,13 @@
+[package]
+name = "plasma-desktop"
+version = "6.2.0"
+release = 1
+description = "KDE Plasma desktop environment (meta-package)"
+license = "GPL-2.0"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["xorg-server", "wayland", "sddm", "qt6-base", "kwin", "plasma-workspace", "plasma-nm"]
+
+[build]
+install = "echo 'Meta-package: installs KDE Plasma components'"

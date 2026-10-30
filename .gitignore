@@ -1,5 +1,7 @@
 # Grintion-OS .gitignore
 build/work/
+output/
+None/
 *.tmp
 __pycache__/
 *.pyc

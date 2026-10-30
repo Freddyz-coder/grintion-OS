@@ -67,7 +67,18 @@ net.ipv6.conf.default.accept_redirects = 0
 
 ---
 
-## 3. Sandboxing Universal Containers (Flatpak, Snap, AppImage)
+## 3. Network Security
+
+Grintion-OS includes networking tools for connectivity while maintaining a security-first posture:
+
+- **DNS**: Default resolver uses Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`). Users should configure their own trusted resolvers in `/etc/resolv.conf` for production deployments.
+- **WiFi**: `wpa_supplicant` requires WPA2/WPA3 encryption. Open/WEP networks are strongly discouraged.
+- **No listening services**: The live environment exposes zero network-listening daemons by default. All networking is outbound-only unless explicitly configured by the user.
+- **Driver firmware**: Hardware firmware blobs installed via `garb install linux-firmware` are verified against the package's SHA-256 checksums before deployment.
+
+---
+
+## 4. Sandboxing Universal Containers (Flatpak, Snap, AppImage)
 
 Grintion-OS treats all third-party software as untrusted:
 
@@ -95,7 +106,7 @@ Grintion-OS treats all third-party software as untrusted:
 
 ---
 
-## 4. Cryptographic Verification in `garb`
+## 5. Cryptographic Verification in `garb`
 
 Every package in `garb` is verified prior to unpacking:
 - **Checksum Verification**: SHA-256 and BLAKE3 digests calculated against known manifests.
@@ -104,7 +115,16 @@ Every package in `garb` is verified prior to unpacking:
 
 ---
 
-## 5. Vulnerability Disclosure & Reporting
+## 6. Driver & Firmware Security
+
+- Kernel modules are loaded only from trusted paths (`/lib/modules/$(uname -r)/`).
+- The `linux-firmware` garb package includes SHA-256 verification of all firmware blobs.
+- Module loading on boot is limited to essential drivers (usbhid, ahci, nvme, sd_mod, ext4, vfat) — no blanket autoloading.
+- Users must explicitly install additional firmware via `garb install linux-firmware`.
+
+---
+
+## 7. Vulnerability Disclosure & Reporting
 
 If you identify a security flaw, vulnerability, or potential exploit vector in Grintion-OS, please follow our coordinated disclosure policy:
 

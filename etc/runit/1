@@ -41,11 +41,23 @@ fi
 # Bring up loopback interface
 ip link set up dev lo 2>/dev/null || ifconfig lo up 2>/dev/null
 
-echo ">> [3/4] Initializing entropy & hardware clock..."
+echo ">> [3/5] Loading essential kernel modules..."
+# Load essential drivers if modules are available
+for mod in usbhid hid_generic ahci nvme sd_mod ext4 vfat fat; do
+    modprobe "$mod" 2>/dev/null || true
+done
+# Trigger coldplug for device detection (udev-less)
+if [ -d /sys/bus ]; then
+    for uevent in /sys/bus/*/devices/*/uevent; do
+        [ -f "$uevent" ] && echo add > "$uevent" 2>/dev/null || true
+    done
+fi
+
+echo ">> [4/5] Initializing entropy & hardware clock..."
 # Seed random generator if available
 if [ -f /var/lib/random-seed ]; then
     cat /var/lib/random-seed > /dev/urandom 2>/dev/null
 fi
 
-echo ">> [4/4] Hardware & device initialization complete."
+echo ">> [5/5] Hardware & device initialization complete."
 exit 0

@@ -1,0 +1,15 @@
+[package]
+name = "sway"
+version = "1.10"
+release = 1
+description = "Sway i3-compatible Wayland compositor"
+license = "MIT"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["wayland", "wlroots", "mesa"]
+
+[build]
+configure = "meson setup build -Dprefix=/usr"
+compile = "ninja -C build"
+install = "DESTDIR=$PKGDIR ninja -C build install"

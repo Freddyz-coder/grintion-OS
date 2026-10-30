@@ -1,0 +1,15 @@
+[package]
+name = "xorg-server"
+version = "21.1.14"
+release = 1
+description = "X.Org display server"
+license = "MIT"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["mesa", "linux-firmware", "xorg-xinit"]
+
+[build]
+configure = "meson setup build -Dprefix=/usr -Dxorg=true -Dxwayland=true"
+compile = "ninja -C build"
+install = "DESTDIR=$PKGDIR ninja -C build install"

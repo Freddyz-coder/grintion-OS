@@ -1,2 +1,2 @@
 #!/bin/sh
-exec agetty -8 -L tty2 38400 linux
+exec agetty --noclear -n -l /bin/bash tty2 38400 linux

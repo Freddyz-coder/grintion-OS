@@ -1,0 +1,15 @@
+[package]
+name = "i3"
+version = "4.23"
+release = 1
+description = "i3 tiling window manager"
+license = "BSD-3-Clause"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["xorg-server", "libxcb", "pango"]
+
+[build]
+configure = "meson setup build -Dprefix=/usr -Ddocs=false"
+compile = "ninja -C build"
+install = "DESTDIR=$PKGDIR ninja -C build install"

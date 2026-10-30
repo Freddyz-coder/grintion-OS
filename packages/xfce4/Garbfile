@@ -1,0 +1,13 @@
+[package]
+name = "xfce4"
+version = "4.20.0"
+release = 1
+description = "XFCE4 lightweight desktop environment (meta-package)"
+license = "GPL-2.0"
+arch = ["x86_64", "aarch64"]
+
+[dependencies]
+runtime = ["xorg-server", "xfwm4", "xfce4-panel", "xfce4-session", "xfdesktop", "thunar", "garcon"]
+
+[build]
+install = "echo 'Meta-package: installs XFCE4 components'"

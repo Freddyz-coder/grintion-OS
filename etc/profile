@@ -5,6 +5,10 @@ export USER=root
 export TERM=${TERM:-linux}
 export PS1='\[\033[1;31m\]grintion-live\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# '
 
-if [ -f /etc/issue ] && [ "$TERM" != "dumb" ]; then
-    cat /etc/issue
+if [ "$TERM" != "dumb" ]; then
+    if command -v fastfetch >/dev/null 2>&1; then
+        fastfetch --config /etc/fastfetch/config.jsonc
+    elif [ -f /etc/issue ]; then
+        cat /etc/issue
+    fi
 fi

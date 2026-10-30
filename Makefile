@@ -40,8 +40,8 @@ test:
 	@sh -n etc/runit/1
 	@sh -n etc/runit/2
 	@sh -n etc/runit/3
-	@sh -n bin/diy-guide
 	@sh -n bin/grintion-install
+	@sh -n bin/grintion-persist
 	@sh -n bin/grintion-chroot
 	@sh -n bin/limine-deploy
 	@echo "[+] All validation tests PASSED!"

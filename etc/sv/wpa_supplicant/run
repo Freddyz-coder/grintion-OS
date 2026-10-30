@@ -1,0 +1,8 @@
+#!/bin/sh
+exec 2>&1
+# WiFi service — user must configure /etc/wpa_supplicant/wpa_supplicant.conf first
+# Enable with: ln -s /etc/sv/wpa_supplicant /var/service/
+[ -f /etc/wpa_supplicant/wpa_supplicant.conf ] || exit 1
+IFACE=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}')
+[ -n "$IFACE" ] || exit 1
+exec wpa_supplicant -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf -s

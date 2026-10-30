@@ -1,12 +1,13 @@
 #!/bin/sh
 exec 2>&1
-echo "Starting network link daemon..."
-# Bring up network interfaces if dhcpcd or udhcpc is present
+echo "Starting network DHCP client..."
+# Wait briefly for interfaces to be ready
+sleep 2
 if which dhcpcd >/dev/null 2>&1; then
-    exec dhcpcd -B
+    exec dhcpcd --nobackground -4
 elif which udhcpc >/dev/null 2>&1; then
     exec udhcpc -b -i eth0
 else
-    # Sleep and wait
+    echo "No DHCP client available."
     exec pause
 fi

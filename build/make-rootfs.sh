@@ -9,14 +9,23 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORK_DIR="${REPO_ROOT}/build/work"
 ROOTFS="${WORK_DIR}/rootfs"
 OUTPUT_DIR="${REPO_ROOT}/output"
+export ROOTFS
+export OUTPUT_DIR
 
 echo "=============================================================="
 echo ">> [1/5] Initializing Rootfs Directory Hierarchy..."
 echo "=============================================================="
 rm -rf "$ROOTFS"
-mkdir -p "$ROOTFS"/{bin,sbin,usr/bin,usr/sbin,usr/lib,usr/lib64,lib,lib64,etc,var,run,proc,sys,dev,tmp,root,home,mnt,var/service,var/log,var/lib/garb,var/cache/garb}
+mkdir -p "$ROOTFS"/{usr/bin,usr/sbin,usr/lib,etc,var,run,proc,sys,dev,tmp,root,home,mnt,var/service,var/log,var/lib/garb,var/cache/garb}
 chmod 1777 "$ROOTFS/tmp"
 chmod 0700 "$ROOTFS/root"
+
+# Create standard merged-usr symlinks (relative symlinks pointing to usr)
+ln -sf usr/bin "$ROOTFS/bin"
+ln -sf usr/sbin "$ROOTFS/sbin"
+ln -sf usr/lib "$ROOTFS/lib"
+ln -sf usr/lib "$ROOTFS/lib64"
+ln -sf lib "$ROOTFS/usr/lib64"
 
 echo "=============================================================="
 echo ">> [2/5] Deploying System Binaries & Utilities..."
@@ -24,10 +33,39 @@ echo "=============================================================="
 
 # Essential binaries for DIY install, networking, partitioning, and garb
 BINARIES=(
-    "bash" "sh" "ls" "cat" "cp" "mv" "rm" "mkdir" "rmdir" "chmod" "chown"
+    # Shell
+    "bash" "sh"
+    # GNU coreutils
+    "ls" "cat" "cp" "mv" "rm" "mkdir" "rmdir" "chmod" "chown"
     "dd" "sync" "uname" "date" "id" "env" "sleep" "touch" "head" "tail"
-    "grep" "sed" "awk" "find" "tar" "gzip" "mount" "umount" "ip"
-    "fdisk" "parted" "mkfs.ext4" "mkfs.vfat" "agetty" "login" "python3"
+    "ln" "stat" "wc" "sort" "uniq" "tr" "cut" "tee" "xargs"
+    "file" "which" "diff" "dirname" "basename" "readlink" "realpath"
+    "mknod" "mktemp" "yes" "true" "false" "echo" "printf" "test"
+    # Text processing
+    "grep" "sed" "awk" "find"
+    # Archiving
+    "tar" "gzip" "bzip2" "xz" "unzip" "cpio"
+    # Filesystem
+    "mount" "umount" "fdisk" "parted" "mkfs.ext4" "mkfs.vfat"
+    "blkid" "findfs" "losetup" "lsblk" "df" "du"
+    # Process & system monitoring
+    "ps" "top" "htop" "kill" "killall" "free" "dmesg" "uptime"
+    # Kernel modules
+    "lsmod" "modprobe" "insmod" "rmmod" "depmod" "modinfo"
+    # Hardware info
+    "lspci" "lsusb"
+    # User management
+    "passwd" "useradd" "userdel" "groupadd" "groupdel" "su" "sudo" "chpasswd" "login"
+    # Editors & pagers
+    "nano" "vi" "less" "more"
+    # Networking
+    "ip" "dhcpcd" "wpa_supplicant" "wpa_cli" "ping" "wget" "curl"
+    "iw" "rfkill" "ss" "nslookup" "dig"
+    # System control
+    "hostname" "reboot" "poweroff" "halt" "shutdown"
+    "sysctl" "chroot" "pivot_root" "agetty"
+    # Misc
+    "python3" "fastfetch"
 )
 
 # Collect full paths of available binaries
@@ -45,32 +83,56 @@ if [ ! -e "$ROOTFS/usr/bin/sh" ]; then
     ln -s bash "$ROOTFS/usr/bin/sh"
 fi
 
-# Create traditional /bin and /sbin symlinks or binaries
-for b in bash sh ls cat cp mv rm mkdir rmdir chmod chown dd sync uname date id env sleep touch head tail grep sed awk find tar gzip mount umount ip fdisk; do
-    if [ -f "$ROOTFS/usr/bin/$b" ]; then
-        ln -sf "../usr/bin/$b" "$ROOTFS/bin/$b"
-    fi
-done
-
 # Copy runit binaries
 if [ -f "$REPO_ROOT/tools/bin/runit" ]; then
     cp "$REPO_ROOT/tools/bin/"{runit,runsv,runsvdir,sv,chpst} "$ROOTFS/usr/sbin/"
-    for r in runit runsv runsvdir sv chpst; do
-        ln -sf "../usr/sbin/$r" "$ROOTFS/sbin/$r"
-    done
 fi
 
-# Deploy garb and DIY utilities
+# Deploy garb and system utilities
 cp "$REPO_ROOT/bin/garb" "$ROOTFS/usr/bin/garb"
-cp "$REPO_ROOT/bin/diy-guide" "$ROOTFS/usr/bin/diy-guide"
 cp "$REPO_ROOT/bin/grintion-install" "$ROOTFS/usr/bin/grintion-install"
+cp "$REPO_ROOT/bin/grintion-persist" "$ROOTFS/usr/bin/grintion-persist"
 cp "$REPO_ROOT/bin/grintion-chroot" "$ROOTFS/usr/bin/grintion-chroot"
 cp "$REPO_ROOT/bin/limine-deploy" "$ROOTFS/usr/bin/limine-deploy"
-chmod +x "$ROOTFS/usr/bin/"{garb,diy-guide,grintion-install,grintion-chroot,limine-deploy}
+chmod +x "$ROOTFS/usr/bin/"{garb,grintion-install,grintion-persist,grintion-chroot,limine-deploy}
 
-for u in garb diy-guide grintion-install grintion-chroot limine-deploy; do
-    ln -sf "../usr/bin/$u" "$ROOTFS/bin/$u"
-done
+# Ensure sh points to bash
+ln -sf bash "$ROOTFS/usr/bin/sh"
+
+# Deploy default DNS resolver configuration
+cat << 'RESOLV' > "$ROOTFS/etc/resolv.conf"
+# Grintion-OS default DNS (Cloudflare + Google fallback)
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+RESOLV
+
+# WiFi configuration directory
+mkdir -p "$ROOTFS/etc/wpa_supplicant"
+
+# Copy clean Python 3 standard library first
+PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+HOST_PY_DIR="/usr/lib/python${PY_VER}"
+TARGET_PY_DIR="$ROOTFS/usr/lib/python${PY_VER}"
+
+if [ -d "$HOST_PY_DIR" ]; then
+    echo "[*] Deploying clean Python ${PY_VER} standard library..."
+    python3 - << 'PYCOPY'
+import os
+import shutil
+rootfs = os.environ.get("ROOTFS")
+py_ver = os.popen('python3 -c "import sys; print(f\'{sys.version_info.major}.{sys.version_info.minor}\')"').read().strip()
+src = f"/usr/lib/python{py_ver}"
+dest = f"{rootfs}/usr/lib/python{py_ver}"
+if os.path.exists(dest):
+    shutil.rmtree(dest)
+
+def ignore_filter(s, names):
+    return [n for n in names if n in ('site-packages', 'test', 'tests', '__pycache__', 'idlelib', 'tkinter', 'turtledemo')]
+
+shutil.copytree(src, dest, ignore=ignore_filter, symlinks=True)
+print(f"Copied clean python stdlib to {dest}")
+PYCOPY
+fi
 
 echo "=============================================================="
 echo ">> [3/5] Resolving and Copying Shared Dynamic Libraries..."
@@ -83,12 +145,12 @@ import os
 import sys
 import subprocess
 import shutil
+import glob
 
 rootfs = os.environ.get("ROOTFS")
 bin_dir = os.path.join(rootfs, "usr/bin")
 sbin_dir = os.path.join(rootfs, "usr/sbin")
 lib_dir = os.path.join(rootfs, "usr/lib")
-lib64_dir = os.path.join(rootfs, "usr/lib64")
 
 binaries = []
 for d in [bin_dir, sbin_dir]:
@@ -97,6 +159,10 @@ for d in [bin_dir, sbin_dir]:
             p = os.path.join(d, f)
             if os.path.isfile(p) and not os.path.islink(p):
                 binaries.append(p)
+
+# Also scan all python C extension shared objects
+for so in glob.glob(f"{rootfs}/usr/lib/python*/**/*.so", recursive=True):
+    binaries.append(so)
 
 libs_to_copy = set()
 visited = set()
@@ -114,7 +180,7 @@ def scan_file(f):
                 if dest.startswith("/"):
                     libs_to_copy.add(dest)
                     scan_file(dest)
-            elif line.startswith("/lib"):
+            elif line.startswith("/lib") or line.startswith("/usr/lib"):
                 dest = line.split()[0]
                 libs_to_copy.add(dest)
                 scan_file(dest)
@@ -133,38 +199,39 @@ for lib in libs_to_copy:
             shutil.copy2(lib, target)
         except Exception as e:
             print(f"Warning copying {lib}: {e}")
-
-    # Ensure dynamic linker is accessible
-    if "ld-linux" in base:
-        shutil.copy2(lib, os.path.join(rootfs, "lib64", base))
-        # Symlink /lib/ld-linux-x86-64.so.2 -> /lib64/ld-linux-x86-64.so.2
-        l64 = os.path.join(rootfs, "lib", base)
-        if not os.path.exists(l64):
-            shutil.copy2(lib, l64)
 EOF
 
-# Ensure /lib and /lib64 symlinks exist
-(cd "$ROOTFS" && ln -sf usr/lib/* lib/ 2>/dev/null || true)
-(cd "$ROOTFS" && ln -sf usr/lib/* lib64/ 2>/dev/null || true)
+echo "=============================================================="
+echo ">> [3.5/5] Deploying Kernel Module Infrastructure..."
+echo "=============================================================="
+KVER=$(uname -r)
+HOST_MOD_DIR="/lib/modules/$KVER"
+TARGET_MOD_DIR="$ROOTFS/lib/modules/$KVER"
 
-# Copy minimal Python 3 standard library
-PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-HOST_PY_DIR="/usr/lib/python${PY_VER}"
-TARGET_PY_DIR="$ROOTFS/usr/lib/python${PY_VER}"
+if [ -d "$HOST_MOD_DIR" ]; then
+    echo "[*] Deploying essential kernel modules from $HOST_MOD_DIR..."
+    mkdir -p "$TARGET_MOD_DIR"
 
-if [ -d "$HOST_PY_DIR" ]; then
-    echo "[*] Copying core Python ${PY_VER} modules..."
-    mkdir -p "$TARGET_PY_DIR"
-    # Copy essential python modules required by garb
-    for mod in os.py sys.py posixpath.py genericpath.py stat.py \
-               hashlib.py json tarfile.py shutil.py subprocess.py \
-               argparse.py time.py pathlib.py io.py codecs.py \
-               encodings abc.py types.py functools.py re collections \
-               urllib logging copy.py copyreg.py contextlib.py; do
-        if [ -e "$HOST_PY_DIR/$mod" ]; then
-            cp -r "$HOST_PY_DIR/$mod" "$TARGET_PY_DIR/" 2>/dev/null || true
+    # Copy essential module categories (not the entire tree)
+    for category in kernel/drivers/net kernel/drivers/gpu kernel/drivers/usb \
+                    kernel/drivers/hid kernel/drivers/input kernel/drivers/block \
+                    kernel/drivers/nvme kernel/drivers/ata kernel/drivers/scsi \
+                    kernel/fs kernel/sound; do
+        if [ -d "$HOST_MOD_DIR/$category" ]; then
+            mkdir -p "$TARGET_MOD_DIR/$category"
+            cp -r "$HOST_MOD_DIR/$category"/* "$TARGET_MOD_DIR/$category/" 2>/dev/null || true
         fi
     done
+
+    # Copy module metadata files
+    for f in modules.dep modules.dep.bin modules.alias modules.alias.bin \
+             modules.symbols modules.symbols.bin modules.builtin \
+             modules.builtin.bin modules.order; do
+        [ -f "$HOST_MOD_DIR/$f" ] && cp "$HOST_MOD_DIR/$f" "$TARGET_MOD_DIR/" 2>/dev/null || true
+    done
+    echo "[+] Kernel modules deployed for $KVER"
+else
+    echo "[!] No kernel modules found at $HOST_MOD_DIR (skipping)"
 fi
 
 echo "=============================================================="
@@ -176,9 +243,15 @@ cp -r "$REPO_ROOT/etc/"* "$ROOTFS/etc/"
 chmod 0644 "$ROOTFS/etc/passwd" "$ROOTFS/etc/group"
 chmod 0600 "$ROOTFS/etc/shadow"
 
+# Deploy fastfetch configuration and logo
+mkdir -p "$ROOTFS/etc/fastfetch"
+cp "$REPO_ROOT/etc/fastfetch/config.jsonc" "$ROOTFS/etc/fastfetch/" 2>/dev/null || true
+cp "$REPO_ROOT/etc/grintion-logo.txt" "$ROOTFS/etc/" 2>/dev/null || true
+
 # Set up runit service links
 mkdir -p "$ROOTFS/var/service"
 ln -sf /etc/sv/agetty-tty1 "$ROOTFS/var/service/agetty-tty1"
+ln -sf /etc/sv/network "$ROOTFS/var/service/network"
 
 # Create /init script for initramfs
 cat << 'EOF' > "$ROOTFS/init"
@@ -211,6 +284,28 @@ done
 # Seed random generator
 if [ -c /dev/urandom ]; then
     dd if=/dev/urandom of=/dev/null count=1 bs=32 2>/dev/null || true
+fi
+
+# Check for persistence partition (LABEL=GRINTION_PERSIST on SSD, HDD, or USB)
+PERSIST_DEV="$(blkid -L GRINTION_PERSIST 2>/dev/null || true)"
+if [ -n "$PERSIST_DEV" ]; then
+    echo ">> [PERSISTENCE] Detected partition: $PERSIST_DEV (LABEL=GRINTION_PERSIST)"
+    mkdir -p /mnt/persist
+    if mount "$PERSIST_DEV" /mnt/persist 2>/dev/null; then
+        echo ">> [PERSISTENCE] Enabling persistent overlays..."
+        mkdir -p /mnt/persist/etc_upper /mnt/persist/etc_work
+        mkdir -p /mnt/persist/home /mnt/persist/root /mnt/persist/var_lib_garb
+
+        # Overlay /etc (configuration changes, passwords, services)
+        mount -t overlay overlay -o lowerdir=/etc,upperdir=/mnt/persist/etc_upper,workdir=/mnt/persist/etc_work /etc 2>/dev/null || true
+
+        # Bind-mount user directories and package store
+        mount --bind /mnt/persist/home /home 2>/dev/null || true
+        mount --bind /mnt/persist/root /root 2>/dev/null || true
+        mount --bind /mnt/persist/var_lib_garb /var/lib/garb 2>/dev/null || true
+
+        echo ">> [PERSISTENCE] Persistent storage ACTIVE for /etc, /home, /root, /var/lib/garb"
+    fi
 fi
 
 # Print login banner with ASCII logo

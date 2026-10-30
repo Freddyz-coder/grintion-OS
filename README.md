@@ -3,16 +3,16 @@
        █▓█
       █▓▒▓█
      █▓▒@▒▓█
-    █▓▒@@▒▓█
+    █▓▒@@@▒▓█
    █▓▒@+-+@▒▓█
-  █▓▒@+-----+@▒▓█
- █▓▒@+---/-\--+@▒▓█
-█▓▒@+---/     \--+@▒▓█
-     ▓▒@   @▒▓         
-    ▓▒@       @▒▓
-   ▓▒@           @▒▓
-  ▓▒@               @▒▓
- █@█           █@█
+  █▓▒@+---+@▒▓█
+ █▓▒@+-/-\-+@▒▓█
+█▓▒@+-/   \-+@▒▓█
+    ▓▒@   @▒▓         
+   ▓▒@     @▒▓
+  ▓▒@       @▒▓
+ ▓▒@         @▒▓
+█@█           █@█
 ```
 
 # Grintion-OS
@@ -60,7 +60,7 @@ Grintion-OS does not branch from Debian, Arch, Red Hat, Alpine, Void, or Gentoo.
 * **Init System**: `runit`
   * Fast, deterministic 3-stage supervision (`/etc/runit/1`, `2`, `3`).
   * Clean service links in `/var/service`.
-* **Core Utilities**: **GNU coreutils** (`ls`, `cat`, `cp`, `chmod`, `dd`, `chroot`, etc.).
+* **Core Utilities**: **GNU coreutils** (`ls`, `cat`, `cp`, `chmod`, `dd`, `chroot`, etc.) plus essential sysadmin tools (`ps`, `top`, `htop`, `kill`, `df`, `du`, `free`, `dmesg`, `nano`, `vi`, `wget`, `curl`, `sudo`, etc.).
 * **Universal & Container Sandboxing**:
   * Out-of-the-box support for **Flatpak**, **Snap**, and **AppImage**.
   * Utilizes kernel cgroups v2, user namespaces, FUSE (`/dev/fuse`), and bubblewrap sandboxing.
@@ -69,9 +69,102 @@ Grintion-OS does not branch from Debian, Arch, Red Hat, Alpine, Void, or Gentoo.
 
 ---
 
+## 🌐 Networking
+
+Grintion-OS ships with a functional networking stack in the live environment:
+
+* **Wired**: `dhcpcd` runs automatically via runit service. Plug in and go.
+* **WiFi**: `wpa_supplicant` + `wpa_cli` + `iw` included. Manual setup required.
+* **Tools**: `ping`, `curl`, `wget`, `ss`, `dig`, `nslookup`, `rfkill`
+* **DNS**: Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`) pre-configured in `/etc/resolv.conf`
+
+### WiFi Setup
+```bash
+# Scan for networks
+iw dev wlan0 scan | grep SSID
+
+# Create wpa_supplicant configuration
+wpa_passphrase "MyNetwork" "MyPassword" > /etc/wpa_supplicant/wpa_supplicant.conf
+
+# Enable WiFi service
+ln -s /etc/sv/wpa_supplicant /var/service/
+
+# DHCP will auto-negotiate once connected
+```
+
+---
+
+## 🔧 Driver Support
+
+Grintion-OS includes kernel module loading infrastructure for hardware driver support:
+
+* **Module tools**: `modprobe`, `insmod`, `rmmod`, `lsmod`, `depmod`, `modinfo`
+* **Hardware detection**: `lspci`, `lsusb`, `lsblk`
+* **Auto-loaded on boot**: USB HID, AHCI, NVMe, ext4, vfat (via runit stage 1)
+* **Coldplug**: Udev-less device detection via sysfs uevent triggering
+
+### Additional Drivers (via garb)
+```bash
+# GPU, WiFi, and audio firmware blobs
+garb install linux-firmware
+
+# OpenGL / Vulkan GPU drivers
+garb install mesa
+
+# Audio support
+garb install alsa-lib alsa-utils
+```
+
+---
+
+## 🖥️ Desktop Environment & Window Manager Support
+
+Grintion-OS is bare-bones by design. No desktop environment is pre-installed. Users manually install and configure their preferred graphical environment using `garb`:
+
+### Available Packages
+
+| Package | Description | Type |
+| :--- | :--- | :--- |
+| `xorg-server` | X.Org display server | Display Server |
+| `xorg-xinit` | xinit and startx | X11 Utility |
+| `wayland` | Wayland display protocol | Display Server |
+| `sddm` | Simple Desktop Display Manager | Login Manager |
+| `i3` | i3 tiling window manager | WM (X11) |
+| `sway` | Sway Wayland compositor (i3-compatible) | WM (Wayland) |
+| `openbox` | Openbox stacking window manager | WM (X11) |
+| `xfce4` | XFCE4 lightweight desktop environment | DE |
+| `plasma-desktop` | KDE Plasma desktop environment | DE |
+
+### Example: Setting Up i3 with SDDM
+```bash
+# Install display server, WM, and login manager
+garb install xorg-server xorg-xinit i3 sddm
+
+# Enable SDDM login manager service
+ln -s /etc/sv/sddm /var/service/
+
+# Reboot to graphical login
+reboot
+```
+
+### Example: Setting Up Sway (Wayland)
+```bash
+# Install Wayland compositor
+garb install wayland sway
+
+# Start from TTY
+sway
+```
+
+---
+
 ## 🚀 Live RAM Environment & DIY Experience
 
 When you boot the Grintion-OS ISO, it loads entirely into **RAM (`tmpfs`)** and presents you with a root prompt featuring the Grintion-OS ASCII emblem. There are no pre-assumed defaults: **you are in complete DIY control**.
+
+### Fastfetch
+
+If `fastfetch` is available, Grintion-OS displays the ASCII logo alongside system information on every login. The custom configuration lives at `/etc/fastfetch/config.jsonc`.
 
 ### 🛠️ The DIY Installation Workflow
 
@@ -81,9 +174,10 @@ graph LR
     Net --> Disk[3. Partition & Format Disk]
     Disk --> Mount[4. Mount Target /mnt]
     Mount --> Bootstrap[5. garb bootstrap base]
-    Bootstrap --> Conf[6. Users, Drivers & Config]
-    Conf --> Bootloader[7. Install Bootloader]
-    Bootloader --> Reboot[8. Reboot & Eject ISO]
+    Bootstrap --> Drivers[6. Drivers & Firmware]
+    Drivers --> Conf[7. Users & Config]
+    Conf --> Bootloader[8. Install Bootloader]
+    Bootloader --> Reboot[9. Reboot & Eject ISO]
 ```
 
 ### Step-by-Step DIY Guide:
@@ -156,19 +250,55 @@ ln -s /etc/sv/agetty-tty1 /var/service/
 ln -s /etc/sv/network /var/service/
 ```
 
-#### 6. Install Bootloader
+#### 6. Install Drivers (Optional)
+```bash
+# Inside chroot: install firmware for your hardware
+garb install linux-firmware
+garb install mesa          # GPU drivers
+garb install alsa-utils    # Audio
+```
+
+#### 7. Install Bootloader
 ```bash
 # Install Limine bootloader for UEFI & BIOS
 limine-deploy --efi /mnt/boot/efi --disk /dev/nvme0n1
 ```
 
-#### 7. Reboot and Remove ISO/USB
+#### 8. Reboot and Remove ISO/USB
 ```bash
 exit
 umount -R /mnt
 reboot
 # Remove the USB or ISO when prompted!
 ```
+
+---
+
+### 💾 Adding Persistence on SSD / HDD / USB
+
+Grintion-OS supports two distinct persistence models:
+
+#### Model A: Persistent Live Mode (RAM Live + OverlayFS Storage)
+Keep the speed and immutability of the RAM Live environment, while persisting personal files, configs, and `garb` packages across reboots:
+
+1. Create a partition on your SSD, HDD, or USB (e.g. `/dev/sda3` or `/dev/nvme0n1p3`).
+2. Format and configure the persistence layer using the interactive tool:
+   ```bash
+   grintion-persist
+   ```
+   Or manually:
+   ```bash
+   mkfs.ext4 -F -L GRINTION_PERSIST /dev/sda3
+   ```
+3. During every boot, Grintion-OS's `/init` automatically scans block devices for `LABEL=GRINTION_PERSIST`. When detected, it mounts an **OverlayFS** on `/etc` and bind-mounts `/home`, `/root`, and `/var/lib/garb`.
+
+#### Model B: Full Permanent Bare-Metal Installation
+Format the drive completely and run the OS directly from the SSD/HDD without live RAM unpacking:
+```bash
+# Launch the guided partitioner and installer:
+grintion-install
+```
+This partitions the disk with GPT, formats the EFI System Partition (`vfat`) and Root partition (`ext4`), bootstraps the base system via `garb bootstrap`, copies the kernel and initramfs, and installs the Limine bootloader directly to the drive MBR and EFI.
 
 ---
 

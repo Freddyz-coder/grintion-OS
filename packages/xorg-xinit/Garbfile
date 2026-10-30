@@ -1,0 +1,12 @@
+[package]
+name = "xorg-xinit"
+version = "1.4.2"
+release = 1
+description = "X.Org xinit and startx"
+license = "MIT"
+arch = ["x86_64", "aarch64"]
+
+[build]
+configure = "./configure --prefix=/usr"
+compile = "make -j$(nproc)"
+install = "make DESTDIR=$PKGDIR install"
