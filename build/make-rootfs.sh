@@ -31,52 +31,99 @@ echo "=============================================================="
 echo ">> [2/5] Deploying System Binaries & Utilities..."
 echo "=============================================================="
 
-# Essential binaries for DIY install, networking, partitioning, and garb
+# Comprehensive binary list — every command a user should expect on a production system
 BINARIES=(
     # Shell
     "bash" "sh"
-    # GNU coreutils
+
+    # GNU coreutils (file operations)
     "ls" "cat" "cp" "mv" "rm" "mkdir" "rmdir" "chmod" "chown"
     "dd" "sync" "uname" "date" "id" "env" "sleep" "touch" "head" "tail"
     "ln" "stat" "wc" "sort" "uniq" "tr" "cut" "tee" "xargs"
     "file" "which" "diff" "dirname" "basename" "readlink" "realpath"
     "mknod" "mktemp" "yes" "true" "false" "echo" "printf" "test"
+    "whoami" "groups" "tty" "stty" "expr" "seq" "nice" "nohup"
+    "install" "mkfifo" "nl" "paste" "join" "comm" "expand" "unexpand"
+    "fmt" "fold" "od" "rev" "strings" "md5sum" "sha256sum" "sha512sum"
+    "base64" "factor" "numfmt" "shuf" "tsort" "ptx" "pr"
+
     # Text processing
-    "grep" "sed" "awk" "find"
-    # Archiving
-    "tar" "gzip" "bzip2" "xz" "unzip" "cpio"
-    # Filesystem
-    "mount" "umount" "fdisk" "parted" "mkfs.ext4" "mkfs.vfat"
+    "grep" "egrep" "fgrep" "sed" "awk" "find" "locate" "updatedb"
+
+    # Editors & pagers
+    "nano" "vi" "vim" "less" "more"
+
+    # Terminal & screen
+    "clear" "reset" "tput" "stty" "tee" "script"
+
+    # Archiving & compression
+    "tar" "gzip" "gunzip" "bzip2" "bunzip2" "xz" "unxz" "unzip" "zip" "cpio" "zcat"
+
+    # Filesystem & disk
+    "mount" "umount" "fdisk" "parted" "mkfs.ext4" "mkfs.vfat" "mkfs.btrfs"
     "blkid" "findfs" "losetup" "lsblk" "df" "du"
+    "fsck" "e2fsck" "tune2fs" "resize2fs" "mkswap" "swapon" "swapoff"
+    "flock" "sync" "blockdev"
+
     # Process & system monitoring
     "ps" "top" "htop" "kill" "killall" "free" "dmesg" "uptime"
+    "pgrep" "pkill" "w" "watch" "timeout" "fuser" "lsof"
+
     # Kernel modules
     "lsmod" "modprobe" "insmod" "rmmod" "depmod" "modinfo"
+
     # Hardware info
-    "lspci" "lsusb"
+    "lspci" "lsusb" "lscpu" "lsmem" "lsblk" "hwclock"
+
     # User management
-    "passwd" "useradd" "userdel" "groupadd" "groupdel" "su" "sudo" "chpasswd" "login"
-    # Editors & pagers
-    "nano" "vi" "less" "more"
-    # Networking
-    "ip" "dhcpcd" "wpa_supplicant" "wpa_cli" "ping" "wget" "curl"
-    "iw" "rfkill" "ss" "nslookup" "dig"
+    "passwd" "useradd" "userdel" "usermod" "groupadd" "groupdel" "groupmod"
+    "su" "sudo" "chpasswd" "login" "newgrp" "chage" "getent"
+
+    # Networking — core
+    "ip" "ifconfig" "route" "dhcpcd" "ping" "ping6"
+    "ss" "nc" "netstat"
+    "wget" "curl"
+    "nslookup" "dig" "host" "resolvconf"
+    "hostname" "domainname"
+
+    # Networking — wireless
+    "wpa_supplicant" "wpa_cli" "wpa_passphrase" "iw" "rfkill" "iwconfig" "iwlist"
+
+    # SSH
+    "ssh" "scp" "sftp" "ssh-keygen" "ssh-agent" "ssh-add" "ssh-copy-id" "ssh-keyscan"
+
     # System control
-    "hostname" "reboot" "poweroff" "halt" "shutdown"
+    "reboot" "poweroff" "halt" "shutdown"
     "sysctl" "chroot" "pivot_root" "agetty"
-    # Misc
-    "python3" "fastfetch"
+    "logger" "dmesg" "journalctl"
+    "mount" "umount" "mountpoint" "findmnt"
+
+    # Misc tools
+    "python3" "fastfetch" "hexdump" "xxd"
+    "xargs" "parallel"
+    "iconv" "locale"
 )
 
-# Collect full paths of available binaries
+# Collect full paths and copy binaries, tracking what was found vs missing
 BIN_PATHS=()
+MISSING_BINS=()
+FOUND_COUNT=0
 for b in "${BINARIES[@]}"; do
     bin_loc="$(which "$b" 2>/dev/null || true)"
     if [ -n "$bin_loc" ]; then
         BIN_PATHS+=("$bin_loc")
-        cp -L "$bin_loc" "$ROOTFS/usr/bin/"
+        cp -L "$bin_loc" "$ROOTFS/usr/bin/" 2>/dev/null || true
+        FOUND_COUNT=$((FOUND_COUNT + 1))
+    else
+        MISSING_BINS+=("$b")
     fi
 done
+
+echo "[+] Deployed $FOUND_COUNT binaries to rootfs"
+if [ ${#MISSING_BINS[@]} -gt 0 ]; then
+    echo "[!] WARNING: ${#MISSING_BINS[@]} binaries NOT FOUND on build host (install them for full OS support):"
+    echo "    ${MISSING_BINS[*]}"
+fi
 
 # Ensure sh points to bash
 if [ ! -e "$ROOTFS/usr/bin/sh" ]; then
@@ -108,6 +155,108 @@ RESOLV
 
 # WiFi configuration directory
 mkdir -p "$ROOTFS/etc/wpa_supplicant"
+
+# Deploy terminfo database (required for clear, reset, tput, nano, vi, etc.)
+echo "[*] Deploying terminfo database..."
+TERMINFO_SRC=""
+if [ -d /usr/share/terminfo ]; then
+    TERMINFO_SRC="/usr/share/terminfo"
+elif [ -d /lib/terminfo ]; then
+    TERMINFO_SRC="/lib/terminfo"
+fi
+if [ -n "$TERMINFO_SRC" ]; then
+    mkdir -p "$ROOTFS/usr/share/terminfo"
+    # Copy essential terminal types (linux, xterm, vt100, screen, tmux, rxvt)
+    for tdir in l v x s r a d; do
+        if [ -d "$TERMINFO_SRC/$tdir" ]; then
+            mkdir -p "$ROOTFS/usr/share/terminfo/$tdir"
+            cp -r "$TERMINFO_SRC/$tdir"/* "$ROOTFS/usr/share/terminfo/$tdir/" 2>/dev/null || true
+        fi
+    done
+    # Also try numeric dirs (some distros use 6c for 'l', 78 for 'x', etc.)
+    for tdir in $(ls "$TERMINFO_SRC/" 2>/dev/null); do
+        if [ -d "$TERMINFO_SRC/$tdir" ]; then
+            mkdir -p "$ROOTFS/usr/share/terminfo/$tdir"
+            cp -r "$TERMINFO_SRC/$tdir"/* "$ROOTFS/usr/share/terminfo/$tdir/" 2>/dev/null || true
+        fi
+    done
+    echo "[+] Terminfo database deployed"
+else
+    echo "[!] No terminfo database found on host"
+fi
+
+# Deploy sudo configuration
+echo "[*] Deploying sudo configuration..."
+mkdir -p "$ROOTFS/etc/sudoers.d"
+cat << 'SUDOERS' > "$ROOTFS/etc/sudoers"
+# /etc/sudoers - Grintion-OS sudo configuration
+# Philosophy: MISS — users explicitly grant privileges
+
+Defaults   env_reset
+Defaults   secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults   mail_badpass
+Defaults   log_host
+Defaults   log_year
+
+# Root has full access
+root ALL=(ALL:ALL) ALL
+
+# Allow members of the wheel group to execute any command
+%wheel ALL=(ALL:ALL) ALL
+
+# Include drop-in configs
+#includedir /etc/sudoers.d
+SUDOERS
+chmod 0440 "$ROOTFS/etc/sudoers"
+
+# Deploy SSH client configuration
+echo "[*] Deploying SSH configuration..."
+mkdir -p "$ROOTFS/etc/ssh" "$ROOTFS/root/.ssh"
+cat << 'SSHCONFIG' > "$ROOTFS/etc/ssh/ssh_config"
+# Grintion-OS SSH client configuration
+Host *
+    ForwardAgent no
+    ForwardX11 no
+    PasswordAuthentication yes
+    StrictHostKeyChecking ask
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+SSHCONFIG
+chmod 0700 "$ROOTFS/root/.ssh"
+
+# Deploy nsswitch.conf (required for user/group lookups, DNS resolution)
+cat << 'NSSWITCH' > "$ROOTFS/etc/nsswitch.conf"
+# /etc/nsswitch.conf - Grintion-OS name service switch
+passwd:     files
+group:      files
+shadow:     files
+hosts:      files dns
+networks:   files
+protocols:  files
+services:   files
+ethers:     files
+rpc:        files
+NSSWITCH
+
+# Deploy basic /etc/shells
+cat << 'SHELLS' > "$ROOTFS/etc/shells"
+/bin/sh
+/bin/bash
+/usr/bin/bash
+/usr/bin/sh
+SHELLS
+
+# Deploy /etc/os-release for fastfetch and system identification
+cat << 'OSRELEASE' > "$ROOTFS/etc/os-release"
+NAME="Grintion-OS"
+VERSION="0.2.0-alpha"
+ID=grintion
+ID_LIKE=linux
+VERSION_ID="0.2.0"
+PRETTY_NAME="Grintion-OS 0.2.0-alpha (MISS)"
+HOME_URL="https://github.com/Freddyz-coder/grintion-OS"
+BUG_REPORT_URL="https://github.com/Freddyz-coder/grintion-OS/issues"
+OSRELEASE
 
 # Copy clean Python 3 standard library first
 PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
