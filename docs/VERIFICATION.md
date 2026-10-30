@@ -12,7 +12,7 @@ not claim coverage of hardware or configurations that were not tested.
 | Virtualisation | QEMU with `-accel kvm -cpu host` |
 | Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | ISO | `output/grintion-os-x86_64.iso` (121 MiB) |
-| ISO SHA-256 | `dd7688507e93e74d3982c3f88cbc239831ba6c35998c7095c443dc532e538db0` |
+| ISO SHA-256 | `610d859096c72856d70d07f9d445dac8b31ae53a769eb608c1cc15425921829e` |
 | Kernel | `6.12.114-grintion` |
 | shellcheck | Not installed; lint was skipped |
 
