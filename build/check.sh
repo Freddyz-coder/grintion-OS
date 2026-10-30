@@ -65,6 +65,16 @@ for path in bin/* init/* build/*.sh build/*.py etc/runit/* etc/sv/*/run; do
 done
 pass "executable bits"
 
+# A stale rootfs from an older build can mask a missing dlopen plugin. Check
+# it when it exists; the rootfs build itself also enforces this.
+if [ -d build/work/rootfs ]; then
+    [ -f build/work/rootfs/usr/lib/sudo/sudoers.so ] \
+        || fail "sudoers.so missing from build/work/rootfs"
+    [ -x build/work/rootfs/usr/bin/grintion-doctor ] \
+        || fail "grintion-doctor missing from build/work/rootfs"
+fi
+pass "runtime components in staged rootfs"
+
 log "checking host build inputs"
 while IFS= read -r cmd; do
     [ -n "$cmd" ] || continue

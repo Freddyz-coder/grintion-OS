@@ -38,6 +38,50 @@ are relative to that root.
 
 ---
 
+## External backend delegation
+
+`garb` can use a package manager that is already installed on the system as a
+backend. This is a translator, not a bundled package manager: if `pacman` or
+`apk` is present, `garb` executes it with the mapped arguments and returns its
+exit status. No repository of our own is needed in that mode.
+
+```sh
+garb --backend auto install htop     # delegate if pacman/apk is installed
+garb --backend native install htop   # force the signed-repository backend
+garb --backend pacman install htop   # explicit backend
+```
+
+| `garb` | `pacman` | `apk` |
+| --- | --- | --- |
+| `update` | `-Sy` | `update` |
+| `search QUERY` | `-Ss QUERY` | `search QUERY` |
+| `info PACKAGE` | `-Si PACKAGE` | `info PACKAGE` |
+| `install PACKAGE...` | `-S PACKAGE...` | `add PACKAGE...` |
+| `remove PACKAGE...` | `-R PACKAGE...` | `del PACKAGE...` |
+| `verify PACKAGE...` | `-Qkk PACKAGE...` (`-Qk` with `--quick`) | `audit PACKAGE...` |
+| `upgrade` | `-Su` | `upgrade` |
+| `upgrade PACKAGE...` | `-S PACKAGE...` | `upgrade PACKAGE...` |
+
+Rules and limits:
+
+- `--backend auto` is the default. It auto-detects `pacman`, then `apk`, only
+  when the target root is `/`. On a staging root, delegation is opt-in so the
+  host package database is never touched by accident.
+- `--backend pacman` or `--backend apk` requires that binary; the
+  `GARB_BACKEND_BIN` environment variable can point at an alternate executable.
+  `GARB_BACKEND` sets the default, and `GARB_BACKEND=native` forces native
+  operation.
+- `--root` other than `/` is passed to the external manager as `--root PATH`.
+- **Delegation bypasses garb's security model.** The external manager's
+  signatures, trust database and transaction behaviour apply; garb's signed
+  index, per-file verification and rollback are not used.
+- `--force` is rejected by both external backends; `--quick` is rejected by the
+  `apk` backend; `--key` and `--allow-unsigned` are native-only options.
+- Repository, package-building and signing commands (`build`, `repo-build`,
+  `repo-index`, `keygen`, `sign-index`) always use the native implementation.
+
+---
+
 ## Repository configuration
 
 ```text

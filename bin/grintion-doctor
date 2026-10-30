@@ -1,0 +1,49 @@
+#!/bin/sh
+# grintion-doctor - fail loudly when the running image is incomplete.
+#
+# The build checks every required command on the host, but a bad rootfs copy,
+# a missing sudo plugin or a stripped runtime image can still boot. This tool
+# turns those "inaccessible / not found" failures into one explicit critical
+# report instead of leaving the user to discover them one command at a time.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+FAILED=0
+report() {
+    printf '[CRITICAL] %s\n' "$*" >&2
+    FAILED=1
+}
+
+if [ ! -f /etc/grintion/version ]; then
+    report "/etc/grintion/version is missing"
+else
+    printf '[ ok ] Grintion-OS %s\n' "$(cat /etc/grintion/version)"
+fi
+
+# sudo loads its policy plugin with dlopen; a missing plugin is fatal even
+# though the sudo binary and its shared libraries are present.
+if [ ! -f /usr/lib/sudo/sudoers.so ]; then
+    report "sudoers plugin is missing: /usr/lib/sudo/sudoers.so"
+fi
+
+if [ -r /etc/grintion/required-commands ]; then
+    while IFS= read -r cmd; do
+        [ -n "$cmd" ] || continue
+        case "$cmd" in \#*) continue ;; esac
+        command -v "$cmd" >/dev/null 2>&1 || report "required command is missing: $cmd"
+    done < /etc/grintion/required-commands
+else
+    report "/etc/grintion/required-commands is missing"
+fi
+
+# Only root can test the sudo policy without a password. A non-root user may
+# legitimately be prompted, so do not report that as an image failure.
+if [ "$(id -u)" -eq 0 ] && ! sudo -n true >/dev/null 2>&1; then
+    report "sudo cannot load its policy as root"
+fi
+
+if [ "$FAILED" -eq 0 ]; then
+    printf '[ ok ] all required runtime components are present\n'
+fi
+exit "$FAILED"

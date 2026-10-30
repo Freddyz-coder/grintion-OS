@@ -14,12 +14,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GARB = REPO_ROOT / "bin" / "garb"
 
 
-def run(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def run(root: Path, *args: str, check: bool = True, env: dict | None = None,
+        backend: str | None = None) -> subprocess.CompletedProcess:
+    command = [sys.executable, str(GARB)]
+    if backend:
+        command += ["--backend", backend]
+    command += ["--root", str(root), *args]
     result = subprocess.run(
-        [sys.executable, str(GARB), "--root", str(root), *args],
+        command,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if check and result.returncode != 0:
         raise AssertionError(f"garb {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}")
@@ -139,6 +145,36 @@ def test_archive_checksum_mismatch_fails(environment: dict) -> None:
     result = run(root, "install", "app", check=False)
     assert result.returncode != 0
     assert "checksum" in result.stderr.lower()
+
+
+def test_pacman_backend_translation(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "foo", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["--root", str(root), "-S", "foo"]
+
+
+def test_apk_backend_translation(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "apk.args"
+    fake = tmp_path / "apk"
+    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "remove", "foo", backend="apk", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["--root", str(root), "del", "foo"]
 
 
 def test_upgrade(environment: dict) -> None:

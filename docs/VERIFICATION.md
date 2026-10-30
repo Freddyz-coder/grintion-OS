@@ -12,7 +12,7 @@ not claim coverage of hardware or configurations that were not tested.
 | Virtualisation | QEMU with `-accel kvm -cpu host` |
 | Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | ISO | `output/grintion-os-x86_64.iso` (121 MiB) |
-| ISO SHA-256 | `610d859096c72856d70d07f9d445dac8b31ae53a769eb608c1cc15425921829e` |
+| ISO SHA-256 | `b05e5c8db49c62d6b26b3ced9c253c5aced3d99db721220d91f89efff071e3fc` |
 | Kernel | `6.12.114-grintion` |
 | shellcheck | Not installed; lint was skipped |
 
@@ -21,8 +21,8 @@ not claim coverage of hardware or configurations that were not tested.
 | Command | Result | Coverage |
 | --- | --- | --- |
 | `make check` | Pass | Shell syntax, Python compilation, executable bits, required host commands, documentation links, absolute home paths, `garb` tests |
-| `python3 -m pytest -q tests/test_garb.py` | 6 passed | Signed repository, dependencies, install/remove, tamper detection, bad signature, path traversal, archive checksum, upgrade |
-| `make test-boot` | Pass | Live boot under BIOS and UEFI: root shell, kernel release, DHCP lease, network service, live marker, conntrack firewall rule |
+| `python3 -m pytest -q tests/test_garb.py` | 8 passed | Signed repository, dependencies, install/remove, tamper detection, bad signature, path traversal, archive checksum, upgrade, pacman/apk delegation |
+| `make test-boot` | Pass | Live boot under BIOS and UEFI: root shell, kernel release, DHCP lease, network service, live marker, conntrack firewall rule, sudo policy plugin, runtime doctor |
 | `make test-install` | Pass | Unattended install to an 8 GiB qcow2 disk under BIOS, reboot from disk, login, ext4 root, hostname, UUID fstab, DHCP |
 | `python3 tests/install_test.py --uefi ...` | Pass | The same install and reboot flow under UEFI |
 | `(cd output && sha256sum -c grintion-os-x86_64.iso.sha256)` | OK | Published ISO digest |
@@ -56,10 +56,12 @@ exercises:
 - a signature made by an untrusted key;
 - archive path traversal (`../escaped`);
 - archive checksum mismatch;
-- an upgrade to a new package version.
+- an upgrade to a new package version;
+- translation of `garb install` to the `pacman` backend;
+- translation of `garb remove` to the `apk` backend.
 
-All six tests passed. The suite uses temporary filesystem roots, not the live
-image.
+All eight tests passed. The suite uses temporary filesystem roots and fake
+backend executables, not the live image or the host package database.
 
 ### Live boot
 
@@ -73,12 +75,16 @@ ip -4 addr                   10.0.2.15/24 from QEMU's DHCP server
 sv status /var/service/network   run:
 /etc/grintion/live           present
 nft list chain inet filter input   contains the conntrack rules
+sudo -n true                 succeeds (policy plugin present)
+grintion-doctor              exits 0 (all required commands present)
 ```
 
-The last check exists because an earlier build shipped `CONFIG_NF_TABLES=y`
+The conntrack check exists because an earlier build shipped `CONFIG_NF_TABLES=y`
 without `CONFIG_NFT_CT=y`: the table was created but every `ct state` rule
 failed with `No such file or directory`. The kernel fragment and the test now
-enforce the conntrack expression.
+enforce the conntrack expression. The sudo and doctor checks exist because an
+earlier image copied the `sudo` binary without `/usr/lib/sudo/sudoers.so`,
+which made every sudo invocation fail before PAM ran.
 
 ### Installer
 
@@ -92,8 +98,8 @@ grintion-install --unattended --disk /dev/vda \
 
 It then powers off, boots the disk alone (BIOS or UEFI), logs in as `grintion`,
 and verifies that `/` is ext4, the hostname is correct, `/etc/fstab` is
-UUID-based, `eth0` receives `10.0.2.15`, and `/etc/grintion/live` is absent.
-Both firmware paths passed.
+UUID-based, `sudo id` succeeds as the created user, `eth0` receives
+`10.0.2.15`, and `/etc/grintion/live` is absent. Both firmware paths passed.
 
 ## What was not verified
 

@@ -94,6 +94,9 @@ def verify(disk: str, uefi: bool) -> None:
         output = run("cat /etc/fstab")
         if "UUID=" not in output or "ext4" not in output:
             raise AssertionError(f"fstab is not UUID based:\n{output}")
+        output = run("echo grintion | sudo -S id 2>/dev/null")
+        if "uid=0" not in output:
+            raise AssertionError(f"sudo failed on the installed system:\n{output}")
         # dhcpcd runs asynchronously; give the lease a moment to land.
         output = run(
             "for i in $(seq 1 30); do "

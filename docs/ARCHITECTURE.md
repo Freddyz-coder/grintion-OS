@@ -205,6 +205,12 @@ can manage the live overlay, an installed disk, or a test root:
 /var/lib/garb/tmp/             staging and rollback backups
 ```
 
+If `pacman` or `apk` is installed on the running system, `garb` can delegate
+`install`, `remove`, `update`, `search`, `info`, `verify` and `upgrade` to it
+instead of using this layout. Auto-detection is limited to `--root /`; the
+signed-repository implementation remains available with `--backend native`.
+See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
+
 An index is signed with Ed25519 over the exact `index.json` bytes. `garb update`
 fetches `index.json` and `index.json.sig`, verifies with `openssl pkeyutl
 -verify`, and only then stores and parses the index. Package archives are

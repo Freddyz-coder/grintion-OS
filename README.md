@@ -135,6 +135,12 @@ Repositories are directories containing `.garb` packages, an `index.json` and a
 detached Ed25519 signature. The client trusts only keys in
 `/etc/garb/keys/*.pub` and checks the signature before reading any index entry.
 
+If `pacman` or `apk` is installed on the running system, `garb` can instead act
+as a wrapper: `install`, `remove`, `update`, `search`, `info`, `verify` and
+`upgrade` are translated to the external manager. Auto-detection only applies
+to the running system (`--root /`); use `--backend pacman|apk|native` to choose
+explicitly. Delegation bypasses garb's signature and transaction checks.
+
 ```sh
 garb update
 garb search hello

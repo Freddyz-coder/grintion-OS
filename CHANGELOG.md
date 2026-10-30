@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `garb` can delegate `install`, `remove`, `update`, `search`, `info`, `verify`
+  and `upgrade` to an installed `pacman` or `apk`. Auto-detection is limited to
+  the running system; `--backend native` forces the signed-repository backend.
+- `grintion-doctor` checks required commands, the sudo policy plugin and the
+  running version, and reports missing components as critical failures.
+- Interactive bash now reports unknown commands as `[CRITICAL]` and explains
+  the common `pacman`, `apk`, `man` and `clean` cases.
+
+### Fixed
+
+- `sudo` now ships `/usr/lib/sudo/sudoers.so`; the binary alone could not load
+  its policy plugin and failed before authentication.
+
+---
+
 ## [1.0.0] - 2026-10-31
 
 The first supported release: a console-only x86_64 system that boots from a

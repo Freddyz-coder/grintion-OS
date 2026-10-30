@@ -73,6 +73,15 @@ def boot(iso: str, uefi: bool, timeout: int) -> None:
         if "FIREWALL_OK" not in output:
             raise AssertionError(f"firewall rules were not loaded:\n{output}")
 
+        output = run("sudo -n true && echo SUDO_OK")
+        if "SUDO_OK" not in output:
+            raise AssertionError(f"sudo is broken:\n{output}")
+
+        output = run("grintion-doctor >/tmp/doctor.log 2>&1; echo DOCTOR_RC=$?")
+        if "DOCTOR_RC=0" not in output:
+            detail = run("cat /tmp/doctor.log")
+            raise AssertionError(f"runtime doctor failed:\n{detail}")
+
         child.sendline("poweroff -f")
         try:
             child.expect(pexpect.EOF, timeout=60)

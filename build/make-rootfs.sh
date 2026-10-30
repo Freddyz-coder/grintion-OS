@@ -104,7 +104,7 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 
 # Grintion's own tools and the live init must be in the image; they are not
 # host binaries and therefore never come from the package list.
-for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell; do
+for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor; do
     [ -f "$GRINTION_REPO_ROOT/bin/$tool" ] || die "missing repository tool: bin/$tool"
     install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/bin/$tool"
 done
@@ -137,6 +137,15 @@ for nss in libnss_files.so.2 libnss_dns.so.2; do
     [ -f "/usr/lib/$nss" ] || die "NSS module missing on host: $nss"
     install -D -m 0644 "/usr/lib/$nss" "$ROOTFS/usr/lib/$nss"
 done
+
+# sudo opens its policy plugin with dlopen, so resolve-libs.py cannot see
+# sudoers.so. Copying only the sudo binary produces a system where every
+# sudo invocation dies with "unable to load plugins" before PAM runs.
+[ -d /usr/lib/sudo ] || die "host sudo plugin directory is missing: /usr/lib/sudo"
+mkdir -p "$ROOTFS/usr/lib/sudo"
+cp -a /usr/lib/sudo/. "$ROOTFS/usr/lib/sudo/"
+[ -f "$ROOTFS/usr/lib/sudo/sudoers.so" ] || die "sudoers.so missing from rootfs"
+chmod 0755 "$ROOTFS/usr/lib/sudo"/*.so* 2>/dev/null || true
 
 # ---------------------------------------------------------------- Python
 PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
@@ -208,6 +217,10 @@ chmod 0755 "$ROOTFS/usr/share/limine/limine"
 # ---------------------------------------------------------------- configuration
 log "deploying /etc configuration"
 cp -a "$GRINTION_REPO_ROOT/etc/." "$ROOTFS/etc/"
+
+# The runtime doctor checks this list instead of silently trusting the build.
+grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries" \
+    | sort -u > "$ROOTFS/etc/grintion/required-commands"
 
 printf '%s\n' "$GRINTION_VERSION" > "$ROOTFS/etc/grintion/version"
 sed "s/@VERSION@/$GRINTION_VERSION/g" "$ROOTFS/etc/issue.in" > "$ROOTFS/etc/issue"

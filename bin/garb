@@ -37,6 +37,7 @@ DEFAULT_KEYS = "etc/garb/keys"
 DEFAULT_CACHE = "var/cache/garb"
 DEFAULT_TMP = "var/lib/garb/tmp"
 METADATA_NAME = "GARB_METADATA.json"
+EXTERNAL_COMMANDS = frozenset({"update", "search", "info", "install", "remove", "verify", "upgrade"})
 
 
 class GarbError(Exception):
@@ -842,9 +843,113 @@ def cmd_sign_index(args: argparse.Namespace) -> None:
     print(f"[+] signed {index_path}")
 
 
+def external_backend_binary(requested: str) -> tuple[str, str] | None:
+    """Return (backend, executable) for an explicit or auto-detected backend."""
+    explicit = os.environ.get("GARB_BACKEND_BIN")
+    names = [requested] if requested in ("pacman", "apk") else ["pacman", "apk"]
+    if explicit:
+        if not os.access(explicit, os.X_OK):
+            raise GarbError(f"GARB_BACKEND_BIN is not executable: {explicit}")
+        return names[0], explicit
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return name, found
+    return None
+
+
+def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[str]:
+    """Translate a garb command into the external manager's argument list."""
+    root = Path(args.root)
+    argv = [binary]
+    if str(root) != "/":
+        argv += ["--root", str(root)]
+
+    command = args.command
+    if backend == "pacman":
+        if command == "update":
+            if getattr(args, "key", None) or getattr(args, "allow_unsigned", False):
+                raise GarbError("--key/--allow-unsigned are native-garb options")
+            argv.append("-Sy")
+        elif command == "search":
+            argv += ["-Ss", args.query]
+        elif command == "info":
+            argv += ["-Si", args.package]
+        elif command == "install":
+            if args.force:
+                raise GarbError("--force is not supported by the pacman backend")
+            argv.append("-S")
+            argv += args.package
+        elif command == "remove":
+            if args.force:
+                raise GarbError("--force is not supported by the pacman backend")
+            argv.append("-R")
+            argv += args.package
+        elif command == "verify":
+            argv.append("-Qk" if args.quick else "-Qkk")
+            argv += args.package
+        elif command == "upgrade":
+            if args.package:
+                argv.append("-S")
+                argv += args.package
+            else:
+                argv.append("-Su")
+        else:
+            raise GarbError(f"pacman has no mapping for garb {command}")
+        return argv
+
+    if command == "update":
+        if getattr(args, "key", None) or getattr(args, "allow_unsigned", False):
+            raise GarbError("--key/--allow-unsigned are native-garb options")
+        argv.append("update")
+    elif command == "search":
+        argv += ["search", args.query]
+    elif command == "info":
+        argv += ["info", args.package]
+    elif command == "install":
+        if args.force:
+            raise GarbError("--force is not supported by the apk backend")
+        argv += ["add", *args.package]
+    elif command == "remove":
+        if args.force:
+            raise GarbError("--force is not supported by the apk backend")
+        argv += ["del", *args.package]
+    elif command == "verify":
+        if args.quick:
+            raise GarbError("--quick is not supported by the apk backend")
+        argv += ["audit", *args.package]
+    elif command == "upgrade":
+        argv += ["upgrade", *args.package]
+    else:
+        raise GarbError(f"apk has no mapping for garb {command}")
+    return argv
+
+
+def run_external_backend(backend: str, binary: str, args: argparse.Namespace) -> int:
+    argv = external_argv(backend, binary, args)
+    warn(f"using the {backend} backend; garb signature and transaction checks do not apply")
+    print(f"[garb] {' '.join(argv)}", file=sys.stderr)
+    return subprocess.run(argv).returncode
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="garb", description="Grintion-OS package manager 1.0")
+    default_backend = os.environ.get("GARB_BACKEND", "auto")
+    if default_backend not in ("auto", "native", "pacman", "apk"):
+        default_backend = "auto"
+    parser = argparse.ArgumentParser(
+        prog="garb",
+        description="Grintion-OS package manager 1.0",
+        epilog=("When pacman or apk is installed, install/remove/update/search/info/"
+                "verify/upgrade are delegated to it. Use --backend native to force "
+                "garb's own signed-repository implementation."),
+    )
     parser.add_argument("--root", default="/", help="target filesystem root (default: /)")
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "native", "pacman", "apk"),
+        default=default_backend,
+        help="package backend (default: auto; GARB_BACKEND also sets it)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("version").set_defaults(func=cmd_version)
@@ -911,8 +1016,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    args.paths = Paths(Path(args.root))
     try:
+        backend = args.backend
+        if args.command in EXTERNAL_COMMANDS and backend != "native":
+            # Auto-detection is limited to the running system. A staging root
+            # must opt in explicitly so tests and image builds never invoke the
+            # host's package manager by accident.
+            if backend == "auto" and Path(args.root) != Path("/"):
+                backend = "native"
+            if backend != "native":
+                found = external_backend_binary(backend)
+                if found is None:
+                    raise GarbError(f"{backend} backend requested but not installed")
+                return run_external_backend(found[0], found[1], args)
+        args.paths = Paths(Path(args.root))
         args.func(args)
     except GarbError as exc:
         die(str(exc))
