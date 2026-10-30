@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1-alpha] - 2026-10-30
+
+### Fixed
+- **Production Readiness Overhaul**:
+  - Expanded rootfs binary list from ~70 to **120+ commands** — every command a user would expect now works.
+  - Added missing binaries: `clear`, `reset`, `tput`, `ssh`, `scp`, `sftp`, `ssh-keygen`, `ssh-agent`, `whoami`, `groups`, `pgrep`, `pkill`, `watch`, `nc`, `ifconfig`, `route`, `wpa_passphrase`, `vim`, `zip`, `fsck`, `mkswap`, `lscpu`, `fuser`, `lsof`, `hexdump`, `stty`, `expr`, `seq`, `nice`, `nohup`, `flock`, `timeout`, and many more.
+  - Build script now **reports missing binaries** instead of silently skipping them.
+
+- **Terminal Support**:
+  - Deployed terminfo database (`/usr/share/terminfo/`) — fixes `clear`, `reset`, `tput`, `nano`, `vi`, and all terminal-aware programs.
+
+- **sudo**:
+  - Added `/etc/sudoers` with `wheel` group support and secure defaults — `sudo` now works properly.
+
+- **SSH**:
+  - Added `/etc/ssh/ssh_config` with sane client defaults — `ssh`, `scp`, `sftp` now work out of the box.
+
+- **System Infrastructure**:
+  - Added `/etc/nsswitch.conf` — fixes user/group lookups (`getent`, `whoami`) and DNS resolution.
+  - Added `/etc/os-release` — fastfetch and system tools now correctly identify "Grintion-OS 0.2.0-alpha (MISS)".
+  - Added `/etc/shells` — proper login shell validation.
+
+---
+
 ## [0.2.0-alpha] - 2026-10-30
 
 ### Added
