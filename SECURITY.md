@@ -1,138 +1,159 @@
-# Security Policy & Hardening Model
+# Security policy
 
-Grintion-OS is engineered for **paranoid users**: individuals, researchers, and administrators who operate under heightened adversarial models and demand zero telemetry, strict isolation, verifiable supply chains, and minimal attack surfaces.
+Grintion-OS is a small console system with defensive defaults. It is not a
+hardened, audited, or verified-boot platform. This document states what the
+1.0.0 release actually provides, what it does not, and how to report a problem.
 
----
+## Supported versions
 
-## 1. Threat Model & Security Principles
+| Version | Supported |
+| --- | --- |
+| 1.0.x | Security fixes on a best-effort basis |
+| Earlier snapshots | No |
 
-Grintion-OS addresses the following primary threat vectors:
+There is no long-term-support branch and no guaranteed response time. Security
+fixes are published as a new release; there are no automatic updates.
 
-1. **Persistent Espionage & Covert Telemetry**:
-   - Zero background analytics, diagnostic telemetry, or remote telemetry sockets exist in Grintion-OS.
-   - All network traffic is initiated solely by explicit user commands.
+## Reporting a vulnerability
 
-2. **Tampering & Supply Chain Poisoning**:
-   - The OS does not rely on foreign distribution mirrors.
-   - All packages managed by `garb` require cryptographic hash verification (SHA-256 / BLAKE3) and detached signature verification.
+Open a **private** security advisory:
 
-3. **Userland Compromise & Lateral Movement**:
-   - Universal application packages (**Flatpak**, **Snap**, **AppImage**) run inside unprivileged sandboxes utilizing Linux user namespaces, cgroups v2, and seccomp-bpf filter profiles.
-   - Core system binaries are strictly separated from user applications.
+<https://github.com/Freddyz-coder/grintion-OS/security/advisories/new>
 
-4. **Forensic Recovery from Cold RAM / Physical Inspection**:
-   - The live environment operates in ephemeral RAM (`tmpfs`).
-   - `runit` stage 3 implements memory buffer flushing and unmount safety to prevent cold-boot and residual disk leaks.
+Do not open a public issue for an unfixed vulnerability. Include:
 
----
+- the affected version (`cat /etc/grintion/version`) and architecture;
+- the contents of `output/BUILD-INFO` if you built the image yourself;
+- a minimal reproducer and the impact you observed;
+- whether the issue affects the live image, an installed system, the installer,
+  or `garb`.
 
-## 2. Kernel Hardening & Sysctl Profiles
-
-Grintion-OS enforces kernel security parameters at boot (`/etc/runit/1` and `/etc/sysctl.d/99-paranoid.conf`):
-
-```ini
-# Prevent unprivileged users from reading kernel logs (dmesg)
-kernel.dmesg_restrict = 1
-
-# Prevent unprivileged users from viewing kernel pointer addresses
-kernel.kptr_restrict = 2
-
-# Restrict ptrace execution to processes with predefined parent/child relationships
-kernel.yama.ptrace_scope = 2
-
-# Enable full Address Space Layout Randomization (ASLR)
-kernel.randomize_va_space = 2
-
-# Disable unprivileged eBPF to prevent speculative execution micro-architectural leaks
-kernel.unprivileged_bpf_disabled = 1
-
-# Protect against symlink and hardlink race condition exploits
-fs.protected_symlinks = 1
-fs.protected_hardlinks = 1
-fs.protected_fifos = 2
-fs.protected_regular = 2
-
-# Network stack hardening
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv6.conf.default.accept_redirects = 0
-```
+Reports are handled on a best-effort basis by the maintainers. There is no bug
+bounty and no formal disclosure deadline.
 
 ---
 
-## 3. Network Security
+## Security properties
 
-Grintion-OS includes networking tools for connectivity while maintaining a security-first posture:
+### Boot and kernel
 
-- **DNS**: Default resolver uses Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`). Users should configure their own trusted resolvers in `/etc/resolv.conf` for production deployments.
-- **WiFi**: `wpa_supplicant` requires WPA2/WPA3 encryption. Open/WEP networks are strongly discouraged.
-- **No listening services**: The live environment exposes zero network-listening daemons by default. All networking is outbound-only unless explicitly configured by the user.
-- **Driver firmware**: Hardware firmware blobs installed via `garb install linux-firmware` are verified against the package's SHA-256 checksums before deployment.
+- Linux 6.12.114 is built from kernel.org source. `make kernel` verifies the
+  tarball against `config/linux-6.12.114.tar.xz.sha256`, which is derived from
+  kernel.org's signed checksums.
+- `config/kernel-hardened.config` disables the BPF syscall, kexec, hibernation
+  and `/dev/mem`, and enables Yama, hardened usercopy and strict devmem.
+  `build/check-kernel-config.sh` fails the build if a required symbol is
+  dropped.
+- The ISO boots an unsigned kernel and initramfs through Limine. There is no
+  signature check in the boot chain.
+
+### Runtime
+
+`/etc/runit/1` applies `/etc/sysctl.d/99-grintion.conf`. The effective settings
+include:
+
+| Setting | Value |
+| --- | --- |
+| `kernel.randomize_va_space` | 2 |
+| `kernel.dmesg_restrict` | 1 |
+| `kernel.kptr_restrict` | 2 |
+| `kernel.yama.ptrace_scope` | 2 |
+| `kernel.perf_event_paranoid` | 3 |
+| `kernel.unprivileged_bpf_disabled` | 1 |
+| `kernel.io_uring_disabled` | 2 |
+| `fs.protected_symlinks`, `fs.protected_hardlinks` | 1 |
+| `fs.protected_fifos`, `fs.protected_regular` | 2 |
+| `fs.suid_dumpable` | 0 |
+| `kernel.core_pattern` | `/dev/null` |
+
+The image has no udev; `devtmpfs` creates device nodes and BusyBox `mdev`
+applies `/etc/mdev.conf`. The setuid list is explicit in
+`config/rootfs.setuid` and applied at build time.
+
+### Accounts and access
+
+- The live image logs in as `root` on the console with no password. This is
+  deliberate for an installation medium and is not a property of installed
+  systems.
+- The installer creates one administrative user in `wheel`. Root is locked
+  unless `--root-password` is supplied.
+- `sudo` is restricted to `wheel`; `/etc/sudoers` is mode `0440`.
+- PAM uses `pam_faillock`; the configuration is in `/etc/security/faillock.conf`
+  and `/etc/pam.d/system-auth`. Console logins go through `login(1)` on
+  installed systems.
+
+### Network
+
+- The default nftables ruleset drops unsolicited inbound traffic, allows
+  loopback, established/related traffic, DHCP replies and ICMP, and permits all
+  outbound traffic.
+- The only network daemon enabled at boot is `dhcpcd` on the first wired
+  interface. There is no SSH server, web server or remote administration
+  service enabled by default.
+- The image contains the OpenSSH client, not `sshd`.
+
+### Packages
+
+- `garb` verifies an Ed25519 signature over the exact `index.json` bytes before
+  parsing it. Trust is rooted in `/etc/garb/keys/*.pub`.
+- Package archives are verified against the index SHA-256. Every declared file
+  is re-hashed during installation; undeclared files and path traversal are
+  rejected.
+- A failed transaction restores replaced files and removes files installed
+  during the attempt.
+- No repository key is trusted by default and no repository is configured.
+
+### Telemetry
+
+There is none. The base image contains no analytics, crash reporting, or
+phone-home service.
 
 ---
 
-## 4. Sandboxing Universal Containers (Flatpak, Snap, AppImage)
+## Non-properties and accepted risks
 
-Grintion-OS treats all third-party software as untrusted:
+These are explicit design limits, not bugs to be reported as vulnerabilities:
 
-```
-[Untrusted Binary / AppImage / Flatpak]
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│     garb sandbox wrapper        │
-├─────────────────────────────────┤
-│ • User Namespaces (unshare)     │
-│ • Seccomp System Call Filters   │
-│ • Read-Only Root Filesystem     │
-│ • Isolated Private /tmp & /dev  │
-│ • Optional Network Namespace    │
-└─────────────────────────────────┘
-                 │
-                 ▼
-          [Host Kernel]
-```
+- **No Secure Boot or verified boot.** Limine and the kernel are unsigned. An
+  attacker who can modify the boot medium or firmware can replace the system.
+- **No disk encryption.** Installed roots and the persistence partition are
+  plain ext4. Anyone with physical access can read them.
+- **No mandatory access control.** SELinux and AppArmor are not included.
+- **No sandbox for packages.** `garb` runs as root and writes directly to the
+  target root. Package authors are trusted once their index key is trusted.
+- **No package-level signatures.** A compromised repository signing key
+  compromises every package in that repository.
+- **No security audit.** The code has not been independently reviewed.
+- **Physical access defeats the model.** Firmware, boot media and disks are not
+  protected against an attacker with physical control of the machine.
+- **The live medium is not private.** Console root is passwordless by design,
+  and everything in the RAM overlay is lost on poweroff.
+- **No automatic updates.** Operators must update packages and rebuild images
+  themselves.
+- **Host-dependent userland.** The live userland is copied from the Arch build
+  host; its patch level is whatever the host provides. See
+  [docs/BUILDING.md](docs/BUILDING.md).
 
-- **AppImage**: Executed inside an isolated bubblewrap (`bwrap`) container with a restricted `/dev/fuse` pass-through, protecting `$HOME` and system directories.
-- **Flatpak**: Runs via native unprivileged container sandboxes backed by bubblewrap and Portal interfaces.
-- **Snap**: Confinement via AppArmor/Seccomp and mount namespaces.
+## Supply chain
 
----
+| Input | Verification |
+| --- | --- |
+| Linux tarball | SHA-256 in `config/linux-6.12.114.tar.xz.sha256`, from kernel.org's signed `sha256sums.asc` |
+| BusyBox, runit, dhcpcd, bc | SHA-256 in `config/tools.sha256` |
+| Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
+| Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
+| `garb` repositories | Ed25519 index signature and per-file SHA-256 |
 
-## 5. Cryptographic Verification in `garb`
+`make check` verifies shell syntax, Python compilation, executable bits,
+required host commands, documentation links, absolute home paths, and the
+`garb` test suite. It does not verify host package signatures.
 
-Every package in `garb` is verified prior to unpacking:
-- **Checksum Verification**: SHA-256 and BLAKE3 digests calculated against known manifests.
-- **Signature Checking**: Detached Ed25519 signatures verified against trusted keyring stored in `/etc/garb/keys/`.
-- **Atomic Rollback**: Package files are placed into staging directories before transaction commit; corrupted or compromised files cause an immediate abort and rollback.
+## Hardening the image yourself
 
----
-
-## 6. Driver & Firmware Security
-
-- Kernel modules are loaded only from trusted paths (`/lib/modules/$(uname -r)/`).
-- The `linux-firmware` garb package includes SHA-256 verification of all firmware blobs.
-- Module loading on boot is limited to essential drivers (usbhid, ahci, nvme, sd_mod, ext4, vfat) — no blanket autoloading.
-- Users must explicitly install additional firmware via `garb install linux-firmware`.
-
----
-
-## 7. Vulnerability Disclosure & Reporting
-
-If you identify a security flaw, vulnerability, or potential exploit vector in Grintion-OS, please follow our coordinated disclosure policy:
-
-1. **Do not create public GitHub issues or social media disclosures** for zero-day vulnerabilities.
-2. Email your findings encrypted with PGP to:  
-   **`security@grintion-os.org`**
-3. Include:
-   - Detailed description of the vulnerability.
-   - Proof-of-concept (PoC) or reproduction steps.
-   - Threat impact assessment (local privilege escalation, sandbox escape, kernel panic).
-4. Our team will acknowledge receipt within **48 hours** and provide a patch timeline within **7 business days**.
+- Remove `garb` and Python if you do not need package management.
+- Replace the default nftables ruleset before enabling any inbound service.
+- Set a root password and use `sudo` only where needed.
+- Encrypt the disk before installing if you need confidentiality at rest; the
+  installer does not do it for you.
+- Rebuild the kernel with your own configuration fragment and keep
+  `build/check-kernel-config.sh` in the loop.

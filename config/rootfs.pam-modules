@@ -1,0 +1,12 @@
+# PAM modules copied into /usr/lib/security. Keep this list in sync with
+# etc/pam.d/*. Every listed module must exist on the build host.
+pam_unix.so
+pam_succeed_if.so
+pam_env.so
+pam_limits.so
+pam_rootok.so
+pam_securetty.so
+pam_deny.so
+pam_permit.so
+pam_nologin.so
+pam_mail.so

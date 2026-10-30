@@ -1,7 +1,17 @@
 # Grintion-OS .gitignore
 build/work/
+build/cache/
 output/
 None/
 *.tmp
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Downloaded and compiled third-party build tools. `make tools` recreates
+# these from config/tools.sha256; the Limine assets remain tracked.
+tools/src/
+tools/bin/busybox
+tools/bin/bc
+
+.venv/

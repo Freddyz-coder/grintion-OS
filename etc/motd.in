@@ -1,0 +1,12 @@
+Grintion-OS @VERSION@
+Minimalist - Independent - Secure - Stable
+
+Useful commands:
+  grintion-install --help    install to a disk
+  grintion-persist           create persistent live storage
+  grintion-chroot /mnt       enter an installed system
+  garb --help                package manager
+  sv status /var/service/*   service status
+  nft list ruleset           firewall rules
+
+The live root is an overlay. Reboots discard changes unless persistence is active.

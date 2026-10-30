@@ -1,0 +1,5 @@
+#!/bin/sh
+# Give the live root shell a fresh session with the terminal as its controlling
+# terminal. This keeps job control working without a PAM password prompt in
+# the ephemeral live environment. Installed systems use agetty + login(1).
+exec setsid -w -c /bin/bash -l

@@ -1,7 +1,0 @@
-#!/bin/sh
-exec 2>&1
-# SDDM login manager service
-# Requires: garb install sddm
-# Enable with: ln -s /etc/sv/sddm /var/service/
-[ -x /usr/bin/sddm ] || exit 1
-exec sddm

@@ -1,580 +1,925 @@
 #!/usr/bin/env python3
-"""
-garb - Grintion Atomic Reliable Builder & Package Manager
-Philosophy: MISS (Minimalist, Independent, Secure, Stable)
-Purpose: Built for paranoid users of Grintion-OS.
-Supports: Native .garb packages, AppImage, Flatpak, and Snap sandboxes.
-"""
+"""garb - Grintion Atomic Reliable Builder and package manager.
 
-import sys
-import os
-import json
-import hashlib
-import tarfile
-import shutil
-import subprocess
+Design goals for 1.0:
+  * fail closed on unsigned or tampered repositories;
+  * never extract a member outside the target root;
+  * record a SHA-256 for every installed file;
+  * resolve dependencies before changing the system;
+  * stage, verify and commit package files as one transaction.
+"""
+from __future__ import annotations
+
 import argparse
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
 import time
-from pathlib import Path
+import tomllib
+import urllib.parse
+import urllib.request
+from pathlib import Path, PurePosixPath
 
-VERSION = "0.1.0-alpha"
-DEFAULT_DB_PATH = "/var/lib/garb/db.json"
-DEFAULT_REPO_PATH = "/etc/garb/repos.d"
-DEFAULT_CACHE_PATH = "/var/cache/garb"
+VERSION = "1.0.0"
+SCHEMA = 1
+DEFAULT_DB = "var/lib/garb/db.json"
+DEFAULT_REPOS = "etc/garb/repos.d"
+DEFAULT_KEYS = "etc/garb/keys"
+DEFAULT_CACHE = "var/cache/garb"
+DEFAULT_TMP = "var/lib/garb/tmp"
+METADATA_NAME = "GARB_METADATA.json"
 
-ASCII_LOGO = r"""
-        █
-       █▓█
-      █▓▒▓█
-     █▓▒@▒▓█
-    █▓▒@@@▒▓█
-   █▓▒@+-+@▒▓█
-  █▓▒@+---+@▒▓█
- █▓▒@+-/-\-+@▒▓█
-█▓▒@+-/   \-+@▒▓█
-    ▓▒@   @▒▓         
-   ▓▒@     @▒▓
-  ▓▒@       @▒▓
- ▓▒@         @▒▓
-█@█           █@█
-"""
 
-class GarbDB:
-    def __init__(self, root="/"):
-        self.root = Path(root)
-        if self.root == Path("/") and hasattr(os, "geteuid") and os.geteuid() != 0:
-            user_state = Path.home() / ".local/share/garb"
-            self.db_path = user_state / "db.json"
+class GarbError(Exception):
+    pass
+
+
+def log(message: str) -> None:
+    print(f"[*] {message}")
+
+
+def warn(message: str) -> None:
+    print(f"[!] {message}", file=sys.stderr)
+
+
+def die(message: str) -> None:
+    print(f"[-] {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def epoch() -> int:
+    try:
+        return int(os.environ.get("SOURCE_DATE_EPOCH", "") or time.time())
+    except ValueError:
+        return int(time.time())
+
+
+def normalise_member(name: str) -> str:
+    """Return a safe relative POSIX path or raise."""
+    if not name or "\x00" in name:
+        raise GarbError("empty or NUL-containing archive member")
+    pure = PurePosixPath(name)
+    if pure.is_absolute():
+        raise GarbError(f"absolute path in archive: {name}")
+    parts = []
+    for part in pure.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise GarbError(f"parent traversal in archive: {name}")
+        parts.append(part)
+    if not parts:
+        raise GarbError(f"invalid archive member: {name}")
+    return "/".join(parts)
+
+
+def safe_symlink_target(link: str, base_dir: str = "") -> str:
+    if not link or "\x00" in link or os.path.isabs(link):
+        raise GarbError(f"unsafe symlink target: {link!r}")
+    depth = 0
+    for part in (PurePosixPath(base_dir) / link).parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                raise GarbError(f"symlink escapes the root: {link!r}")
         else:
-            self.db_path = self.root / DEFAULT_DB_PATH.lstrip("/")
+            depth += 1
+    return link
+
+
+def parse_mode(value: object, default: int = 0o644) -> int:
+    if isinstance(value, int):
+        return value & 0o7777
+    if isinstance(value, str):
         try:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
+            return int(value, 8) & 0o7777
+        except ValueError:
             pass
+    return default
+
+
+class Paths:
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.db = self.root / DEFAULT_DB
+        self.repos = self.root / DEFAULT_REPOS
+        self.keys = self.root / DEFAULT_KEYS
+        self.cache = self.root / DEFAULT_CACHE
+        self.tmp = self.root / DEFAULT_TMP
+
+    def ensure_runtime(self) -> None:
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        self.cache.mkdir(parents=True, exist_ok=True)
+
+    def inside(self, rel: str) -> Path:
+        rel = normalise_member(rel)
+        target = (self.root / rel).resolve()
+        if target != self.root and self.root not in target.parents:
+            raise GarbError(f"path escapes the root: {rel}")
+        return target
+
+
+class Database:
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
         self.data = self._load()
 
-    def _load(self):
-        if self.db_path.exists():
+    def _load(self) -> dict:
+        if self.paths.db.exists():
             try:
-                with open(self.db_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[!] Warning: corrupted DB {self.db_path}, recovering: {e}", file=sys.stderr)
-        return {"version": 1, "packages": {}}
+                with open(self.paths.db, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict) and isinstance(data.get("packages"), dict):
+                    return data
+            except (OSError, json.JSONDecodeError) as exc:
+                warn(f"corrupt database {self.paths.db}: {exc}; starting empty")
+        return {"schema": SCHEMA, "packages": {}}
 
-    def save(self):
+    def save(self) -> None:
+        self.paths.db.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.paths.db.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(self.data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, self.paths.db)
+
+    def installed(self, name: str) -> dict | None:
+        return self.data["packages"].get(name)
+
+    def add(self, name: str, entry: dict) -> None:
+        self.data["packages"][name] = entry
+
+    def remove(self, name: str) -> None:
+        self.data["packages"].pop(name, None)
+
+
+# ---------------------------------------------------------------- repositories
+def read_repo_configs(paths: Paths) -> list[dict]:
+    repos = []
+    if not paths.repos.is_dir():
+        return repos
+    for conf in sorted(paths.repos.glob("*.conf")):
+        values = {}
+        for line in conf.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key.strip().lower()] = value.strip().strip('"')
+        if "url" not in values:
+            warn(f"ignoring {conf}: no url")
+            continue
+        repos.append({"name": values.get("name", conf.stem), "url": values["url"], "conf": conf})
+    return repos
+
+
+def fetch_repo_file(url: str, name: str) -> bytes:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme in ("", "file"):
+        base = Path(parsed.path if parsed.scheme == "file" else url)
+        return (base / name).read_bytes()
+    with urllib.request.urlopen(f"{url.rstrip('/')}/{name}", timeout=30) as response:
+        return response.read()
+
+
+def verify_signature(index: bytes, signature: bytes, public_key: Path) -> None:
+    if not public_key.exists():
+        raise GarbError(f"trusted public key is missing: {public_key}")
+    with tempfile.TemporaryDirectory() as scratch:
+        index_path = Path(scratch) / "index.json"
+        sig_path = Path(scratch) / "index.json.sig"
+        index_path.write_bytes(index)
+        sig_path.write_bytes(signature)
+        result = subprocess.run(
+            [
+                "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(public_key),
+                "-rawin", "-in", str(index_path), "-sigfile", str(sig_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise GarbError(f"repository signature verification failed: {result.stderr.strip()}")
+
+
+def sign_bytes(data: bytes, private_key: Path) -> bytes:
+    with tempfile.TemporaryDirectory() as scratch:
+        data_path = Path(scratch) / "data"
+        sig_path = Path(scratch) / "data.sig"
+        data_path.write_bytes(data)
+        result = subprocess.run(
+            ["openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
+             "-in", str(data_path), "-out", str(sig_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise GarbError(f"signing failed: {result.stderr.strip()}")
+        return sig_path.read_bytes()
+
+
+def load_indexes(paths: Paths) -> dict:
+    packages: dict = {}
+    if not paths.cache.is_dir():
+        return packages
+    for index_path in sorted(paths.cache.glob("repos/*/index.json")):
         try:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_file = self.db_path.with_suffix(".tmp")
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2)
-            tmp_file.replace(self.db_path)
-        except OSError as e:
-            print(f"[!] Warning: Unable to save database to {self.db_path}: {e}", file=sys.stderr)
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            warn(f"ignoring unreadable index: {index_path}")
+            continue
+        for name, entry in data.get("packages", {}).items():
+            entry = dict(entry)
+            entry["_repo"] = index_path.parent.name
+            packages.setdefault(name, entry)
+    return packages
 
-    def is_installed(self, pkg_name):
-        return pkg_name in self.data["packages"]
 
-    def add_package(self, pkg_name, metadata, files):
-        self.data["packages"][pkg_name] = {
-            "version": metadata.get("version", "1.0.0"),
+def cmd_version(_args: argparse.Namespace) -> None:
+    print(f"garb package manager {VERSION}")
+    print("Signed repository indexes, transactional installs, per-file SHA-256")
+    print("Target architecture: x86_64")
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    paths = args.paths
+    configs = read_repo_configs(paths)
+    if not configs:
+        warn(f"no repositories configured in {paths.repos}")
+        return
+    for repo in configs:
+        name, url = repo["name"], repo["url"]
+        log(f"updating repository {name}")
+        index = fetch_repo_file(url, "index.json")
+        signature = fetch_repo_file(url, "index.json.sig")
+        public_key = paths.keys / f"{name}.pub"
+        if args.key:
+            public_key = Path(args.key)
+        if args.allow_unsigned:
+            warn(f"accepting unsigned repository {name}")
+        else:
+            verify_signature(index, signature, public_key)
+        parsed = json.loads(index)
+        if parsed.get("schema") != SCHEMA:
+            raise GarbError(f"{name}: unsupported index schema {parsed.get('schema')}")
+        target = paths.cache / "repos" / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "index.json").write_bytes(index)
+        (target / "index.json.sig").write_bytes(signature)
+        log(f"{name}: {len(parsed.get('packages', {}))} packages")
+
+
+def cmd_search(args: argparse.Namespace) -> None:
+    query = args.query.lower()
+    index = load_indexes(args.paths)
+    db = Database(args.paths)
+    found = 0
+    for name, entry in sorted(index.items()):
+        text = f"{name} {entry.get('description', '')}".lower()
+        if query in text:
+            state = "installed" if db.installed(name) else "available"
+            print(f"  {name:<24} {entry.get('version', '?')}  [{state}]  {entry.get('description', '')}")
+            found += 1
+    for name, entry in sorted(db.data["packages"].items()):
+        if query in f"{name} {entry.get('description', '')}".lower() and name not in index:
+            print(f"  {name:<24} {entry.get('version', '?')}  [installed]  {entry.get('description', '')}")
+            found += 1
+    if not found:
+        print(f"[-] no packages matching {query!r}")
+
+
+def cmd_info(args: argparse.Namespace) -> None:
+    db = Database(args.paths)
+    installed = db.installed(args.package)
+    index = load_indexes(args.paths).get(args.package)
+    if not installed and not index:
+        die(f"package not found: {args.package}")
+    entry = installed or index
+    print(f"Package:      {args.package}")
+    print(f"Status:       {'installed' if installed else 'available'}")
+    print(f"Version:      {entry.get('version')}-{entry.get('release', 1)}")
+    print(f"Description:  {entry.get('description', '')}")
+    print(f"Architecture: {entry.get('arch', ['x86_64'])}")
+    if entry.get("dependencies"):
+        print(f"Depends:      {', '.join(entry['dependencies'])}")
+    if installed:
+        print(f"Files:        {len(installed.get('files', []))}")
+        print(f"Archive:      {installed.get('archive_sha256', '')}")
+
+
+# ---------------------------------------------------------------- package files
+def read_metadata(archive: Path) -> dict:
+    with tarfile.open(archive, "r:*") as tar:
+        for member in tar:
+            if normalise_member(member.name) == METADATA_NAME:
+                handle = tar.extractfile(member)
+                if handle is None:
+                    raise GarbError("metadata member is not a file")
+                return json.loads(handle.read().decode("utf-8"))
+    raise GarbError(f"missing {METADATA_NAME} in {archive}")
+
+
+def verify_member(member: tarfile.TarInfo) -> None:
+    rel = normalise_member(member.name)
+    if member.isdir():
+        return
+    if member.isreg():
+        return
+    if member.issym():
+        safe_symlink_target(member.linkname, str(PurePosixPath(rel).parent))
+        return
+    raise GarbError(f"unsupported archive member type: {rel}")
+
+
+def extract_staged(archive: Path, staging: Path) -> tuple[dict, list[dict]]:
+    metadata: dict = {}
+    members: list[dict] = []
+    with tarfile.open(archive, "r:*") as tar:
+        for member in tar:
+            if normalise_member(member.name) == METADATA_NAME:
+                handle = tar.extractfile(member)
+                if handle is None:
+                    raise GarbError("metadata member is not a file")
+                metadata = json.loads(handle.read().decode("utf-8"))
+                continue
+            verify_member(member)
+            rel = normalise_member(member.name)
+            dest = staging / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if member.isdir():
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            if member.issym():
+                if dest.exists() or dest.is_symlink():
+                    dest.unlink()
+                os.symlink(member.linkname, dest)
+                members.append({"path": rel, "type": "symlink", "target": member.linkname})
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                raise GarbError(f"cannot read member: {rel}")
+            with open(dest, "wb") as output:
+                shutil.copyfileobj(handle, output)
+            members.append({"path": rel, "type": "file"})
+    if not metadata:
+        raise GarbError("package metadata missing")
+    if metadata.get("schema", SCHEMA) != SCHEMA:
+        raise GarbError("unsupported package schema")
+    return metadata, members
+
+
+def verify_staged(staging: Path, metadata: dict) -> list[dict]:
+    declared = metadata.get("files")
+    if not isinstance(declared, list) or not declared:
+        raise GarbError("package metadata has no file list")
+    by_path = {}
+    for item in declared:
+        rel = normalise_member(item["path"])
+        by_path[rel] = item
+    seen = set()
+    for rel, item in by_path.items():
+        staged = staging / rel
+        if item.get("type") == "symlink":
+            if not staged.is_symlink():
+                raise GarbError(f"missing symlink: {rel}")
+            safe_symlink_target(item.get("target", ""), str(PurePosixPath(rel).parent))
+            if os.readlink(staged) != item.get("target"):
+                raise GarbError(f"symlink target mismatch: {rel}")
+        else:
+            if not staged.is_file() or staged.is_symlink():
+                raise GarbError(f"missing file: {rel}")
+            digest = sha256_file(staged)
+            if digest != item.get("sha256"):
+                raise GarbError(f"hash mismatch: {rel}")
+        seen.add(rel)
+    # Anything staged that is not declared is a malformed package.
+    for path in staging.rglob("*"):
+        rel = str(path.relative_to(staging))
+        if rel in seen:
+            continue
+        if path.is_dir():
+            continue
+        raise GarbError(f"undeclared file in package: {rel}")
+    return declared
+
+
+def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -> dict:
+    files = verify_staged(staging, metadata)
+    paths.tmp.mkdir(parents=True, exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix="garb-backup-", dir=paths.tmp))
+    installed: list[dict] = []
+    try:
+        for item in files:
+            rel = normalise_member(item["path"])
+            src = staging / rel
+            dst = paths.inside(rel)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists() or dst.is_symlink():
+                saved = backup / rel
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(dst, saved)
+            if item.get("type") == "symlink":
+                os.symlink(item["target"], dst)
+            else:
+                os.replace(src, dst)
+                mode = parse_mode(item.get("mode"), 0o644)
+                os.chmod(dst, mode)
+            installed.append(item)
+    except Exception as exc:
+        for item in reversed(installed):
+            dst = paths.inside(item["path"])
+            try:
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+            except OSError:
+                pass
+        for saved in backup.rglob("*"):
+            if saved.is_file() or saved.is_symlink():
+                rel = str(saved.relative_to(backup))
+                dst = paths.inside(rel)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(saved, dst)
+        raise GarbError(f"transaction rolled back: {exc}") from exc
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
+
+    return {
+        "name": metadata["name"],
+        "version": metadata.get("version", "0"),
+        "release": metadata.get("release", 1),
+        "description": metadata.get("description", ""),
+        "arch": metadata.get("arch", ["x86_64"]),
+        "dependencies": metadata.get("dependencies", []),
+        "files": files,
+        "archive_sha256": sha256_file(archive),
+        "installed_at": int(time.time()),
+    }
+
+
+def resolve_dependencies(names: list[str], index: dict, db: Database, upgrading: bool = False) -> list[str]:
+    order: list[str] = []
+    visiting: set[str] = set()
+    done: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in done:
+            return
+        if name in visiting:
+            raise GarbError(f"dependency cycle involving {name}")
+        entry = index.get(name)
+        if entry is None:
+            raise GarbError(f"package not found in any repository: {name}")
+        if db.installed(name) and not upgrading:
+            done.add(name)
+            return
+        visiting.add(name)
+        for dep in entry.get("dependencies", []):
+            visit(dep)
+        visiting.remove(name)
+        done.add(name)
+        if not (db.installed(name) and not upgrading):
+            order.append(name)
+
+    for name in names:
+        visit(name)
+    return order
+
+
+def fetch_archive(paths: Paths, name: str, entry: dict) -> Path:
+    filename = entry.get("filename") or f"{name}-{entry.get('version')}-{entry.get('release', 1)}.garb"
+    repo = paths.cache / "repos" / entry["_repo"]
+    target = repo / filename
+    if target.exists():
+        if sha256_file(target) != entry.get("sha256"):
+            target.unlink()
+        else:
+            return target
+    configs = {repo["name"]: repo["url"] for repo in read_repo_configs(paths)}
+    url = configs.get(entry["_repo"])
+    if not url:
+        raise GarbError(f"no configured URL for repository {entry['_repo']}")
+    log(f"fetching {name} from {entry['_repo']}")
+    data = fetch_repo_file(url, filename)
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != entry.get("sha256"):
+        raise GarbError(f"archive checksum mismatch for {name}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return target
+
+
+def cmd_install(args: argparse.Namespace) -> None:
+    paths = args.paths
+    paths.ensure_runtime()
+    db = Database(paths)
+    index = load_indexes(paths)
+    targets: list[tuple[str, Path, dict]] = []
+    for spec in args.package:
+        candidate = Path(spec)
+        if candidate.exists() and candidate.is_file():
+            metadata = read_metadata(candidate)
+            name = metadata["name"]
+            targets.append((name, candidate, metadata))
+        else:
+            entry = index.get(spec)
+            if entry is None:
+                die(f"package not found in any repository: {spec}")
+            targets.append((spec, Path(), entry))
+
+    # Resolve repository dependencies first.
+    names = []
+    for name, archive, metadata in targets:
+        if archive == Path():
+            names.append(name)
+    selected = resolve_dependencies(names, index, db, upgrading=args.upgrade) if names else []
+    plan: list[tuple[str, Path, dict]] = []
+    for name in selected:
+        entry = index[name]
+        plan.append((name, fetch_archive(paths, name, entry), entry))
+    for name, archive, metadata in targets:
+        if archive != Path():
+            plan.append((name, archive, metadata))
+
+    if not plan:
+        log("nothing to install")
+        return
+
+    for name, archive, entry in plan:
+        if db.installed(name) and not args.upgrade and not args.force:
+            log(f"{name} is already installed (use --upgrade or --force)")
+            continue
+        log(f"installing {name}")
+        staging = Path(tempfile.mkdtemp(prefix="garb-stage-", dir=paths.tmp))
+        try:
+            metadata, _members = extract_staged(archive, staging)
+            if metadata.get("name") != name:
+                raise GarbError(f"archive name mismatch: expected {name}, got {metadata.get('name')}")
+            entry_db = commit_package(paths, staging, metadata, archive)
+            db.add(name, entry_db)
+            db.save()
+            print(f"[+] {name} {entry_db['version']}-{entry_db['release']} installed ({len(entry_db['files'])} files)")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def cmd_remove(args: argparse.Namespace) -> None:
+    paths = args.paths
+    db = Database(paths)
+    changed = False
+    for name in args.package:
+        entry = db.installed(name)
+        if entry is None:
+            warn(f"{name} is not installed")
+            continue
+        modified = []
+        for item in entry.get("files", []):
+            target = paths.inside(item["path"])
+            if not target.exists() and not target.is_symlink():
+                continue
+            if item.get("type") == "symlink":
+                if not target.is_symlink():
+                    modified.append(item["path"])
+                continue
+            if target.is_file() and sha256_file(target) != item.get("sha256"):
+                modified.append(item["path"])
+        if modified and not args.force:
+            die(f"{name}: refusing to remove modified files: {', '.join(modified[:10])}")
+        for item in reversed(entry.get("files", [])):
+            target = paths.inside(item["path"])
+            try:
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+            except OSError as exc:
+                warn(f"could not remove {item['path']}: {exc}")
+            parent = target.parent
+            while parent != paths.root and parent.is_dir():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        db.remove(name)
+        db.save()
+        print(f"[+] removed {name}")
+        changed = True
+    if not changed:
+        return
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    paths = args.paths
+    db = Database(paths)
+    names = args.package or sorted(db.data["packages"])
+    failures = 0
+    checked = 0
+    for name in names:
+        entry = db.installed(name)
+        if entry is None:
+            warn(f"{name} is not installed")
+            failures += 1
+            continue
+        bad = 0
+        for item in entry.get("files", []):
+            target = paths.inside(item["path"])
+            checked += 1
+            if item.get("type") == "symlink":
+                if not target.is_symlink() or os.readlink(target) != item.get("target"):
+                    print(f"  [BAD] {name}: {item['path']} (symlink)")
+                    bad += 1
+                continue
+            if not target.is_file() or target.is_symlink():
+                print(f"  [MISSING] {name}: {item['path']}")
+                bad += 1
+                continue
+            if not args.quick and sha256_file(target) != item.get("sha256"):
+                print(f"  [TAMPERED] {name}: {item['path']}")
+                bad += 1
+        if bad:
+            failures += 1
+        else:
+            print(f"  [OK] {name} ({len(entry.get('files', []))} files)")
+    if failures:
+        die(f"integrity check failed for {failures} package(s), {checked} files checked")
+    print(f"[+] integrity check passed: {checked} files checked")
+
+
+def cmd_upgrade(args: argparse.Namespace) -> None:
+    paths = args.paths
+    db = Database(paths)
+    index = load_indexes(paths)
+    names = args.package or [name for name in db.data["packages"] if name in index]
+    upgrades = []
+    for name in names:
+        installed = db.installed(name)
+        available = index.get(name)
+        if not installed or not available:
+            continue
+        if version_tuple(available.get("version", "0")) > version_tuple(installed.get("version", "0")):
+            upgrades.append(name)
+    if not upgrades:
+        log("nothing to upgrade")
+        return
+    log(f"upgrading: {', '.join(upgrades)}")
+    args.package = upgrades
+    args.force = False
+    args.upgrade = True
+    cmd_install(args)
+
+
+def version_tuple(value: str) -> tuple:
+    return tuple(int(part) if part.isdigit() else part for part in re.split(r"[._-]", value))
+
+
+# ---------------------------------------------------------------- repository build
+def read_garbfile(path: Path) -> dict:
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
+    package = data.get("package", {})
+    if "name" not in package:
+        raise GarbError(f"{path}: [package] name is required")
+    deps = data.get("dependencies", {}).get("runtime", [])
+    return {
+        "name": package["name"],
+        "version": str(package.get("version", "0")),
+        "release": int(package.get("release", 1)),
+        "description": package.get("description", ""),
+        "license": package.get("license", ""),
+        "arch": package.get("arch", ["x86_64"]),
+        "dependencies": deps,
+        "build": data.get("build", {}),
+        "source": path,
+    }
+
+
+def build_package(manifest: Path, output_dir: Path) -> Path:
+    meta = read_garbfile(manifest)
+    source_root = manifest.parent / "root"
+    files = []
+    if source_root.is_dir():
+        for path in sorted(source_root.rglob("*")):
+            if path.is_dir():
+                continue
+            rel = str(path.relative_to(source_root))
+            if path.is_symlink():
+                files.append({"path": rel, "type": "symlink", "target": os.readlink(path)})
+            elif path.is_file():
+                files.append({
+                    "path": rel,
+                    "type": "file",
+                    "sha256": sha256_file(path),
+                    "mode": f"{stat.S_IMODE(path.stat().st_mode):04o}",
+                })
+    if meta["build"]:
+        warn(f"{manifest}: [build] commands are not executed by garb 1.0; "
+             "package the resulting tree under root/ instead")
+    metadata = {
+        "schema": SCHEMA,
+        "name": meta["name"],
+        "version": meta["version"],
+        "release": meta["release"],
+        "description": meta["description"],
+        "license": meta["license"],
+        "arch": meta["arch"],
+        "dependencies": meta["dependencies"],
+        "files": files,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    archive = output_dir / f"{meta['name']}-{meta['version']}-{meta['release']}.garb"
+    stamp = epoch()
+    raw = io.BytesIO()
+    with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            payload = json.dumps(metadata, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+            info = tarfile.TarInfo(METADATA_NAME)
+            info.size = len(payload)
+            info.mtime = stamp
+            info.mode = 0o644
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            tar.addfile(info, io.BytesIO(payload))
+            if source_root.is_dir():
+                for path in sorted(source_root.rglob("*")):
+                    if path.is_dir():
+                        continue
+                    rel = str(path.relative_to(source_root))
+                    info = tar.gettarinfo(str(path), arcname=rel)
+                    info.mtime = stamp
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = "root"
+                    if path.is_symlink():
+                        tar.addfile(info)
+                    else:
+                        with open(path, "rb") as handle:
+                            tar.addfile(info, handle)
+    archive.write_bytes(raw.getvalue())
+    return archive
+
+
+def cmd_repo_build(args: argparse.Namespace) -> None:
+    source = Path(args.directory)
+    output = Path(args.output)
+    manifests = sorted(source.glob("*/Garbfile"))
+    if not manifests:
+        die(f"no Garbfiles under {source}")
+    for manifest in manifests:
+        archive = build_package(manifest, output)
+        print(f"[+] {archive.name}")
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    archive = build_package(Path(args.manifest), Path(args.output))
+    print(f"[+] {archive}")
+    print(f"[+] SHA-256: {sha256_file(archive)}")
+
+
+def cmd_repo_index(args: argparse.Namespace) -> None:
+    directory = Path(args.directory)
+    archives = sorted(directory.glob("*.garb"))
+    packages = {}
+    for archive in archives:
+        metadata = read_metadata(archive)
+        name = metadata["name"]
+        packages[name] = {
+            "version": metadata.get("version", "0"),
             "release": metadata.get("release", 1),
             "description": metadata.get("description", ""),
-            "arch": metadata.get("arch", ["x86_64", "aarch64"]),
-            "installed_at": int(time.time()),
-            "files": files,
-            "sha256": metadata.get("sha256", ""),
+            "license": metadata.get("license", ""),
+            "arch": metadata.get("arch", ["x86_64"]),
+            "dependencies": metadata.get("dependencies", []),
+            "filename": archive.name,
+            "sha256": sha256_file(archive),
+            "size": archive.stat().st_size,
         }
-        self.save()
-
-    def remove_package(self, pkg_name):
-        if pkg_name in self.data["packages"]:
-            del self.data["packages"][pkg_name]
-            self.save()
-
-    def get_installed(self):
-        return self.data["packages"]
-
-
-def calculate_sha256(filepath):
-    h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def cmd_version(args):
-    print(f"garb package manager v{VERSION}")
-    print("Philosophy: MISS (Minimalist, Independent, Secure, Stable)")
-    print("Target Architectures: x86_64, aarch64")
-
-
-def cmd_search(args):
-    query = args.query.lower()
-    print(f"[*] Searching repository for '{query}'...")
-    
-    # Check local packages directory first if available
-    repo_dirs = [
-        Path("/etc/garb/packages"),
-        Path("/usr/share/garb/packages"),
-        Path(os.getcwd()) / "packages",
-    ]
-    
-    found = 0
-    for repo_dir in repo_dirs:
-        if not repo_dir.exists():
-            continue
-        for pkg_dir in repo_dir.iterdir():
-            if pkg_dir.is_dir():
-                manifest = pkg_dir / "Garbfile"
-                if manifest.exists():
-                    name = pkg_dir.name
-                    desc = ""
-                    with open(manifest, "r", encoding="utf-8") as mf:
-                        for line in mf:
-                            if "description" in line and "=" in line:
-                                desc = line.split("=", 1)[1].strip().strip('"')
-                    if query in name.lower() or query in desc.lower():
-                        print(f"  \033[1;32m{name}\033[0m: {desc}")
-                        found += 1
-    
-    # Also search installed database
-    db = GarbDB(args.root)
-    for name, info in db.get_installed().items():
-        if query in name.lower() or query in info.get("description", "").lower():
-            if found == 0:
-                print(f"  \033[1;34m{name}\033[0m [installed]: {info.get('description', '')}")
-                found += 1
-
-    if found == 0:
-        print(f"[-] No packages matching '{query}' found.")
-
-
-def cmd_info(args):
-    pkg_name = args.package
-    db = GarbDB(args.root)
-    if db.is_installed(pkg_name):
-        info = db.get_installed()[pkg_name]
-        print(f"\033[1;36mPackage:\033[0m     {pkg_name}")
-        print(f"\033[1;36mStatus:\033[0m      Installed")
-        print(f"\033[1;36mVersion:\033[0m     {info.get('version')}-{info.get('release')}")
-        print(f"\033[1;36mDescription:\033[0m {info.get('description')}")
-        print(f"\033[1;36mInstalled:\033[0m   {time.ctime(info.get('installed_at'))}")
-        print(f"\033[1;36mTracked Files:\033[0m {len(info.get('files', []))}")
-        return
-
-    # Check repository manifests
-    manifest_paths = [
-        Path(f"/etc/garb/packages/{pkg_name}/Garbfile"),
-        Path(f"/usr/share/garb/packages/{pkg_name}/Garbfile"),
-        Path(os.getcwd()) / f"packages/{pkg_name}/Garbfile",
-    ]
-    for mp in manifest_paths:
-        if mp.exists():
-            print(f"\033[1;36mPackage:\033[0m {pkg_name} (Source Manifest)")
-            with open(mp, "r", encoding="utf-8") as f:
-                print(f.read())
-            return
-
-    print(f"[-] Package '{pkg_name}' not found.")
-
-
-def cmd_verify(args):
-    db = GarbDB(args.root)
-    target = args.package
-    pkgs = [target] if target else list(db.get_installed().keys())
-    
-    if not pkgs:
-        print("[*] No packages installed to verify.")
-        return
-
-    print(f"[*] Verifying integrity of {len(pkgs)} package(s)...")
-    corrupted = 0
-    total_files = 0
-
-    for pkg_name in pkgs:
-        if not db.is_installed(pkg_name):
-            print(f"[-] Package '{pkg_name}' is not installed.")
-            continue
-        
-        info = db.get_installed()[pkg_name]
-        pkg_corrupt = False
-        for rel_file in info.get("files", []):
-            total_files += 1
-            full_path = Path(args.root) / rel_file.lstrip("/")
-            if not full_path.exists():
-                print(f"  \033[1;31m[MISSING]\033[0m {rel_file} (from {pkg_name})")
-                pkg_corrupt = True
-                corrupted += 1
-        
-        if not pkg_corrupt:
-            print(f"  \033[1;32m[OK]\033[0m {pkg_name} ({len(info.get('files', []))} files)")
-
-    if corrupted == 0:
-        print(f"[+] Integrity check PASSED: {total_files} files verified, 0 anomalies.")
-    else:
-        print(f"[!] Integrity check FAILED: {corrupted} anomaly detected!", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_install(args):
-    pkg_name = args.package
-    root = Path(args.root)
-    db = GarbDB(args.root)
-    
-    print(f"[*] garb install: {pkg_name} -> {root}")
-
-    # Check if archive was provided directly
-    if Path(pkg_name).exists() and pkg_name.endswith(".garb"):
-        archive_path = Path(pkg_name)
-    else:
-        # Look in cache or package repository
-        archive_path = Path(DEFAULT_CACHE_PATH) / f"{pkg_name}.garb"
-        if not archive_path.exists():
-            # Check if source manifest exists to build
-            manifest = Path(f"packages/{pkg_name}/Garbfile")
-            if manifest.exists():
-                print(f"[*] Found manifest at {manifest}, building package...")
-                archive_path = build_from_manifest(manifest, Path(DEFAULT_CACHE_PATH))
-            else:
-                print(f"[-] Package '{pkg_name}' not found in repositories or cache.", file=sys.stderr)
-                sys.exit(1)
-
-    # Validate package integrity
-    sha_calc = calculate_sha256(archive_path)
-    print(f"[+] Package archive SHA-256: {sha_calc}")
-
-    # Extract to target root
-    print(f"[*] Unpacking to target root: {root}...")
-    tracked_files = []
-    metadata = {"name": pkg_name, "version": "1.0.0", "sha256": sha_calc}
-
-    with tarfile.open(archive_path, "r:*") as tar:
-        # Check if metadata manifest exists inside archive
-        try:
-            meta_member = tar.getmember("GARB_METADATA.json")
-            meta_f = tar.extractfile(meta_member)
-            if meta_f:
-                metadata = json.loads(meta_f.read().decode("utf-8"))
-        except KeyError:
-            pass
-
-        for member in tar.getmembers():
-            if member.name == "GARB_METADATA.json":
-                continue
-            tar.extract(member, path=root)
-            tracked_files.append("/" + member.name.lstrip("./"))
-
-    db.add_package(pkg_name, metadata, tracked_files)
-    print(f"[+] Successfully installed {pkg_name} ({len(tracked_files)} files tracked).")
-
-
-def cmd_remove(args):
-    pkg_name = args.package
-    root = Path(args.root)
-    db = GarbDB(args.root)
-
-    if not db.is_installed(pkg_name):
-        print(f"[-] Package '{pkg_name}' is not installed.", file=sys.stderr)
-        sys.exit(1)
-
-    info = db.get_installed()[pkg_name]
-    files = info.get("files", [])
-    print(f"[*] Removing {pkg_name} ({len(files)} files)...")
-
-    removed_count = 0
-    for f in reversed(files):
-        target_path = root / f.lstrip("/")
-        try:
-            if target_path.is_file() or target_path.is_symlink():
-                target_path.unlink()
-                removed_count += 1
-            elif target_path.is_dir() and not any(target_path.iterdir()):
-                target_path.rmdir()
-        except Exception as e:
-            print(f"[!] Warning removing {f}: {e}")
-
-    db.remove_package(pkg_name)
-    print(f"[+] Cleanly uninstalled {pkg_name}. ({removed_count} files removed).")
-
-
-def build_from_manifest(manifest_path, output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pkg_name = manifest_path.parent.name
-    meta = {
-        "name": pkg_name,
-        "version": "1.0.0",
-        "description": f"Grintion package for {pkg_name}",
-        "arch": ["x86_64", "aarch64"],
-    }
-    
-    # Read manifest
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip().startswith("name ="):
-                meta["name"] = line.split("=", 1)[1].strip().strip('"')
-            elif line.strip().startswith("version ="):
-                meta["version"] = line.split("=", 1)[1].strip().strip('"')
-            elif line.strip().startswith("description ="):
-                meta["description"] = line.split("=", 1)[1].strip().strip('"')
-
-    pkg_archive = output_dir / f"{meta['name']}.garb"
-    pkg_root = manifest_path.parent / "root"
-
-    with tarfile.open(pkg_archive, "w:gz") as tar:
-        # Add metadata JSON
-        meta_json_bytes = json.dumps(meta, indent=2).encode("utf-8")
-        import io
-        ti = tarfile.TarInfo(name="GARB_METADATA.json")
-        ti.size = len(meta_json_bytes)
-        ti.mtime = int(time.time())
-        ti.mode = 0o644
-        tar.addfile(ti, io.BytesIO(meta_json_bytes))
-
-        # Add files from pkg_root if present
-        if pkg_root.exists():
-            for root, dirs, files in os.walk(pkg_root):
-                for file in files:
-                    full_p = os.path.join(root, file)
-                    rel_p = os.path.relpath(full_p, pkg_root)
-                    tar.add(full_p, arcname=rel_p)
-
-    return pkg_archive
-
-
-def cmd_build(args):
-    manifest_path = Path(args.manifest)
-    if not manifest_path.exists():
-        print(f"[-] Manifest '{manifest_path}' does not exist.", file=sys.stderr)
-        sys.exit(1)
-
-    out_dir = Path(args.output) if args.output else Path.cwd() / "dist"
-    print(f"[*] Building package from manifest: {manifest_path}...")
-    archive = build_from_manifest(manifest_path, out_dir)
-    sha = calculate_sha256(archive)
-    print(f"[+] Package built: {archive}")
-    print(f"[+] SHA-256 Digest: {sha}")
-
-
-def cmd_bootstrap(args):
-    target = Path(args.target).resolve()
-    print(ASCII_LOGO)
-    print(f"[*] Bootstrapping Grintion-OS base system to: {target}")
-    
-    # Ensure base directories exist
-    dirs = [
-        "bin", "sbin", "usr/bin", "usr/sbin", "usr/lib", "usr/local/bin",
-        "etc/runit", "etc/sv", "etc/sysctl.d", "var/service", "var/log",
-        "var/lib/garb", "var/cache/garb", "proc", "sys", "dev", "run",
-        "tmp", "root", "home", "boot/efi", "mnt"
-    ]
-    for d in dirs:
-        (target / d).mkdir(parents=True, exist_ok=True)
-    
-    # Restrict /tmp and /root permissions
-    os.chmod(target / "tmp", 0o1777)
-    os.chmod(target / "root", 0o700)
-
-    # Copy core configurations from repository if present
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    etc_source = repo_root / "etc"
-    if etc_source.exists():
-        print("[*] Installing system configurations (/etc/runit, /etc/sysctl.d)...")
-        for item in etc_source.iterdir():
-            dest = target / "etc" / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, dest)
-
-    # Install garb into target /usr/bin/garb
-    garb_dest = target / "usr/bin/garb"
-    shutil.copy2(__file__, garb_dest)
-    os.chmod(garb_dest, 0o755)
-    
-    # Create /bin/garb symlink
-    bin_garb = target / "bin/garb"
-    if bin_garb.exists() or bin_garb.is_symlink():
-        bin_garb.unlink()
-    bin_garb.symlink_to("/usr/bin/garb")
-
-    # Initialize empty GarbDB in target
-    db = GarbDB(root=target)
-    db.add_package("grintion-base", {
-        "version": VERSION,
-        "release": 1,
-        "description": "Grintion-OS minimal base system files",
-        "arch": ["x86_64", "aarch64"],
-        "sha256": "BOOTSTRAP_STAGE_1",
-    }, [
-        "/etc/runit/1", "/etc/runit/2", "/etc/runit/3",
-        "/etc/issue", "/usr/bin/garb"
-    ])
-
-    print("[+] Grintion-OS base bootstrap complete!")
-    print(f"[*] Next DIY steps:")
-    print(f"    1. grintion-chroot {target}")
-    print(f"    2. passwd (set root password)")
-    print(f"    3. limine-deploy --efi {target}/boot/efi")
-    print(f"    4. reboot and remove installation media")
-
-
-def cmd_sandbox_run(args):
-    """
-    Universal sandbox runner for:
-    - AppImage
-    - Flatpak
-    - Snap / Squashfs containers
-    - Untrusted executables
-    Utilizes bubblewrap (bwrap) or user namespaces (unshare)
-    """
-    target_app = Path(args.app).resolve()
-    if not target_app.exists() and not shutil.which(args.app):
-        print(f"[-] Target application '{args.app}' not found.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[*] Grintion Sandbox: Preparing isolated environment for '{args.app}'...")
-    print(f"[*] Policy: MISS Paranoid Isolation (seccomp, ro-root, private-dev, isolated-tmp)")
-
-    # Detect application type
-    is_appimage = str(target_app).lower().endswith(".appimage")
-    is_flatpak = args.app.startswith("org.") or args.app.startswith("com.") or shutil.which("flatpak") and "flatpak" in args.app
-    is_snap = args.app.startswith("snap:") or str(target_app).endswith(".snap")
-
-    has_bwrap = shutil.which("bwrap") is not None
-
-    if has_bwrap:
-        bwrap_cmd = [
-            "bwrap",
-            "--ro-bind", "/", "/",
-            "--dev", "/dev",
-            "--proc", "/proc",
-            "--tmpfs", "/tmp",
-            "--tmpfs", "/run",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-        ]
-        
-        # Network isolation check
-        if args.no_net:
-            bwrap_cmd.append("--unshare-net")
-            print("  [✓] Network: Isolated (air-gapped namespace)")
-        else:
-            print("  [✓] Network: Allowed")
-
-        # Home directory isolation
-        if args.rw_home:
-            bwrap_cmd.extend(["--bind", str(Path.home()), str(Path.home())])
-            print(f"  [!] Home Directory: Read-Write access granted")
-        else:
-            sandbox_home = Path("/tmp/garb_sandbox_home")
-            sandbox_home.mkdir(parents=True, exist_ok=True)
-            bwrap_cmd.extend(["--bind", str(sandbox_home), str(Path.home())])
-            print(f"  [✓] Home Directory: Isolated temporary sandbox")
-
-        # FUSE passthrough for AppImage
-        if is_appimage:
-            if Path("/dev/fuse").exists():
-                bwrap_cmd.extend(["--dev-bind", "/dev/fuse", "/dev/fuse"])
-            bwrap_cmd.extend(["--setenv", "APPIMAGE_SILENT_INSTALL", "1"])
-
-        bwrap_cmd.append(str(target_app))
-        bwrap_cmd.extend(args.extra_args)
-
-        print(f"[*] Executing via bubblewrap container sandbox...")
-        try:
-            sys.exit(subprocess.run(bwrap_cmd).returncode)
-        except FileNotFoundError:
-            pass
-
-    # Fallback: unshare user namespace sandbox
-    if shutil.which("unshare"):
-        unshare_cmd = ["unshare", "--mount", "--uts", "--ipc"]
-        if args.no_net:
-            unshare_cmd.append("--net")
-        unshare_cmd.append(str(target_app))
-        unshare_cmd.extend(args.extra_args)
-        print(f"[*] Executing via unshare user namespace sandbox...")
-        sys.exit(subprocess.run(unshare_cmd).returncode)
-
-    # Direct execution with warning
-    print("[!] Warning: Neither bwrap nor unshare available. Launching directly with environment sanitization.")
-    clean_env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(Path.home()),
-        "USER": os.environ.get("USER", "grintion"),
-        "TERM": os.environ.get("TERM", "xterm"),
-    }
-    sys.exit(subprocess.run([str(target_app)] + args.extra_args, env=clean_env).returncode)
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        prog="garb",
-        description="Grintion-OS Minimalist & Paranoid Package Manager (MISS Philosophy)",
-    )
-    parser.add_argument("--root", default="/", help="Target filesystem root (default: /)")
-    subparsers = parser.add_subparsers(dest="subcommand", help="Subcommand to execute")
-
-    # version
-    sub_version = subparsers.add_parser("version", help="Show garb version and architecture info")
-    sub_version.set_defaults(func=cmd_version)
-
-    # search
-    sub_search = subparsers.add_parser("search", help="Search available packages")
-    sub_search.add_argument("query", help="Package name or keyword")
-    sub_search.set_defaults(func=cmd_search)
-
-    # info
-    sub_info = subparsers.add_parser("info", help="View detailed package manifest and integrity")
-    sub_info.add_argument("package", help="Package name")
-    sub_info.set_defaults(func=cmd_info)
-
-    # verify
-    sub_verify = subparsers.add_parser("verify", help="Cryptographically verify installed files")
-    sub_verify.add_argument("package", nargs="?", default=None, help="Specific package to verify (default: all)")
-    sub_verify.set_defaults(func=cmd_verify)
-
-    # install
-    sub_install = subparsers.add_parser("install", help="Install a package")
-    sub_install.add_argument("package", help="Package name or .garb archive file")
-    sub_install.set_defaults(func=cmd_install)
-
-    # remove
-    sub_remove = subparsers.add_parser("remove", help="Remove an installed package")
-    sub_remove.add_argument("package", help="Package name to uninstall")
-    sub_remove.set_defaults(func=cmd_remove)
-
-    # build
-    sub_build = subparsers.add_parser("build", help="Build a .garb package from a Garbfile manifest")
-    sub_build.add_argument("manifest", help="Path to Garbfile manifest")
-    sub_build.add_argument("-o", "--output", help="Output directory for .garb package")
-    sub_build.set_defaults(func=cmd_build)
-
-    # bootstrap
-    sub_bootstrap = subparsers.add_parser("bootstrap", help="Bootstrap minimal Grintion base into target directory")
-    sub_bootstrap.add_argument("target", help="Mount point or target root directory (e.g. /mnt)")
-    sub_bootstrap.set_defaults(func=cmd_bootstrap)
-
-    # sandbox
-    sub_sandbox = subparsers.add_parser("sandbox", help="Universal sandbox runner for AppImage, Flatpak, and Snap")
-    sandbox_sub = sub_sandbox.add_subparsers(dest="sandbox_action")
-    sub_sandbox_run = sandbox_sub.add_parser("run", help="Run application in an isolated paranoid sandbox")
-    sub_sandbox_run.add_argument("app", help="Path to AppImage, Flatpak id, Snap, or executable")
-    sub_sandbox_run.add_argument("--no-net", action="store_true", help="Completely disconnect network namespace")
-    sub_sandbox_run.add_argument("--rw-home", action="store_true", help="Allow read-write access to host $HOME (default: false)")
-    sub_sandbox_run.add_argument("extra_args", nargs="*", help="Arguments passed to the application")
-    sub_sandbox_run.set_defaults(func=cmd_sandbox_run)
-
+    index = {"schema": SCHEMA, "generated": epoch(), "packages": packages}
+    raw = (json.dumps(index, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    index_path = directory / "index.json"
+    index_path.write_bytes(raw)
+    print(f"[+] index: {index_path} ({len(packages)} packages)")
+    if args.key:
+        signature = sign_bytes(raw, Path(args.key))
+        (directory / "index.json.sig").write_bytes(signature)
+        print(f"[+] signature: {directory / 'index.json.sig'}")
+
+
+def cmd_keygen(args: argparse.Namespace) -> None:
+    directory = Path(args.directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    private = directory / "private.pem"
+    public = directory / "public.pem"
+    subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", str(private)], check=True)
+    subprocess.run(["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)], check=True)
+    os.chmod(private, 0o600)
+    print(f"[+] private key: {private}")
+    print(f"[+] public key:  {public}")
+
+
+def cmd_sign_index(args: argparse.Namespace) -> None:
+    index_path = Path(args.index)
+    signature = sign_bytes(index_path.read_bytes(), Path(args.key))
+    Path(str(index_path) + ".sig").write_bytes(signature)
+    print(f"[+] signed {index_path}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="garb", description="Grintion-OS package manager 1.0")
+    parser.add_argument("--root", default="/", help="target filesystem root (default: /)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("version").set_defaults(func=cmd_version)
+
+    update = sub.add_parser("update", help="fetch and verify repository indexes")
+    update.add_argument("--key", help="override the trusted public key")
+    update.add_argument("--allow-unsigned", action="store_true")
+    update.set_defaults(func=cmd_update)
+
+    search = sub.add_parser("search", help="search available and installed packages")
+    search.add_argument("query")
+    search.set_defaults(func=cmd_search)
+
+    info = sub.add_parser("info", help="show package details")
+    info.add_argument("package")
+    info.set_defaults(func=cmd_info)
+
+    install = sub.add_parser("install", help="install packages")
+    install.add_argument("package", nargs="+")
+    install.add_argument("--upgrade", action="store_true")
+    install.add_argument("--force", action="store_true")
+    install.set_defaults(func=cmd_install)
+
+    remove = sub.add_parser("remove", help="remove packages")
+    remove.add_argument("package", nargs="+")
+    remove.add_argument("--force", action="store_true")
+    remove.set_defaults(func=cmd_remove)
+
+    verify = sub.add_parser("verify", help="verify installed file hashes")
+    verify.add_argument("package", nargs="*")
+    verify.add_argument("--quick", action="store_true")
+    verify.set_defaults(func=cmd_verify)
+
+    upgrade = sub.add_parser("upgrade", help="upgrade installed packages")
+    upgrade.add_argument("package", nargs="*")
+    upgrade.set_defaults(func=cmd_upgrade)
+
+    build = sub.add_parser("build", help="build one .garb from a Garbfile")
+    build.add_argument("manifest")
+    build.add_argument("-o", "--output", default="dist")
+    build.set_defaults(func=cmd_build)
+
+    repo_build = sub.add_parser("repo-build", help="build every Garbfile in a directory")
+    repo_build.add_argument("directory")
+    repo_build.add_argument("output")
+    repo_build.set_defaults(func=cmd_repo_build)
+
+    repo_index = sub.add_parser("repo-index", help="write and optionally sign a repository index")
+    repo_index.add_argument("directory")
+    repo_index.add_argument("--key")
+    repo_index.set_defaults(func=cmd_repo_index)
+
+    keygen = sub.add_parser("keygen", help="create an Ed25519 repository key pair")
+    keygen.add_argument("directory")
+    keygen.set_defaults(func=cmd_keygen)
+
+    sign_index = sub.add_parser("sign-index", help="sign an existing index.json")
+    sign_index.add_argument("index")
+    sign_index.add_argument("--key", required=True)
+    sign_index.set_defaults(func=cmd_sign_index)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
-    if not hasattr(args, "func"):
-        parser.print_help()
-        sys.exit(0)
-
-    args.func(args)
+    args.paths = Paths(Path(args.root))
+    try:
+        args.func(args)
+    except GarbError as exc:
+        die(str(exc))
+    except (OSError, json.JSONDecodeError, tarfile.TarError, subprocess.CalledProcessError) as exc:
+        die(str(exc))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

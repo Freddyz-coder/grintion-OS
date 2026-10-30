@@ -1,0 +1,9 @@
+# /etc/ssh/ssh_config - Grintion-OS SSH client defaults
+Host *
+    ForwardAgent no
+    ForwardX11 no
+    PasswordAuthentication yes
+    StrictHostKeyChecking ask
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    HashKnownHosts yes

@@ -1,14 +1,29 @@
-# /etc/profile - Grintion-OS default environment profile
-export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
-export HOME=/root
-export USER=root
-export TERM=${TERM:-linux}
-export PS1='\[\033[1;31m\]grintion-live\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# '
+# /etc/profile - Grintion-OS login environment
+# Sourced by bash for every login shell. No user-specific values are set here.
 
-if [ "$TERM" != "dumb" ]; then
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export EDITOR="${EDITOR:-nano}"
+export PAGER="${PAGER:-less}"
+umask 022
+
+# A login shell reads this file even when the user's skel files are absent.
+if [ -n "${BASH_VERSION-}" ]; then
+    PS1='\[\033[1;31m\]\u@\h\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ '
+    export PS1
+fi
+
+if [ -d /etc/profile.d ]; then
+    for script in /etc/profile.d/*.sh; do
+        [ -r "$script" ] && . "$script"
+    done
+    unset script
+fi
+
+# The live image prints a system summary once per login. Installed systems use
+# the normal MOTD only, so configuration changes cannot leak into the disk.
+if [ -f /etc/grintion/live ] && [ -t 1 ] && [ -z "${GRINTION_SUMMARY_SHOWN-}" ]; then
+    export GRINTION_SUMMARY_SHOWN=1
     if command -v fastfetch >/dev/null 2>&1; then
-        fastfetch --config /etc/fastfetch/config.jsonc
-    elif [ -f /etc/issue ]; then
-        cat /etc/issue
+        fastfetch --config /etc/fastfetch/config.jsonc || true
     fi
 fi

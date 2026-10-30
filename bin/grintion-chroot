@@ -1,17 +1,28 @@
 #!/bin/sh
-# grintion-chroot - Helper script to safely chroot into target system
-# Binds virtual filesystems and sets clean environment
+# grintion-chroot - enter an installed Grintion-OS system with the required
+# virtual filesystems mounted. Every mount is removed when the shell exits.
 
-TARGET="${1:-/mnt}"
+set -eu
 
-if [ ! -d "$TARGET" ]; then
-    echo "[-] Error: Target directory '$TARGET' does not exist." >&2
+TARGET=${1:-/mnt}
+[ -d "$TARGET" ] || { echo "[-] target does not exist: $TARGET" >&2; exit 1; }
+[ -x "$TARGET/bin/sh" ] || [ -x "$TARGET/usr/bin/sh" ] || {
+    echo "[-] target does not look like a Grintion-OS root: $TARGET" >&2
     exit 1
-fi
+}
 
-echo "[*] Preparing chroot environment in $TARGET..."
+mounted=""
+cleanup() {
+    set +e
+    for path in run dev/pts dev sys proc; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount "$TARGET/$path"
+        fi
+    done
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
-# Bind mounts
 mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
 mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
 mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
@@ -19,16 +30,9 @@ mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
 mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
 mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
 
-# Copy DNS configuration if exists
-[ -f /etc/resolv.conf ] && cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf" 2>/dev/null
+if [ -f /etc/resolv.conf ]; then
+    cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+fi
 
-echo "[+] Entering chroot ($TARGET). Type 'exit' to return."
+echo "[*] entering $TARGET; type 'exit' to return"
 chroot "$TARGET" /bin/sh -l
-
-echo "[*] Cleaning up chroot mounts..."
-umount "$TARGET/run" 2>/dev/null
-umount "$TARGET/dev/pts" 2>/dev/null
-umount "$TARGET/dev" 2>/dev/null
-umount "$TARGET/sys" 2>/dev/null
-umount "$TARGET/proc" 2>/dev/null
-echo "[+] Chroot exited cleanly."

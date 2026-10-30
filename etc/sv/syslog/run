@@ -1,8 +1,4 @@
 #!/bin/sh
 exec 2>&1
 mkdir -p /var/log
-if which syslogd >/dev/null 2>&1; then
-    exec syslogd -n -O /var/log/messages
-else
-    exec pause
-fi
+exec /bin/busybox syslogd -n -O /var/log/messages

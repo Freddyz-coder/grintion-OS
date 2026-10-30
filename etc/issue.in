@@ -1,0 +1,17 @@
+   .----------------.
+  /  .------------.  \
+ |  /  .--------.  \  |
+ | |  /  .----.  \  | |
+ | | |  /    \  | | |
+ | | | |  /\  | | | |
+ | | |  \____/  | | |
+ | |  \________/  | |
+ |  \____________/  |
+  \________________/
+    G R I N T I O N
+
+Grintion-OS @VERSION@ (x86_64)
+Minimalist - Independent - Secure - Stable
+
+Live environment: the root filesystem is an overlay in RAM.
+Nothing is written to disk unless you enable persistence or install.

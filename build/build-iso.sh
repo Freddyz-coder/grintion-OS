@@ -1,97 +1,78 @@
 #!/usr/bin/env bash
-# build-iso.sh - Generates bootable hybrid ISO for Grintion-OS
-# Supports 64-bit x86_64 (BIOS + UEFI) and ARM64 (UEFI)
-# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
+# build-iso.sh - assemble the Grintion-OS hybrid (BIOS + UEFI) ISO.
+#
+# Inputs are produced by make kernel, make install-initramfs and make rootfs.
+# The ISO contains the source-built kernel and the live initramfs; the live
+# rootfs also carries the installed initramfs and Limine assets so the
+# installer can write a bootable disk without network access.
 
-set -e
+set -Eeuo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ISO_ROOT="${REPO_ROOT}/build/work/iso_root"
-OUTPUT_DIR="${REPO_ROOT}/output"
+WORK="$GRINTION_REPO_ROOT/build/work"
+ISO_ROOT="$WORK/iso_root"
+OUTPUT="$GRINTION_REPO_ROOT/output"
 ISO_NAME="grintion-os-x86_64.iso"
-OUTPUT_ISO="${OUTPUT_DIR}/${ISO_NAME}"
+ISO="$OUTPUT/$ISO_NAME"
+LIMINE_DIR="$GRINTION_REPO_ROOT/tools/limine"
+XORRISO="$(command -v xorriso || true)"
 
-XORRISO="${REPO_ROOT}/tools/bin/xorriso"
-LIMINE="${REPO_ROOT}/tools/limine/limine"
+need_cmd python3
+[ -n "$XORRISO" ] || die "xorriso is required"
+[ -x "$LIMINE_DIR/limine" ] || die "tools/limine/limine is missing"
+[ -f "$OUTPUT/vmlinuz-grintion" ] || die "kernel image missing: run make kernel"
+[ -f "$OUTPUT/initramfs.img" ] || die "live initramfs missing: run make rootfs"
+[ -f "$OUTPUT/initramfs-install.img" ] || die "installed initramfs missing: run make install-initramfs"
 
-echo "=============================================================="
-echo ">> [1/4] Checking Core Build Prerequisites..."
-echo "=============================================================="
+for asset in limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI; do
+    [ -f "$LIMINE_DIR/$asset" ] || die "missing Limine asset: $asset"
+done
 
-# Build rootfs/initramfs if not already present
-if [ ! -f "${OUTPUT_DIR}/initramfs.img" ]; then
-    echo "[*] Building initramfs image..."
-    "${REPO_ROOT}/build/make-rootfs.sh"
-fi
-
-# Ensure kernel exists
-if [ ! -f "${OUTPUT_DIR}/vmlinuz-grintion" ]; then
-    if [ -f "/usr/lib/modules/$(uname -r)/vmlinuz" ]; then
-        echo "[*] Using kernel from /usr/lib/modules/$(uname -r)/vmlinuz..."
-        cp "/usr/lib/modules/$(uname -r)/vmlinuz" "${OUTPUT_DIR}/vmlinuz-grintion"
-    else
-        echo "[-] Error: vmlinuz-grintion not found in ${OUTPUT_DIR}/!" >&2
-        exit 1
-    fi
-fi
-
-# Ensure xorriso and limine binaries exist
-if [ ! -x "$XORRISO" ]; then
-    echo "[-] Error: xorriso not found at $XORRISO!" >&2
-    exit 1
-fi
-if [ ! -x "$LIMINE" ]; then
-    echo "[-] Error: limine utility not found at $LIMINE!" >&2
-    exit 1
-fi
-
-echo "=============================================================="
-echo ">> [2/4] Assembling ISO File Structure..."
-echo "=============================================================="
+log "assembling ISO tree"
 rm -rf "$ISO_ROOT"
 mkdir -p "$ISO_ROOT/EFI/BOOT"
 
-# Copy Limine bootloader assets
-cp "${REPO_ROOT}/tools/limine/limine-bios.sys"    "$ISO_ROOT/"
-cp "${REPO_ROOT}/tools/limine/limine-bios-cd.bin" "$ISO_ROOT/"
-cp "${REPO_ROOT}/tools/limine/limine-uefi-cd.bin" "$ISO_ROOT/"
-cp "${REPO_ROOT}/tools/limine/BOOTX64.EFI"        "$ISO_ROOT/EFI/BOOT/"
-cp "${REPO_ROOT}/tools/limine/BOOTAA64.EFI"       "$ISO_ROOT/EFI/BOOT/"
+install -D -m 0644 "$LIMINE_DIR/limine-bios.sys"    "$ISO_ROOT/limine-bios.sys"
+install -D -m 0644 "$LIMINE_DIR/limine-bios-cd.bin" "$ISO_ROOT/limine-bios-cd.bin"
+install -D -m 0644 "$LIMINE_DIR/limine-uefi-cd.bin" "$ISO_ROOT/limine-uefi-cd.bin"
+install -D -m 0644 "$LIMINE_DIR/BOOTX64.EFI"        "$ISO_ROOT/EFI/BOOT/BOOTX64.EFI"
+install -D -m 0644 "$OUTPUT/vmlinuz-grintion"       "$ISO_ROOT/vmlinuz-grintion"
+install -D -m 0644 "$OUTPUT/initramfs.img"          "$ISO_ROOT/initramfs.img"
 
-# Copy Kernel & Initramfs
-cp "${OUTPUT_DIR}/vmlinuz-grintion" "$ISO_ROOT/vmlinuz-grintion"
-cp "${OUTPUT_DIR}/initramfs.img"    "$ISO_ROOT/initramfs.img"
-
-# Generate Limine boot configuration
-cat << 'EOF' > "$ISO_ROOT/limine.conf"
+cat > "$ISO_ROOT/limine.conf" <<EOF
 timeout: 5
-interface_branding: Grintion-OS Live (MISS)
+interface_branding: Grintion-OS $GRINTION_VERSION (MISS)
 
-/Grintion-OS (RAM Live - Paranoid Mode)
+/Grintion-OS $GRINTION_VERSION (live, RAM)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 rdinit=/init quiet slab_nomerge init_on_alloc=1 init_on_free=1 dmesg_restrict=1
+    cmdline: console=tty0 console=ttyS0,115200 grintion.serial=1 rdinit=/init quiet loglevel=4 panic=10 slab_nomerge init_on_alloc=1 init_on_free=1
     initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 
-/Grintion-OS (Safe Graphics / Fallback Mode)
+/Grintion-OS $GRINTION_VERSION (recovery shell)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 rdinit=/init nomodeset
+    cmdline: console=tty0 console=ttyS0,115200 grintion.serial=1 rdinit=/bin/sh quiet
     initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 EOF
-
-# Also mirror limine.conf to EFI partition for EFI bootloader
 cp "$ISO_ROOT/limine.conf" "$ISO_ROOT/EFI/BOOT/limine.conf"
 
-echo "=============================================================="
-echo ">> [3/4] Generating Hybrid ISO9660 Image with xorriso..."
-echo "=============================================================="
-rm -f "$OUTPUT_ISO"
+{
+    build_info /dev/stdout
+    printf 'kernel=%s\n' "$(sha256sum "$OUTPUT/vmlinuz-grintion" | cut -d' ' -f1)"
+    printf 'initramfs_live=%s\n' "$(sha256sum "$OUTPUT/initramfs.img" | cut -d' ' -f1)"
+    printf 'initramfs_install=%s\n' "$(sha256sum "$OUTPUT/initramfs-install.img" | cut -d' ' -f1)"
+    printf 'git_commit=%s\n' "$(git -C "$GRINTION_REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+} > "$ISO_ROOT/BUILD-INFO"
+cp "$ISO_ROOT/BUILD-INFO" "$OUTPUT/BUILD-INFO"
 
+log "creating the ISO9660 image"
+rm -f "$ISO"
 "$XORRISO" -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
     -b limine-bios-cd.bin \
     -no-emul-boot \
     -boot-load-size 4 \
@@ -101,24 +82,19 @@ rm -f "$OUTPUT_ISO"
     --efi-boot-image \
     --protective-msdos-label \
     -V "GRINTION_LIVE" \
-    "$ISO_ROOT" -o "$OUTPUT_ISO"
+    "$ISO_ROOT" -o "$ISO"
 
-echo "=============================================================="
-echo ">> [4/4] Deploying Limine Hybrid BIOS Boot Record..."
-echo "=============================================================="
-"$LIMINE" bios-install "$OUTPUT_ISO"
+log "writing the Limine BIOS boot record"
+"$LIMINE_DIR/limine" bios-install "$ISO"
 
-# Calculate SHA256
-sha256sum "$OUTPUT_ISO" > "${OUTPUT_ISO}.sha256"
+( cd "$OUTPUT" && sha256sum "$ISO_NAME" > "$ISO_NAME.sha256" )
 
-echo ""
+echo
 echo "=============================================================="
-echo "[+] SUCCESS: Grintion-OS Bootable ISO Generated!"
+echo "[+] Grintion-OS $GRINTION_VERSION ISO built"
 echo "=============================================================="
-echo "ISO Path:   $OUTPUT_ISO"
-echo "ISO Size:   $(du -h "$OUTPUT_ISO" | cut -f1)"
-echo "SHA-256:    $(cat "${OUTPUT_ISO}.sha256" | cut -d' ' -f1)"
-echo ""
-echo "Boot compatibility: 64-bit x86_64 UEFI & BIOS, ARM64 UEFI"
-echo "Burn to USB using:  sudo dd if=$OUTPUT_ISO of=/dev/sdX bs=4M status=progress oflag=sync"
+echo "ISO:      $ISO"
+echo "Size:     $(du -h "$ISO" | cut -f1)"
+echo "SHA-256:  $(cut -d' ' -f1 "$ISO.sha256")"
+echo "Boot:     x86_64 BIOS and UEFI (Limine 8.7.0)"
 echo "=============================================================="

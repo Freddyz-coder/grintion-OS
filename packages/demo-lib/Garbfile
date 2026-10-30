@@ -1,0 +1,7 @@
+[package]
+name = "demo-lib"
+version = "1.0.0"
+release = 1
+description = "Demo data package used to exercise signed repositories"
+license = "GPL-3.0-or-later"
+arch = ["x86_64"]

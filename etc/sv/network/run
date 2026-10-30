@@ -1,13 +1,18 @@
 #!/bin/sh
 exec 2>&1
-echo "Starting network DHCP client..."
-# Wait briefly for interfaces to be ready
-sleep 2
-if which dhcpcd >/dev/null 2>&1; then
-    exec dhcpcd --nobackground -4
-elif which udhcpc >/dev/null 2>&1; then
-    exec udhcpc -b -i eth0
-else
-    echo "No DHCP client available."
-    exec pause
+
+i=0
+while [ "$i" -lt 10 ]; do
+    if ip -o link show 2>/dev/null | grep -vqE '^[0-9]+: lo:'; then
+        break
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+if ! ip -o link show 2>/dev/null | grep -vqE '^[0-9]+: lo:'; then
+    echo "network: no interface present; not starting DHCP"
+    exec sleep 300
 fi
+
+exec dhcpcd --nobackground --waitip=4 --timeout=30

@@ -1,0 +1,10 @@
+#!/bin/sh
+exec 2>&1
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" grintion.serial=1 "*) ;;
+    *) exec sleep 86400 ;;
+esac
+if [ -f /etc/grintion/live ]; then
+    exec agetty -L --skip-login --login-program /usr/bin/live-shell ttyS0 115200 vt100
+fi
+exec agetty -L ttyS0 115200 vt100

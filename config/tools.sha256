@@ -1,0 +1,9 @@
+# Pinned third-party sources used by the build.
+# Format: <sha256>  <filename>
+#
+# These are the exact tarballs the release was built from. The build script
+# verifies every archive before extracting it.
+3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4  busybox-1.37.0.tar.bz2
+6fd0160cb0cf1207de4e66754b6d39750cff14bb0aa66ab49490992c0c47ba18  runit-2.1.2.tar.gz
+62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a  bc-1.07.1.tar.gz
+3e476657fdb6eeb38b277da3a48d0ac0113ecce5858ebdcddff2b629faed52b4  dhcpcd-10.5.2.tar.xz

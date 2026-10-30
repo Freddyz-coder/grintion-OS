@@ -1,0 +1,7 @@
+# /etc/inputrc - readline configuration
+set bell-style none
+set colored-stats on
+set completion-ignore-case on
+set show-all-if-ambiguous on
+"\e[A": history-search-backward
+"\e[B": history-search-forward

@@ -1,0 +1,68 @@
+#!/bin/sh
+# /init - Grintion-OS installed-system initramfs
+#
+# This image is deliberately tiny. It mounts the installed root filesystem
+# from the kernel command line (root=UUID=..., root=LABEL=... or /dev/...),
+# optionally repairs it, and switches root. The kernel has ext4, virtio, AHCI,
+# NVMe and overlayfs built in, so no storage modules are required here.
+
+set -eu
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
+rescue() {
+    msg "$*"
+    msg "dropping to a recovery shell; type 'exit' to halt"
+    exec /bin/sh
+}
+
+mkdir -p /proc /sys /dev /run /newroot
+mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
+mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
+if ! mountpoint -q /dev; then
+    mount -t devtmpfs dev /dev -o mode=0755,nosuid
+fi
+mkdir -p /dev/pts /dev/shm
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+mountpoint -q /run || mount -t tmpfs -o mode=0755 tmpfs /run
+
+ROOTARG=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        root=*) ROOTARG=${arg#root=} ;;
+    esac
+done
+[ -n "$ROOTARG" ] || rescue "no root= parameter on the kernel command line"
+
+case "$ROOTARG" in
+    UUID=*|LABEL=*) ROOTDEV="$(findfs "$ROOTARG" 2>/dev/null || true)" ;;
+    *)              ROOTDEV="$ROOTARG" ;;
+esac
+[ -n "$ROOTDEV" ] || rescue "cannot resolve $ROOTARG"
+[ -b "$ROOTDEV" ] || rescue "root device is not a block device: $ROOTDEV"
+
+msg "checking $ROOTDEV"
+if [ -x /bin/e2fsck ]; then
+    e2fsck -p "$ROOTDEV" || {
+        rc=$?
+        if [ "$rc" -gt 1 ]; then
+            rescue "filesystem check failed (e2fsck rc=$rc)"
+        fi
+    }
+fi
+
+msg "mounting $ROOTDEV"
+mount -o rw,noatime "$ROOTDEV" /newroot || rescue "failed to mount $ROOTDEV"
+
+[ -x /newroot/sbin/init ] || rescue "/newroot/sbin/init is missing"
+
+mkdir -p /newroot/proc /newroot/sys /newroot/dev /newroot/run
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+mount --move /dev /newroot/dev
+mount --move /run /newroot/run
+
+exec switch_root /newroot /sbin/init

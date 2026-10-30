@@ -1,0 +1,83 @@
+#!/bin/sh
+# /init - Grintion-OS live environment
+#
+# The initramfs carries the complete read-only live root. It is used as the
+# lower layer of an overlayfs: a tmpfs upper layer by default, or the ext4
+# GRINTION_PERSIST partition when one is present. The overlay is made the real
+# root with pivot_root, so PID 1 runs with the overlay as / and the initramfs
+# remains available as the lower layer.
+
+set -eu
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
+rescue() {
+    msg "$*"
+    msg "dropping to a recovery shell"
+    exec /bin/sh
+}
+
+mkdir -p /proc /sys /dev /run /sys/fs/cgroup
+mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
+mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
+if ! mountpoint -q /dev; then
+    mount -t devtmpfs dev /dev -o mode=0755,nosuid
+fi
+mkdir -p /dev/pts /dev/shm
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate 2>/dev/null || true
+
+if [ -d /sys/firmware/efi ] && [ ! -d /sys/firmware/efi/efivars ]; then
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+fi
+
+mkdir -p /run/overlay /run/persist /lower /newroot
+
+UPPER=""
+WORK=""
+PERSIST_DEV="$(blkid -L GRINTION_PERSIST 2>/dev/null || true)"
+if [ -n "$PERSIST_DEV" ]; then
+    mkdir -p /run/persist
+    if mount -o rw,noatime "$PERSIST_DEV" /run/persist 2>/dev/null; then
+        mkdir -p /run/persist/upper /run/persist/work
+        chmod 0700 /run/persist/upper /run/persist/work
+        UPPER=/run/persist/upper
+        WORK=/run/persist/work
+        msg "persistence enabled on $PERSIST_DEV"
+    else
+        msg "persistence partition could not be mounted; using RAM"
+    fi
+fi
+
+if [ -z "$UPPER" ]; then
+    mount -t tmpfs -o mode=0755 tmpfs /run/overlay
+    mkdir -p /run/overlay/upper /run/overlay/work
+    chmod 0700 /run/overlay/upper /run/overlay/work
+    UPPER=/run/overlay/upper
+    WORK=/run/overlay/work
+    msg "RAM overlay active; changes are lost on poweroff"
+fi
+
+mount --bind / /lower || rescue "cannot bind the live root"
+mount -t overlay overlay -o "lowerdir=/lower,upperdir=$UPPER,workdir=$WORK" /newroot \
+    || rescue "cannot mount the overlay root"
+chmod 0755 /newroot
+
+# Nothing may propagate back into the initramfs while the root is replaced.
+mount --make-rprivate / 2>/dev/null || true
+
+for dir in proc sys dev run; do
+    mkdir -p "/newroot/$dir"
+    mount --move "/$dir" "/newroot/$dir" || rescue "cannot move /$dir"
+done
+
+# chroot(8) keeps the overlay's lower bind mount valid; switch_root would
+# delete the initramfs that is the lower layer. exec keeps the chroot process
+# as PID 1, which runit requires. The old root stays hidden behind the new
+# process root and is never written to.
+[ -x /newroot/sbin/init ] || rescue "the overlay has no /sbin/init"
+exec chroot /newroot /sbin/init

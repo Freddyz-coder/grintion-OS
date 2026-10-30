@@ -1,0 +1,12 @@
+# Optional host binaries. Missing entries are reported but do not fail.
+tmux
+screen
+tree
+ncdu
+strace
+zip
+locate
+updatedb
+parallel
+ping6
+efibootmgr

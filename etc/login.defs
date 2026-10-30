@@ -1,0 +1,24 @@
+# /etc/login.defs - Grintion-OS account policy
+# Consumed by shadow's useradd, usermod, chage and passwd tools.
+
+MAIL_DIR        /var/spool/mail
+UMASK           022
+HOME_MODE       0700
+
+PASS_MAX_DAYS   99999
+PASS_MIN_DAYS   0
+PASS_WARN_AGE   7
+
+UID_MIN         1000
+UID_MAX         60000
+SYS_UID_MIN     500
+SYS_UID_MAX     999
+
+GID_MIN         1000
+GID_MAX         60000
+SYS_GID_MIN     500
+SYS_GID_MAX     999
+
+CREATE_HOME     yes
+USERGROUPS_ENAB yes
+ENCRYPT_METHOD  SHA512

@@ -1,2 +1,6 @@
 #!/bin/sh
-exec agetty --noclear -n -l /bin/bash tty1 38400 linux
+exec 2>&1
+if [ -f /etc/grintion/live ]; then
+    exec agetty --noclear --skip-login --login-program /usr/bin/live-shell tty1 38400 linux
+fi
+exec agetty --noclear tty1 38400 linux

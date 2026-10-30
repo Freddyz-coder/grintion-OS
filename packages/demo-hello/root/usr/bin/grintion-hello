@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by the demo-hello package.
+cat /usr/share/grintion/demo-lib.txt
+echo "hello from Grintion-OS"

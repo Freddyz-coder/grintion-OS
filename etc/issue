@@ -1,18 +1,16 @@
-        █
-       █▓█
-      █▓▒▓█
-     █▓▒@▒▓█
-    █▓▒@@@▒▓█
-   █▓▒@+-+@▒▓█
-  █▓▒@+---+@▒▓█
- █▓▒@+-/-\-+@▒▓█
-█▓▒@+-/   \-+@▒▓█
-    ▓▒@   @▒▓         
-   ▓▒@     @▒▓
-  ▓▒@       @▒▓
- ▓▒@         @▒▓
-█@█           █@█
+   .----------------.
+  /  .------------.  \
+ |  /  .--------.  \  |
+ | |  /  .----.  \  | |
+ | | |  /    \  | | |
+ | | | |  /\  | | | |
+ | | |  \____/  | | |
+ | |  \________/  | |
+ |  \____________/  |
+  \________________/
 
-Grintion-OS (x86_64) - Hardened Linux
-Philosophy: MISS | Ephemeral RAM Rootfs Active
+Grintion-OS 1.0.0 (x86_64)
+Minimal - Independent - Secure - Stable
 
+Live environment: the root filesystem is an overlay in RAM.
+Nothing is written to disk unless you enable persistence or install.

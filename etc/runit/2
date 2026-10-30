@@ -1,12 +1,15 @@
 #!/bin/sh
-# /etc/runit/2 - Grintion-OS Process Supervision Stage
-# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
+# Grintion-OS runit stage 2: service supervision.
+# runsvdir takes over PID 1's child process and supervises /var/service.
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-# Ensure runit supervision directory exists
 mkdir -p /var/service
 
-# Execute runsvdir supervising all services in /var/service
-exec env - PATH=$PATH runsvdir -P /var/service '................................................................'
+if [ -x /usr/sbin/runsvdir ]; then
+    exec env - PATH="$PATH" /usr/sbin/runsvdir -P /var/service
+fi
+
+echo "[-] runsvdir is missing; starting a rescue shell" >&2
+exec /bin/bash --login

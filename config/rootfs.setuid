@@ -1,0 +1,15 @@
+# Binaries that must be installed setuid root in the live rootfs.
+# cp(1) drops set-ID bits for unprivileged copies, so the build applies them
+# explicitly after staging. Listed paths are relative to the rootfs root.
+usr/bin/sudo
+usr/bin/su
+usr/bin/passwd
+usr/bin/chfn
+usr/bin/chsh
+usr/bin/mount
+usr/bin/umount
+usr/bin/ping
+usr/bin/newgrp
+usr/bin/gpasswd
+usr/bin/login
+usr/bin/unix_chkpwd

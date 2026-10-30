@@ -1,105 +1,390 @@
-#!/bin/sh
-# grintion-install - Interactive DIY installer for Grintion-OS
-# Adheres strictly to the MISS philosophy
+#!/usr/bin/env bash
+# grintion-install - install Grintion-OS from the live image to a disk.
+#
+# The installer is deliberately explicit: every privileged step is checked,
+# every generated identifier is derived from blkid, and every failure path
+# unmounts the target. It never bootstraps the OS with garb; the live root is
+# the source of truth and is copied once.
 
-set -e
+set -Eeuo pipefail
+export LC_ALL=C
 
-cat << 'EOF'
-        █
-       █▓█
-      █▓▒▓█
-     █▓▒@▒▓█
-    █▓▒@@@▒▓█
-   █▓▒@+-+@▒▓█
-  █▓▒@+---+@▒▓█
- █▓▒@+-/-\-+@▒▓█
-█▓▒@+-/   \-+@▒▓█
-    ▓▒@   @▒▓         
-   ▓▒@     @▒▓
-  ▓▒@       @▒▓
- ▓▒@         @▒▓
-█@█           █@█
+VERSION="$(cat /etc/grintion/version 2>/dev/null || echo unknown)"
+TARGET=/mnt
+DISK=""
+HOSTNAME="grintion"
+USER_NAME=""
+USER_PASSWORD=""
+ROOT_PASSWORD=""
+UNATTENDED=0
+DRY_RUN=0
+NO_BOOTLOADER=0
+FORCE=0
+ESP_SIZE_MIB=512
 
-==============================================================
-           Grintion-OS Guided DIY Installer (MISS)
-==============================================================
+usage() {
+    cat <<'EOF'
+Usage: grintion-install [OPTIONS]
+
+Install Grintion-OS onto a disk. The whole target disk is repartitioned.
+
+Options:
+  --disk DEV            Target block device (e.g. /dev/vda, /dev/nvme0n1)
+  --hostname NAME       Installed hostname (default: grintion)
+  --user NAME           Create an administrative user in the wheel group
+  --password PASS       Password for --user (prefer the interactive prompt)
+  --root-password PASS  Set the root password (default: root stays locked)
+  --unattended          Never prompt; requires --disk, --user and --password
+  --dry-run             Validate the plan and exit without changing anything
+  --no-bootloader       Skip Limine installation
+  --force               Allow running from an installed system
+  -h, --help            Show this help
+
+Examples:
+  grintion-install --disk /dev/vda
+  grintion-install --unattended --disk /dev/vda --hostname box \
+      --user grintion --password secret
 EOF
+}
 
-echo ""
-echo "Available storage devices:"
-lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E "disk|nvme"
-echo ""
+log()  { printf '\033[1;32m[*]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[-]\033[0m %s\n' "$*" >&2; exit 1; }
 
-printf "Enter target disk device to install on (e.g. /dev/sda or /dev/nvme0n1): "
-read -r TARGET_DISK
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --disk)          DISK=${2:-}; shift 2 ;;
+        --hostname)      HOSTNAME=${2:-}; shift 2 ;;
+        --user)          USER_NAME=${2:-}; shift 2 ;;
+        --password)      USER_PASSWORD=${2:-}; shift 2 ;;
+        --root-password) ROOT_PASSWORD=${2:-}; shift 2 ;;
+        --unattended)    UNATTENDED=1; shift ;;
+        --dry-run)       DRY_RUN=1; shift ;;
+        --no-bootloader) NO_BOOTLOADER=1; shift ;;
+        --force)         FORCE=1; shift ;;
+        -h|--help)       usage; exit 0 ;;
+        *)               die "unknown option: $1 (see --help)" ;;
+    esac
+done
 
-if [ ! -b "$TARGET_DISK" ]; then
-    echo "[-] Error: '$TARGET_DISK' is not a valid block device." >&2
-    exit 1
+[ "$(id -u)" -eq 0 ] || die "grintion-install must run as root"
+if [ ! -f /etc/grintion/live ] && [ "$FORCE" -ne 1 ]; then
+    die "this does not look like the live image; use --force to override"
 fi
 
-echo ""
-echo "WARNING: All data on $TARGET_DISK will be destroyed!"
-printf "Are you sure you wish to continue? (type 'YES' to proceed): "
-read -r CONFIRM
-if [ "$CONFIRM" != "YES" ]; then
-    echo "[*] Installation aborted by user."
+for tool in parted partprobe mkfs.vfat mkfs.ext4 blkid rsync openssl python3; do
+    command -v "$tool" >/dev/null 2>&1 || die "required installer tool is missing: $tool"
+done
+
+if [ -z "$DISK" ]; then
+    if [ "$UNATTENDED" -eq 1 ]; then
+        die "--disk is required with --unattended"
+    fi
+    echo "Available disks:"
+    lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
+    printf "Target disk (e.g. /dev/vda): "
+    read -r DISK
+fi
+
+[ -b "$DISK" ] || die "not a block device: $DISK"
+DISK_SIZE="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 0)"
+[ "$DISK_SIZE" -ge 4294967296 ] || die "target disk must be at least 4 GiB"
+
+# Refuse to overwrite a mounted disk.
+if findmnt -rn -S "$DISK" >/dev/null 2>&1 || findmnt -rn -S "${DISK}1" >/dev/null 2>&1; then
+    die "a partition of $DISK is mounted; unmount it first"
+fi
+
+if [ -z "$USER_NAME" ]; then
+    if [ "$UNATTENDED" -eq 1 ]; then
+        die "--user is required with --unattended"
+    fi
+    printf "Administrative username [grintion]: "
+    read -r USER_NAME
+    USER_NAME=${USER_NAME:-grintion}
+fi
+case "$USER_NAME" in
+    root|""|*[!a-z0-9_-]*) die "invalid username: $USER_NAME" ;;
+esac
+
+if [ -z "$USER_PASSWORD" ]; then
+    if [ "$UNATTENDED" -eq 1 ]; then
+        die "--password is required with --unattended"
+    fi
+    printf "Password for %s: " "$USER_NAME"
+    read -rs USER_PASSWORD
+    echo
+    printf "Repeat password: "
+    read -rs USER_PASSWORD2
+    echo
+    [ "$USER_PASSWORD" = "$USER_PASSWORD2" ] || die "passwords do not match"
+fi
+[ -n "$USER_PASSWORD" ] || die "the administrative password cannot be empty"
+
+if [ "$UNATTENDED" -ne 1 ] && [ -z "$HOSTNAME" ]; then
+    printf "Hostname [grintion]: "
+    read -r HOSTNAME
+    HOSTNAME=${HOSTNAME:-grintion}
+fi
+case "$HOSTNAME" in
+    ""|*[!a-zA-Z0-9.-]*) die "invalid hostname: $HOSTNAME" ;;
+esac
+
+case "$DISK" in
+    *[0-9]) ESP="${DISK}p1"; ROOT_PART="${DISK}p2" ;;
+    *)      ESP="${DISK}1";  ROOT_PART="${DISK}2" ;;
+esac
+
+if [ -n "$ROOT_PASSWORD" ] && [ "$UNATTENDED" -ne 1 ] && [ -z "${ROOT_PASSWORD_SET-}" ]; then
+    :
+fi
+
+if [ "$UNATTENDED" -ne 1 ]; then
+    echo
+    warn "ALL DATA ON $DISK WILL BE DESTROYED"
+    printf "Type YES to install Grintion-OS %s: " "$VERSION"
+    read -r CONFIRM
+    [ "$CONFIRM" = "YES" ] || { echo "aborted"; exit 0; }
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    cat <<EOF
+Plan:
+  disk:       $DISK ($(numfmt --to=iec "$DISK_SIZE"))
+  ESP:        $ESP (${ESP_SIZE_MIB} MiB, vfat, LABEL=GRINTIONESP)
+  root:       $ROOT_PART (ext4, LABEL=GRINTION_ROOT)
+  hostname:   $HOSTNAME
+  user:       $USER_NAME (wheel)
+  bootloader: $([ "$NO_BOOTLOADER" -eq 1 ] && echo skipped || echo Limine BIOS+UEFI)
+  target:     $TARGET
+Dry run complete; nothing was changed.
+EOF
     exit 0
 fi
 
-echo ""
-echo "[1/6] Partitioning $TARGET_DISK with GPT layout..."
-# Create 512MB EFI partition and root partition
-parted -s "$TARGET_DISK" mklabel gpt
-parted -s "$TARGET_DISK" mkpart "ESP" fat32 1MiB 513MiB
-parted -s "$TARGET_DISK" set 1 esp on
-parted -s "$TARGET_DISK" mkpart "GRINTION_ROOT" ext4 513MiB 100%
+CLEANUP_DONE=0
+cleanup() {
+    [ "$CLEANUP_DONE" -eq 1 ] && return 0
+    CLEANUP_DONE=1
+    set +e
+    sync
+    if mountpoint -q "$TARGET/boot/efi" 2>/dev/null; then umount "$TARGET/boot/efi"; fi
+    if mountpoint -q "$TARGET" 2>/dev/null; then umount "$TARGET"; fi
+}
+trap cleanup EXIT
 
-# Determine partition names (e.g. sda1 vs nvme0n1p1)
-if echo "$TARGET_DISK" | grep -q "nvme"; then
-    EFI_PART="${TARGET_DISK}p1"
-    ROOT_PART="${TARGET_DISK}p2"
+log "partitioning $DISK"
+parted -s "$DISK" mklabel gpt
+parted -s "$DISK" mkpart ESP fat32 1MiB "$((1 + ESP_SIZE_MIB))MiB"
+parted -s "$DISK" set 1 esp on
+parted -s "$DISK" mkpart GRINTION_ROOT ext4 "$((1 + ESP_SIZE_MIB))MiB" 100%
+partprobe "$DISK" 2>/dev/null || true
+sleep 1
+[ -b "$ESP" ] || die "ESP did not appear: $ESP"
+[ -b "$ROOT_PART" ] || die "root partition did not appear: $ROOT_PART"
+
+log "formatting $ESP and $ROOT_PART"
+mkfs.vfat -F32 -n GRINTIONESP "$ESP" >/dev/null
+mkfs.ext4 -F -L GRINTION_ROOT -m 0 "$ROOT_PART" >/dev/null
+
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"
+ESP_UUID="$(blkid -s UUID -o value "$ESP")"
+[ -n "$ROOT_UUID" ] || die "could not read the root filesystem UUID"
+[ -n "$ESP_UUID" ] || die "could not read the ESP UUID"
+
+log "mounting the target"
+mkdir -p "$TARGET"
+mount "$ROOT_PART" "$TARGET"
+mkdir -p "$TARGET/boot/efi"
+mount "$ESP" "$TARGET/boot/efi"
+
+log "copying the live root filesystem"
+rsync -aHAX --numeric-ids --one-file-system \
+    --exclude=/proc/'*' --exclude=/sys/'*' --exclude=/dev/'*' \
+    --exclude=/run/'*' --exclude=/tmp/'*' --exclude=/mnt/'*' \
+    --exclude=/media/'*' --exclude=/lost+found \
+    --exclude=/etc/grintion/live \
+    --exclude=/var/log/'*' \
+    --exclude=/usr/lib/grintion \
+    / "$TARGET/"
+
+mkdir -p "$TARGET"/{proc,sys,dev,run,tmp,root,home,mnt,media,boot/efi}
+# rsync preserves the source root mode; the live overlay root is root-only.
+# An installed root must be traversable by ordinary users.
+chmod 0755 "$TARGET"
+# Replace the live-only banner with the installed-system banner.
+if [ -f "$TARGET/etc/issue.installed" ]; then
+    install -m 0644 "$TARGET/etc/issue.installed" "$TARGET/etc/issue"
+fi
+if [ -f "$TARGET/etc/motd.installed" ]; then
+    install -m 0644 "$TARGET/etc/motd.installed" "$TARGET/etc/motd"
+fi
+chmod 1777 "$TARGET/tmp"
+chmod 0700 "$TARGET/root"
+
+# The live marker must never survive on a disk.
+rm -f "$TARGET/etc/grintion/live"
+: > "$TARGET/etc/machine-id"
+tr -d '-' < /proc/sys/kernel/random/uuid > "$TARGET/etc/machine-id"
+chmod 0444 "$TARGET/etc/machine-id"
+
+printf '%s\n' "$HOSTNAME" > "$TARGET/etc/hostname"
+cat > "$TARGET/etc/hosts" <<EOF
+127.0.0.1   localhost
+::1         localhost ip6-localhost ip6-loopback
+127.0.1.1   $HOSTNAME
+EOF
+
+cat > "$TARGET/etc/fstab" <<EOF
+# /etc/fstab - generated by grintion-install
+UUID=$ROOT_UUID  /          ext4  defaults,noatime  0 1
+UUID=$ESP_UUID   /boot/efi  vfat  umask=0077,noatime  0 2
+EOF
+
+log "creating the administrative account"
+
+# Account creation is written directly into the target databases. This avoids
+# depending on chroot plus useradd/chpasswd, which need /dev and PAM inside the
+# target and are the least reliable part of a fresh installation.
+UID_NUM="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3}' "$TARGET/etc/passwd" | sort -n | tail -1)"
+UID_NUM=$(( ${UID_NUM:-999} + 1 ))
+GID_NUM="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3}' "$TARGET/etc/group" | sort -n | tail -1)"
+GID_NUM=$(( ${GID_NUM:-999} + 1 ))
+
+USER_HASH="$(openssl passwd -6 "$USER_PASSWORD")"
+unset USER_PASSWORD
+if [ -n "$ROOT_PASSWORD" ]; then
+    ROOT_HASH="$(openssl passwd -6 "$ROOT_PASSWORD")"
 else
-    EFI_PART="${TARGET_DISK}1"
-    ROOT_PART="${TARGET_DISK}2"
+    ROOT_HASH='!'
+fi
+unset ROOT_PASSWORD
+
+python3 - "$TARGET" "$USER_NAME" "$UID_NUM" "$GID_NUM" "$USER_HASH" "$ROOT_HASH" <<'PY'
+import pathlib
+import sys
+import time
+
+root = pathlib.Path(sys.argv[1])
+user, uid, gid, user_hash, root_hash = sys.argv[2:7]
+home = f"/home/{user}"
+day = int(time.time() // 86400)
+
+def read_lines(rel):
+    return (root / rel).read_text().splitlines()
+
+def write_lines(rel, lines):
+    (root / rel).write_text("\n".join(lines) + "\n")
+
+def drop_user(rel):
+    write_lines(rel, [line for line in read_lines(rel) if line.split(":")[0] != user])
+
+def append(rel, line):
+    lines = read_lines(rel)
+    lines.append(line)
+    write_lines(rel, lines)
+
+for rel in ("etc/passwd", "etc/group", "etc/shadow", "etc/gshadow"):
+    drop_user(rel)
+
+append("etc/group", f"{user}:x:{gid}:")
+append("etc/gshadow", f"{user}:!::")
+append("etc/passwd", f"{user}:x:{uid}:{gid}::{home}:/bin/bash")
+append("etc/shadow", f"{user}:{user_hash}:{day}:0:99999:7:::")
+
+lines = []
+for line in read_lines("etc/group"):
+    fields = line.split(":")
+    if fields[0] == "wheel":
+        members = [m for m in (fields[3].split(",") if len(fields) > 3 and fields[3] else []) if m]
+        if user not in members:
+            members.append(user)
+        fields[3] = ",".join(members)
+        line = ":".join(fields)
+    lines.append(line)
+write_lines("etc/group", lines)
+
+lines = []
+for line in read_lines("etc/shadow"):
+    fields = line.split(":")
+    if fields[0] == "root":
+        fields[1] = root_hash
+        line = ":".join(fields)
+    lines.append(line)
+write_lines("etc/shadow", lines)
+PY
+
+install -d -m 0700 -o "$UID_NUM" -g "$GID_NUM" "$TARGET/home/$USER_NAME"
+for skel in .bashrc .bash_profile .bash_logout; do
+    if [ -f "$TARGET/etc/skel/$skel" ]; then
+        install -m 0644 -o "$UID_NUM" -g "$GID_NUM" \
+            "$TARGET/etc/skel/$skel" "$TARGET/home/$USER_NAME/$skel"
+    fi
+done
+
+if [ "$NO_BOOTLOADER" -eq 0 ]; then
+    for asset in limine limine-bios.sys BOOTX64.EFI BOOTAA64.EFI; do
+        [ -f "/usr/share/limine/$asset" ] || die "missing bootloader asset: $asset"
+    done
+    [ -f /usr/lib/grintion/boot/vmlinuz-grintion ] || die "kernel asset is missing from the live image"
+    [ -f /usr/lib/grintion/boot/initramfs-install.img ] || die "installed initramfs is missing from the live image"
+
+    log "installing kernel and Limine"
+    mkdir -p "$TARGET/boot/efi/EFI/grintion" "$TARGET/boot/efi/EFI/BOOT"
+    install -D -m 0644 /usr/lib/grintion/boot/vmlinuz-grintion \
+        "$TARGET/boot/efi/EFI/grintion/vmlinuz-grintion"
+    install -D -m 0644 /usr/lib/grintion/boot/initramfs-install.img \
+        "$TARGET/boot/efi/EFI/grintion/initramfs-install.img"
+    install -D -m 0644 /usr/share/limine/limine-bios.sys \
+        "$TARGET/boot/efi/limine-bios.sys"
+    install -D -m 0644 /usr/share/limine/BOOTX64.EFI \
+        "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
+    install -D -m 0644 /usr/share/limine/BOOTAA64.EFI \
+        "$TARGET/boot/efi/EFI/BOOT/BOOTAA64.EFI"
+
+    cat > "$TARGET/boot/efi/limine.conf" <<EOF
+timeout: 5
+interface_branding: Grintion-OS $VERSION
+
+/Grintion-OS $VERSION
+    protocol: linux
+    kernel_path: boot():/EFI/grintion/vmlinuz-grintion
+    cmdline: root=UUID=$ROOT_UUID rw quiet console=tty0 console=ttyS0,115200 grintion.serial=1
+    module_path: boot():/EFI/grintion/initramfs-install.img
+
+/Grintion-OS $VERSION (recovery)
+    protocol: linux
+    kernel_path: boot():/EFI/grintion/vmlinuz-grintion
+    cmdline: root=UUID=$ROOT_UUID rw single console=tty0 console=ttyS0,115200 grintion.serial=1
+    module_path: boot():/EFI/grintion/initramfs-install.img
+EOF
+    cp "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"
+
+    if [ -x /usr/share/limine/limine ]; then
+        log "writing the Limine BIOS boot record"
+        /usr/share/limine/limine bios-install "$DISK" || warn "BIOS boot record was not written; UEFI boot is still installed"
+    fi
+
+    if [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null 2>&1; then
+        efibootmgr -c -d "$DISK" -p 1 -L "Grintion-OS" \
+            -l '\EFI\BOOT\BOOTX64.EFI' >/dev/null 2>&1 || true
+    fi
 fi
 
-echo "[2/6] Formatting filesystems..."
-mkfs.vfat -F32 "$EFI_PART"
-mkfs.ext4 -F -L GRINTION_ROOT "$ROOT_PART"
+sync
+cleanup
+trap - EXIT
 
-echo "[3/6] Mounting filesystems to /mnt..."
-mkdir -p /mnt
-mount "$ROOT_PART" /mnt
-mkdir -p /mnt/boot/efi
-mount "$EFI_PART" /mnt/boot/efi
-
-echo "[4/7] Bootstrapping Grintion-OS base system with garb..."
-garb bootstrap /mnt
-
-echo "[5/7] Copying kernel and initramfs to target..."
-mkdir -p /mnt/boot
-cp /vmlinuz-grintion /mnt/boot/vmlinuz-grintion 2>/dev/null || true
-cp /initramfs.img /mnt/boot/initramfs.img 2>/dev/null || true
-
-echo "[6/7] Generating system configuration..."
-cat << 'FSTAB' > /mnt/etc/fstab
-# /etc/fstab: static file system information
-LABEL=GRINTION_ROOT   /           ext4    defaults,noatime    0  1
-LABEL=ESP              /boot/efi   vfat    defaults,noatime    0  2
-FSTAB
-
-printf "Enter new system hostname [grintion-box]: "
-read -r NEW_HOSTNAME
-NEW_HOSTNAME="${NEW_HOSTNAME:-grintion-box}"
-echo "$NEW_HOSTNAME" > /mnt/etc/hostname
-
-echo "[7/7] Base installation completed successfully!"
-echo ""
+echo
 echo "=============================================================="
-echo "Next Steps:"
-echo "1. Run 'grintion-chroot /mnt' to set your root password & users"
-echo "2. Run 'limine-deploy --efi /mnt/boot/efi --disk $TARGET_DISK'"
-echo "3. Unmount with 'umount -R /mnt' and type 'reboot'"
-echo "4. REMOVE USB OR ISO MEDIA upon reboot!"
+echo "[+] Grintion-OS $VERSION installed"
+echo "=============================================================="
+echo "disk:      $DISK"
+echo "root UUID: $ROOT_UUID"
+echo "ESP UUID:  $ESP_UUID"
+echo "hostname:  $HOSTNAME"
+echo "user:      $USER_NAME (wheel)"
+echo "boot:      $([ "$NO_BOOTLOADER" -eq 1 ] && echo 'bootloader skipped' || echo 'Limine BIOS + UEFI')"
+echo
+echo "Remove the installation media and reboot."
 echo "=============================================================="

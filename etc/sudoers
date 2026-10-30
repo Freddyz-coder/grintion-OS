@@ -1,0 +1,12 @@
+# /etc/sudoers - Grintion-OS
+# Members of wheel may run commands as any user after authenticating.
+Defaults   env_reset
+Defaults   secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults   use_pty
+Defaults   log_year, logfile="/var/log/sudo.log"
+Defaults   mail_badpass
+
+root ALL=(ALL:ALL) ALL
+%wheel ALL=(ALL:ALL) ALL
+
+#includedir /etc/sudoers.d

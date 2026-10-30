@@ -1,63 +1,69 @@
 #!/bin/sh
-# /etc/runit/1 - Grintion-OS System Initialization
-# Philosophy: MISS (Minimalist, Independent, Secure, Stable)
-# Designed for Paranoid Users
+# Grintion-OS runit stage 1: one-time system initialization.
+# This script runs both in the live overlay and on an installed disk.
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+umask 022
 
-echo ""
-echo ">> [1/4] Grintion-OS Initializing (runit Stage 1)..."
+mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
 
-# Mount essential virtual pseudo-filesystems
-mountpoint -q /proc    || mount -t proc proc /proc -o nosuid,noexec,nodev
-mountpoint -q /sys     || mount -t sysfs sys /sys -o nosuid,noexec,nodev
-mountpoint -q /dev     || mount -t devtmpfs dev /dev -o mode=0755,nosuid
+mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
+
+if ! mountpoint -q /dev; then
+    mount -t devtmpfs dev /dev -o mode=0755,nosuid
+fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
 
-# Mount cgroups v2 for container sandboxing (Flatpak / Snap / AppImage)
-if [ -d /sys/fs/cgroup ]; then
-    mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate
+mkdir -p /sys/fs/cgroup
+mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate 2>/dev/null || true
+
+if [ -d /sys/firmware/efi ] && [ ! -d /sys/firmware/efi/efivars ]; then
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
 fi
 
-echo ">> [2/4] Applying Paranoid Kernel Security Policies..."
-# Apply hardened sysctl configuration
+mkdir -p /run /var/log /var/spool/mail /var/lib/dhcpcd /var/lib/garb /run/dhcpcd /run/wpa_supplicant
+chmod 0755 /run /var/log /var/spool/mail /var/lib/dhcpcd /run/dhcpcd /run/wpa_supplicant
+chmod 0700 /var/lib/garb
+chown dhcpcd:dhcpcd /var/lib/dhcpcd /run/dhcpcd 2>/dev/null || true
+
+if ! mountpoint -q /run; then
+    mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+fi
+if ! mountpoint -q /tmp; then
+    mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+fi
+chmod 1777 /tmp
+
+if [ -s /etc/hostname ]; then
+    cat /etc/hostname > /proc/sys/kernel/hostname 2>/dev/null || true
+fi
+
 if [ -d /etc/sysctl.d ]; then
-    for f in /etc/sysctl.d/*.conf; do
-        [ -f "$f" ] && sysctl -p "$f" >/dev/null 2>&1
+    for file in /etc/sysctl.d/*.conf; do
+        [ -f "$file" ] || continue
+        sysctl -p "$file" >/dev/null 2>&1 || true
     done
 fi
 
-# Set system hostname
-if [ -f /etc/hostname ]; then
-    read -r HOSTNAME < /etc/hostname
-    hostname "$HOSTNAME"
-else
-    hostname "grintion-live"
+if [ ! -s /etc/machine-id ]; then
+    tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id 2>/dev/null || true
+    chmod 0444 /etc/machine-id 2>/dev/null || true
 fi
 
-# Bring up loopback interface
-ip link set up dev lo 2>/dev/null || ifconfig lo up 2>/dev/null
-
-echo ">> [3/5] Loading essential kernel modules..."
-# Load essential drivers if modules are available
-for mod in usbhid hid_generic ahci nvme sd_mod ext4 vfat fat; do
-    modprobe "$mod" 2>/dev/null || true
-done
-# Trigger coldplug for device detection (udev-less)
-if [ -d /sys/bus ]; then
-    for uevent in /sys/bus/*/devices/*/uevent; do
-        [ -f "$uevent" ] && echo add > "$uevent" 2>/dev/null || true
-    done
+if [ -s /var/lib/random-seed ]; then
+    cat /var/lib/random-seed > /dev/urandom 2>/dev/null || true
 fi
 
-echo ">> [4/5] Initializing entropy & hardware clock..."
-# Seed random generator if available
-if [ -f /var/lib/random-seed ]; then
-    cat /var/lib/random-seed > /dev/urandom 2>/dev/null
+# devtmpfs creates the nodes; mdev applies /etc/mdev.conf and is the hotplug
+# helper. There is no udev in Grintion-OS by design.
+if [ -x /usr/bin/mdev ]; then
+    /usr/bin/mdev -s 2>/dev/null || true
+    if [ -w /proc/sys/kernel/hotplug ]; then
+        echo /usr/bin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
+    fi
 fi
 
-echo ">> [5/5] Hardware & device initialization complete."
 exit 0

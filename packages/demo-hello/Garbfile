@@ -1,0 +1,10 @@
+[package]
+name = "demo-hello"
+version = "1.0.0"
+release = 1
+description = "Demo executable that depends on demo-lib"
+license = "GPL-3.0-or-later"
+arch = ["x86_64"]
+
+[dependencies]
+runtime = ["demo-lib"]

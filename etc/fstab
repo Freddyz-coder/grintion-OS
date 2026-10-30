@@ -1,0 +1,3 @@
+# /etc/fstab - live environment
+# The live root is an overlay and is intentionally absent from fstab.
+# grintion-install writes UUID-based entries into the installed system.
