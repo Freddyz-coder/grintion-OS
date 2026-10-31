@@ -102,7 +102,7 @@ pkg_install() {
         if [ "$NO_CONFIRM" -eq 1 ]; then
             noconfirm=("--noconfirm")
         fi
-        pacman "${root_flag[@]}" -S "${noconfirm[@]}" --needed "${pkgs[@]}"
+        pacman "${root_flag[@]}" -S "${noconfirm[@]}" --needed --overwrite '*' "${pkgs[@]}"
     elif command -v garb >/dev/null 2>&1; then
         garb "${root_flag[@]}" install "${pkgs[@]}"
     else
