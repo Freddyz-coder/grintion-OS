@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- **Authentic Grintion-OS Visual Branding:** Deployed the official Unicode block logo across `/etc/grintion-logo.txt` (used by `fastfetch`), `/etc/issue.in` (live boot banner), `/etc/issue.installed.in` (installed boot banner), and `bin/grintion-persist`.
+- **Desktop Environment Management (`grintion-desktop`):** Full interactive and scripted suite supporting **XFCE**, **GNOME**, **KDE Plasma**, **LXQt**, **Sway**, and **i3** with numeric (`1`–`6`) and name-based selection.
+- **Automated Repository Synchronization:** Enhanced `grintion-desktop` to automatically synchronize package databases (`pacman -Sy`) before package installation, preventing missing database errors on freshly booted systems.
+
+### Fixed
+
+- **Clean Console Login Experience:** Isolated network service (`dhcpcd`) logging in `etc/sv/network/run` to `/var/log/dhcpcd.log`, eliminating terminal prompt interleaving and avoiding displaced login prompts on `tty1`.
+- **Package Conflict Resolution (`--overwrite '*'`):** Passed `--overwrite '*'` to `pacman` during package installation and upgrades in `garb` and `grintion-desktop`, safely handling pre-bundled shared libraries without transaction commit failures.
+- **Primary Console Routing:** Swapped kernel boot console order to `console=ttyS0,115200 console=tty0` so `tty0` (display screen and keyboard) is the primary interactive console.
+- **Panic-Proof Early Boot:** Hardened `init/live-init` and `init/install-init` with error traps and persistent shell restart loops to prevent PID 1 kernel panics.
+
+---
+
 ## [0.5.4] - 2026-10-31
 
 ### Fixed
