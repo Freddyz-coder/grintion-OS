@@ -47,6 +47,7 @@ ln -sfn usr/sbin  "$ROOTFS/sbin"
 ln -sfn usr/lib   "$ROOTFS/lib"
 ln -sfn usr/lib   "$ROOTFS/lib64"
 ln -sfn lib       "$ROOTFS/usr/lib64"
+ln -sfn var/service "$ROOTFS/service"
 
 # ---------------------------------------------------------------- host binaries
 log "copying required host binaries"

@@ -2,6 +2,7 @@
 # Sourced by bash for every login shell. No user-specific values are set here.
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export SVDIR=/var/service
 export EDITOR="${EDITOR:-nano}"
 export PAGER="${PAGER:-less}"
 umask 022

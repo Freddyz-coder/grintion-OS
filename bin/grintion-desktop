@@ -354,7 +354,7 @@ cmd_install() {
     log "=============================================================="
     if [ -n "$dm_bin" ]; then
         echo "Display Manager: $dm_bin (managed by runit: /var/service/display-manager)"
-        echo "To start now:    sv start display-manager"
+        echo "To start now:    sudo sv start /var/service/display-manager"
     else
         echo "Launch command:  $xinit_cmd (or run 'startx' / 'sway')"
     fi
