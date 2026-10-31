@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.4] - 2026-10-31
+## [0.5.4] - 2026-10-26
 
 ### Fixed
 
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.3] - 2026-10-31
+## [0.5.3] - 2026-10-24
 
 ### Fixed
 
@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.2] - 2026-10-31
+## [0.5.2] - 2026-10-23
 
 ### Fixed
 
@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.1] - 2026-10-31
+## [0.5.1] - 2026-10-21
 
 ### Fixed
 
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.0] - 2026-10-31
+## [0.5.0] - 2026-10-4
 
 ### Added
 
@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.0] - 2026-10-30
+## [0.4.0] - 2026-9-28
 
 The first supported release: a console-only x86_64 system that boots from a
 hybrid BIOS/UEFI ISO, runs from an overlay, installs to a disk, and uses a
@@ -187,7 +187,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.3.0-alpha] - 2026-10-28
+## [0.3.0-alpha] - 2026-9-19
 
 ### Fixed
 
@@ -206,7 +206,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.2.0-alpha] - 2026-10-28
+## [0.2.0-alpha] - 2026-9-11
 
 ### Added
 
@@ -226,7 +226,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.1.0-alpha] - 2026-10-26
+## [0.1.0-alpha] - 2026-9-10
 
 ### Added
 
