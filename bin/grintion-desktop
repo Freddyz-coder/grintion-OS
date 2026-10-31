@@ -118,8 +118,14 @@ enable_dm_service() {
     mkdir -p "$sv_dir"
     cat > "$sv_dir/run" <<EOF
 #!/bin/sh
-exec 2>&1
-exec $dm
+mkdir -p /var/log
+exec >> /var/log/display-manager.log 2>&1
+if [ -x "$dm" ]; then
+    "$dm"
+    sleep 3
+    exit 1
+fi
+exec sleep 3600
 EOF
     chmod 0755 "$sv_dir/run"
 
