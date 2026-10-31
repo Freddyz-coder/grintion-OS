@@ -115,6 +115,18 @@ enable_dm_service() {
     local sv_dir="$TARGET_ROOT/etc/sv/display-manager"
     local var_sv="$TARGET_ROOT/var/service/display-manager"
 
+    if [ "$dm" = "/usr/bin/lightdm" ]; then
+        if ! id -u lightdm >/dev/null 2>&1; then
+            groupadd -r lightdm 2>/dev/null || true
+            useradd -r -g lightdm -d /var/lib/lightdm -s /usr/bin/nologin lightdm 2>/dev/null || true
+        fi
+        mkdir -p "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm"
+        chown -R lightdm:lightdm "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm" 2>/dev/null || true
+        if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then
+            sed -i 's/^#\?greeter-session=.*/greeter-session=lightdm-gtk-greeter/' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+        fi
+    fi
+
     mkdir -p "$sv_dir"
     cat > "$sv_dir/run" <<EOF
 #!/bin/sh

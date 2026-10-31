@@ -13,5 +13,6 @@ input:x:990:
 uucp:x:14:
 utmp:x:999:
 dhcpcd:x:977:
+lightdm:x:976:
 nobody:x:65534:
 nogroup:x:65533:
