@@ -220,6 +220,7 @@ pivot_root
 agetty
 setsid
 openssl
+mcookie
 
 # Optional pacman backend used by garb (Arch official repositories)
 pacman

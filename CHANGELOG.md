@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-10-31
+
+### Fixed
+
+- **System Power Wrappers (`poweroff`, `reboot`, `shutdown`, `halt`):** Deployed native busybox-backed power wrapper scripts to `/usr/bin/` and `/usr/sbin/`, completely preventing `System has not been booted with systemd as init system (PID 1)` errors and allowing clean, direct system restart and shutdown without requiring the `-f` flag.
+- **Display Manager Logging & Crash Isolation:** Redirected display manager execution logs to `/var/log/display-manager.log` and added a 3-second restart cooldown, preventing runaway crash loops and terminal output interleaving on `tty1`.
+- **LightDM System User & Greeter Auto-Configuration:** Automatically provisions the `lightdm` system user and group, creates required state/log directories (`/var/lib/lightdm`, `/var/log/lightdm`), and configures `greeter-session=lightdm-gtk-greeter` in `/etc/lightdm/lightdm.conf` during desktop installation and in the base rootfs.
+- **X11 Magic Cookie Generator (`mcookie` & `util-linux`):** Added `mcookie` directly into `config/rootfs.required-binaries` and `util-linux` to desktop dependencies with an automatic `openssl` fallback generator in `/usr/bin/mcookie`, ensuring `startx` initializes Xauth security cookies and boots directly without manual intervention.
+- **Automated Desktop Session Initialization (`.xinitrc`):** Enhanced `grintion-desktop` to automatically propagate the desktop session command (`exec startxfce4`, etc.) across `/etc/skel/.xinitrc`, `/root/.xinitrc`, and all existing user home directories with proper file ownership.
+- **Installer Chrooted Environment:** Upgraded `grintion-install` to mount `/proc`, `/sys`, `/dev`, and `/run` with working DNS resolution before running desktop pre-installation, guaranteeing package installation and user account creation succeed on target disks.
+- **Runit Service Path Compatibility (`SVDIR` and `/service`):** Exported `SVDIR=/var/service` in `/etc/profile` and established `/service -> /var/service` symlink in rootfs so `sv start <service>` and `sv status <service>` commands work reliably without requiring manual `/var/service/` path prefixes.
+
+---
+
 ## [0.6.0] - 2026-10-31
 
 ### Added

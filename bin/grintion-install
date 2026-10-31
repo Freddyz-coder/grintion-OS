@@ -178,8 +178,12 @@ cleanup() {
     CLEANUP_DONE=1
     set +e
     sync
-    if mountpoint -q "$TARGET/boot/efi" 2>/dev/null; then umount "$TARGET/boot/efi"; fi
-    if mountpoint -q "$TARGET" 2>/dev/null; then umount "$TARGET"; fi
+    for path in run dev/pts dev sys proc boot/efi; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount -l "$TARGET/$path" 2>/dev/null || umount "$TARGET/$path" 2>/dev/null || true
+        fi
+    done
+    if mountpoint -q "$TARGET" 2>/dev/null; then umount -l "$TARGET" 2>/dev/null || umount "$TARGET" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 
@@ -334,9 +338,27 @@ done
 
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
     log "pre-installing graphical desktop environment: $DESKTOP"
-    if command -v grintion-desktop >/dev/null 2>&1; then
-        grintion-desktop --root "$TARGET" -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings (can be installed later with grintion-desktop)"
+    mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
+    mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
+    mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
+    mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
+    mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
+    mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
+    if [ -f /etc/resolv.conf ]; then
+        cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
     fi
+
+    if [ -x "$TARGET/usr/bin/grintion-desktop" ]; then
+        chroot "$TARGET" /usr/bin/grintion-desktop -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings"
+    elif command -v grintion-desktop >/dev/null 2>&1; then
+        grintion-desktop --root "$TARGET" -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings"
+    fi
+
+    for path in run dev/pts dev sys proc; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount -l "$TARGET/$path" 2>/dev/null || true
+        fi
+    done
 fi
 
 if [ "$NO_BOOTLOADER" -eq 0 ]; then
