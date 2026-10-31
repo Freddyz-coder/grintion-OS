@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.3] - 2026-10-31
+
+### Fixed
+
+- **Pacman File Conflict Resolution (`--overwrite '*'`):** Configured `garb` and `grintion-desktop` to pass `--overwrite '*'` to pacman during package installations and upgrades. This eliminates `error: failed to commit transaction (conflicting files)` when installing packages (such as Xorg, X11 libraries, FreeType, Fontconfig) whose shared libraries were pre-bundled into `/usr/lib/` during base image creation.
+- **Unit Test Updates:** Updated `tests/test_garb.py` (`test_pacman_backend_translation`) to verify `--overwrite '*'` argument passing.
+
+---
+
 ## [0.5.2] - 2026-10-31
 
 ### Fixed
