@@ -1,11 +1,12 @@
 # Roadmap
 
-Grintion-OS 1.0.0 is a console-only x86_64 system with a source-built kernel, a
-runit userland, a live overlay, a disk installer and a package manager with
-signed repository indexes.
+Grintion-OS is an x86_64 operating system featuring a source-built kernel, a
+runit userland, a live overlay, a disk installer, and dual-backend package
+management (native signed repositories and bundled pacman for Arch Linux
+repositories) with complete graphical desktop support via `grintion-desktop`.
 
-This page lists work that is **not** part of 1.0.0. Nothing here is a promise or
-a schedule.
+This page lists work that is planned for future releases. Nothing here is a
+promise or a schedule.
 
 ## Next
 
@@ -33,11 +34,12 @@ a schedule.
 - ARM64 build and image pipeline. The build scripts are x86_64-only today.
 - Automated bare-metal test coverage. The current matrix is QEMU only.
 
-### Userland
+### Userland & Desktop
 
+- Additional pre-configured desktop themes and profile presets for `grintion-desktop`.
 - From-source userland bootstrap. This is the largest gap in the
   "independent integration" story and needs a stage0 toolchain, package build
-  recipes and a source cache. Do not fake it with host copies.
+  recipes and a source cache.
 - Wi-Fi boot integration: a supervised service that starts `wpa_supplicant` and
   DHCP on a wireless interface, or a small network configuration tool.
 - `garb` source packages with a build sandbox, version constraints, delta
@@ -46,8 +48,9 @@ a schedule.
 
 ## Non-goals
 
-- A graphical desktop in the base image. Window managers and desktop packages
-  are not shipped in 1.0.0; the system is console-only by design.
+- A bloated pre-installed desktop inside the minimal base ISO. The base image
+  remains lean and boots to a console prompt for pre-installation and maintenance,
+  while providing seamless on-demand desktop installation via `grintion-desktop`.
 - A general-purpose distribution with a large preinstalled application set.
 - Telemetry, analytics or a mandatory online account.
 - Supporting non-Arch build hosts. The live userland is curated from Arch

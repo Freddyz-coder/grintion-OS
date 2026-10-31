@@ -16,6 +16,7 @@ HOSTNAME="grintion"
 USER_NAME=""
 USER_PASSWORD=""
 ROOT_PASSWORD=""
+DESKTOP=""
 UNATTENDED=0
 DRY_RUN=0
 NO_BOOTLOADER=0
@@ -34,6 +35,7 @@ Options:
   --user NAME           Create an administrative user in the wheel group
   --password PASS       Password for --user (prefer the interactive prompt)
   --root-password PASS  Set the root password (default: root stays locked)
+  --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, none)
   --unattended          Never prompt; requires --disk, --user and --password
   --dry-run             Validate the plan and exit without changing anything
   --no-bootloader       Skip Limine installation
@@ -42,6 +44,7 @@ Options:
 
 Examples:
   grintion-install --disk /dev/vda
+  grintion-install --disk /dev/vda --user grintion --desktop xfce
   grintion-install --unattended --disk /dev/vda --hostname box \
       --user grintion --password secret
 EOF
@@ -58,6 +61,7 @@ while [ $# -gt 0 ]; do
         --user)          USER_NAME=${2:-}; shift 2 ;;
         --password)      USER_PASSWORD=${2:-}; shift 2 ;;
         --root-password) ROOT_PASSWORD=${2:-}; shift 2 ;;
+        --desktop)       DESKTOP=${2:-}; shift 2 ;;
         --unattended)    UNATTENDED=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --no-bootloader) NO_BOOTLOADER=1; shift ;;
@@ -129,6 +133,12 @@ fi
 case "$HOSTNAME" in
     ""|*[!a-zA-Z0-9.-]*) die "invalid hostname: $HOSTNAME" ;;
 esac
+
+if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
+    printf "Pre-install Desktop Environment (none/xfce/gnome/kde/lxqt/sway) [none]: "
+    read -r DESKTOP
+    DESKTOP=${DESKTOP:-none}
+fi
 
 case "$DISK" in
     *[0-9]) ESP="${DISK}p1"; ROOT_PART="${DISK}p2" ;;
@@ -322,6 +332,13 @@ for skel in .bashrc .bash_profile .bash_logout; do
     fi
 done
 
+if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
+    log "pre-installing graphical desktop environment: $DESKTOP"
+    if command -v grintion-desktop >/dev/null 2>&1; then
+        grintion-desktop --root "$TARGET" -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings (can be installed later with grintion-desktop)"
+    fi
+fi
+
 if [ "$NO_BOOTLOADER" -eq 0 ]; then
     for asset in limine limine-bios.sys BOOTX64.EFI BOOTAA64.EFI; do
         [ -f "/usr/share/limine/$asset" ] || die "missing bootloader asset: $asset"
@@ -384,6 +401,11 @@ echo "root UUID: $ROOT_UUID"
 echo "ESP UUID:  $ESP_UUID"
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
+if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
+    echo "desktop:   $DESKTOP (ready on boot)"
+else
+    echo "desktop:   console base (install graphical desktop anytime with 'grintion-desktop')"
+fi
 echo "boot:      $([ "$NO_BOOTLOADER" -eq 1 ] && echo 'bootloader skipped' || echo 'Limine BIOS + UEFI')"
 echo
 echo "Remove the installation media and reboot."

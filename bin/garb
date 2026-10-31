@@ -878,22 +878,19 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
         elif command == "install":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
-            argv.append("-S")
-            argv += args.package
+            argv += ["-S", "--noconfirm", *args.package]
         elif command == "remove":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
-            argv.append("-R")
-            argv += args.package
+            argv += ["-R", "--noconfirm", *args.package]
         elif command == "verify":
             argv.append("-Qk" if args.quick else "-Qkk")
             argv += args.package
         elif command == "upgrade":
             if args.package:
-                argv.append("-S")
-                argv += args.package
+                argv += ["-S", "--noconfirm", *args.package]
             else:
-                argv.append("-Su")
+                argv += ["-Su", "--noconfirm"]
         else:
             raise GarbError(f"pacman has no mapping for garb {command}")
         return argv

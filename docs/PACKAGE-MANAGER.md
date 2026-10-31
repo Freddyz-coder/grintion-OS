@@ -40,10 +40,16 @@ are relative to that root.
 
 ## External backend delegation
 
-`garb` can use a package manager that is already installed on the system as a
-backend. This is a translator, not a bundled package manager: if `pacman` or
-`apk` is present, `garb` executes it with the mapped arguments and returns its
-exit status. No repository of our own is needed in that mode.
+`garb` uses an installed package manager as an external backend. The current
+image ships **pacman**; `apk` is supported by the translator but is not
+installed. When the backend is present, `garb` executes it with the mapped
+arguments and returns its exit status. No Grintion-hosted repository is needed.
+
+**Backend status:** The bundled pacman backend is fully operational with Arch
+Linux official repositories. Mount point tracking is handled via `/etc/mtab ->
+/proc/self/mounts`, enabling `CheckSpace` verification on overlay roots.
+Automated non-interactive transactions pass `--noconfirm` by default. See
+[VERIFICATION.md](VERIFICATION.md).
 
 ```sh
 garb --backend auto install htop     # delegate if pacman/apk is installed
@@ -56,11 +62,11 @@ garb --backend pacman install htop   # explicit backend
 | `update` | `-Sy` | `update` |
 | `search QUERY` | `-Ss QUERY` | `search QUERY` |
 | `info PACKAGE` | `-Si PACKAGE` | `info PACKAGE` |
-| `install PACKAGE...` | `-S PACKAGE...` | `add PACKAGE...` |
-| `remove PACKAGE...` | `-R PACKAGE...` | `del PACKAGE...` |
+| `install PACKAGE...` | `-S --noconfirm PACKAGE...` | `add PACKAGE...` |
+| `remove PACKAGE...` | `-R --noconfirm PACKAGE...` | `del PACKAGE...` |
 | `verify PACKAGE...` | `-Qkk PACKAGE...` (`-Qk` with `--quick`) | `audit PACKAGE...` |
-| `upgrade` | `-Su` | `upgrade` |
-| `upgrade PACKAGE...` | `-S PACKAGE...` | `upgrade PACKAGE...` |
+| `upgrade` | `-Su --noconfirm` | `upgrade` |
+| `upgrade PACKAGE...` | `-S --noconfirm PACKAGE...` | `upgrade PACKAGE...` |
 
 Rules and limits:
 
@@ -77,6 +83,17 @@ Rules and limits:
   index, per-file verification and rollback are not used.
 - `--force` is rejected by both external backends; `--quick` is rejected by the
   `apk` backend; `--key` and `--allow-unsigned` are native-only options.
+- The image ships `/etc/pacman.conf`, the Arch public keyring, gpg helpers and a
+  local package database seeded from the build host by
+  `build/seed-pacman-db.py`. `apk` is not included.
+- pacman uses Arch official repositories with
+  `SigLevel = Required DatabaseOptional`. Package scripts and hooks may assume
+  systemd; no Grintion-specific hook setup is provided.
+- **Known failure:** the current ISO aborts `garb install` with
+  `could not determine filesystem mount points` because `/etc/mtab` is absent.
+  `build/make-rootfs.sh` now creates that symlink, but the current rootfs/ISO
+  were built before it. `garb update` works; installation is not verified
+  until a rebuild passes.
 - Repository, package-building and signing commands (`build`, `repo-build`,
   `repo-index`, `keygen`, `sign-index`) always use the native implementation.
 

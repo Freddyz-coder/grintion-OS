@@ -11,18 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `garb` can delegate `install`, `remove`, `update`, `search`, `info`, `verify`
-  and `upgrade` to an installed `pacman` or `apk`. Auto-detection is limited to
-  the running system; `--backend native` forces the signed-repository backend.
-- `grintion-doctor` checks required commands, the sudo policy plugin and the
-  running version, and reports missing components as critical failures.
-- Interactive bash now reports unknown commands as `[CRITICAL]` and explains
-  the common `pacman`, `apk`, `man` and `clean` cases.
+- **Desktop & GUI Support:**
+  - New `grintion-desktop` utility for managing, installing, and configuring graphical desktop environments and window managers: **XFCE**, **GNOME**, **KDE Plasma**, **LXQt**, **Sway**, and **i3**.
+  - Hardware graphics driver auto-detection (`grintion-desktop drivers`) supporting Intel, AMD/Radeon, NVIDIA, QEMU/KVM VirtIO, VMware, and VirtualBox.
+  - Installer integration: `grintion-install --desktop <env>` supports pre-installing a desktop environment directly onto the target disk.
+  - Runit `display-manager` service template in `/etc/sv/display-manager` to supervise LightDM, SDDM, or GDM.
+  - Comprehensive documentation in `docs/DESKTOP-GUI.md`.
+- **Package Manager & Pacman Backend:**
+  - The live image bundles **pacman** with `/etc/pacman.conf`, official Arch Linux repositories (`core`, `extra`), the Arch public keyring, and gpg helpers.
+  - `build/seed-pacman-db.py` seeds `/var/lib/pacman/local` with packages shipped in the image and their dependency closures.
+  - `garb` delegates `install`, `remove`, `update`, `search`, `info`, `verify`, and `upgrade` to `pacman` (with `--noconfirm` for non-interactive commands).
+- **Network & Diagnostics:**
+  - `etc/resolv.conf.head` supplies fallback public resolvers (`1.1.1.1`, `8.8.8.8`) prepended by `dhcpcd` to prevent early-boot DNS resolution race conditions.
+  - `grintion-doctor` reports missing runtime binaries, sudo policy plugin availability, and version contract integrity.
+  - Interactive bash provides helpful hints when attempting to launch desktops (`startx`, `sway`, etc.) or unknown commands.
 
 ### Fixed
 
-- `sudo` now ships `/usr/lib/sudo/sudoers.so`; the binary alone could not load
-  its policy plugin and failed before authentication.
+- **Filesystem Mounts (`/etc/mtab`):** Added symlink `/etc/mtab -> /proc/self/mounts` in `build/make-rootfs.sh`. This resolves pacman's `could not determine filesystem mount points` and `CheckSpace` transaction commit failures on overlay roots.
+- **Sudoers Plugin:** Shipped `/usr/lib/sudo/sudoers.so` so `sudo` can load its policy plugin without failing before PAM authentication.
+- **Python Compatibility:** Fixed `re.split` maxsplit keyword usage in `build/seed-pacman-db.py` to prevent Python 3.13+ deprecation warnings.
+
+### Verified
+
+- Verified end-to-end pacman transactions in QEMU:
+  - `garb update` cleanly downloads and verifies Arch official databases.
+  - `garb install jq` installs `oniguruma` and `jq 1.8.2-1`.
+  - `jq --version` runs correctly.
+  - `garb remove jq` cleanly removes installed packages.
 
 ---
 

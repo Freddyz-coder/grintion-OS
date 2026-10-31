@@ -2,5 +2,6 @@ Grintion-OS @VERSION@
 Minimalist - Independent - Secure - Stable
 
 Package manager:  garb --help
+Desktop / GUI:    grintion-desktop --help
 Services:         sv status /var/service/*
 Package database: /var/lib/garb/db.json

@@ -102,6 +102,11 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
 - A failed transaction restores replaced files and removes files installed
   during the attempt.
 - No repository key is trusted by default and no repository is configured.
+- The image also contains **pacman** as an external backend for `garb`. It
+  verifies Arch packages against the Arch public keyring with
+  `SigLevel = Required DatabaseOptional`. It does not use garb's signed
+  indexes, per-file checks or rollback guarantees. Package scripts and hooks run as root.
+  Filesystem mount resolution is tracked via `/etc/mtab -> /proc/self/mounts`.
 
 ### Telemetry
 
@@ -123,6 +128,9 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
   target root. Package authors are trusted once their index key is trusted.
 - **No package-level signatures.** A compromised repository signing key
   compromises every package in that repository.
+- **The pacman backend trusts Arch upstream.** It trusts Arch official repositories
+  and the copied Arch public keyring rather than a dedicated Grintion key. Upstream
+  packages and hooks may assume systemd for service enablement.
 - **No security audit.** The code has not been independently reviewed.
 - **Physical access defeats the model.** Firmware, boot media and disks are not
   protected against an attacker with physical control of the machine.
@@ -143,6 +151,7 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 | Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
 | Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
 | `garb` repositories | Ed25519 index signature and per-file SHA-256 |
+| Arch packages (pacman backend) | Arch public keyring with `SigLevel = Required DatabaseOptional` |
 
 `make check` verifies shell syntax, Python compilation, executable bits,
 required host commands, documentation links, absolute home paths, and the

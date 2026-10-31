@@ -225,6 +225,15 @@ agetty
 setsid
 openssl
 
+# Optional pacman backend used by garb (Arch official repositories)
+pacman
+pacman-key
+pacman-conf
+gpg
+gpg-agent
+gpgconf
+dirmngr
+
 # Live tooling
 python3
 fastfetch

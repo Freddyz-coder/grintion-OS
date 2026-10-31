@@ -99,8 +99,53 @@ timedatectl               # UTC by default
 ln -sf /usr/share/zoneinfo/Region/City /etc/localtime
 ```
 
-To add packages, configure a repository first; the installed system ships no
-enabled repository. See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
+### Installing additional packages
+
+The image includes **pacman** as an external backend for `garb`; `apk` is not
+installed. After the network is up:
+
+```sh
+garb update
+# or: garb --backend pacman update
+garb install PACKAGE
+```
+
+`garb update` synchronizes the Arch `core` and `extra` databases. `garb install`
+delegates to `pacman -S --noconfirm`. The native signed-repository backend is
+still available with `garb --backend native`; it does not use pacman.
+
+Package installation works out-of-the-box using the bundled pacman backend
+and `/etc/mtab` tracking kernel mounts:
+
+```sh
+garb update
+garb install jq
+```
+
+---
+
+## Graphical Desktop Environments
+
+Grintion-OS boots into a lightweight console prompt for administrative efficiency, with complete support for installing graphical desktop environments:
+
+### Pre-installing during disk installation
+
+```sh
+grintion-install --disk /dev/vda --user myuser --desktop xfce
+```
+
+### Installing on an active system
+
+```sh
+grintion-desktop list              # List supported environments
+grintion-desktop install xfce      # Install XFCE desktop & LightDM
+grintion-desktop install gnome     # Install GNOME desktop & GDM
+grintion-desktop install kde       # Install KDE Plasma & SDDM
+grintion-desktop install sway      # Install Sway Wayland tiling WM
+grintion-desktop drivers           # Auto-detect GPU and install drivers
+```
+
+See [docs/DESKTOP-GUI.md](DESKTOP-GUI.md) for detailed configuration, display manager supervision with runit, and hardware acceleration guides.
 
 ---
 

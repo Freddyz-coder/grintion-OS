@@ -1,9 +1,10 @@
 # Architecture
 
-Grintion-OS 1.0.0 is a console-only x86_64 system built around a source-built
-Linux kernel, a runit userland, and a read-only live root that can be overlaid
-with RAM or persistent storage. This document describes the moving parts and
-the reasoning behind the unusual ones.
+Grintion-OS is an x86_64 Linux operating system built around a source-built
+Linux kernel, a runit userland, a read-only live root that can be overlaid
+with RAM or persistent storage, and full support for graphical desktop
+environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) via garb and grintion-desktop.
+This document describes the moving parts and the reasoning behind them.
 
 ```text
 BIOS/UEFI
@@ -205,10 +206,15 @@ can manage the live overlay, an installed disk, or a test root:
 /var/lib/garb/tmp/             staging and rollback backups
 ```
 
-If `pacman` or `apk` is installed on the running system, `garb` can delegate
-`install`, `remove`, `update`, `search`, `info`, `verify` and `upgrade` to it
-instead of using this layout. Auto-detection is limited to `--root /`; the
-signed-repository implementation remains available with `--backend native`.
+The image includes `pacman`; `apk` is not installed. `garb` can delegate
+`install`, `remove`, `update`, `search`, `info`, `verify` and `upgrade` to
+pacman instead of using this layout. Auto-detection is limited to `--root /`;
+the signed-repository implementation remains available with `--backend native`.
+The image ships `/etc/pacman.conf`, the Arch public keyring and a local package
+database seeded from the build host by `build/seed-pacman-db.py`, so pacman
+does not overwrite the curated glibc. The current development ISO can
+synchronize databases but package installation fails at commit because
+`/etc/mtab` is missing; see [VERIFICATION.md](VERIFICATION.md).
 See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
 
 An index is signed with Ed25519 over the exact `index.json` bytes. `garb update`
@@ -235,6 +241,7 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 | Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. |
 | Users | PAM with `pam_faillock`, root locked on installed systems unless a root password is set, `wheel` for sudo. |
 | Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default. |
+| Packages | Native `garb` uses Ed25519-signed indexes. The bundled `pacman` backend trusts the Arch public keyring and official repositories with `/etc/mtab` tracking `/proc/self/mounts`. |
 | Storage | No encryption, no integrity measurement, no verified boot. The persistence partition is plain ext4. |
 
 The live image intentionally grants passwordless root on the console. That is a

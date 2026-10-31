@@ -14,7 +14,7 @@ indexes.
   configuration fragment
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
-- **No GUI:** the release is a console system by design
+- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup, with full support for installing modern graphical desktops (XFCE, GNOME, KDE Plasma, Sway, etc.) and GPU drivers via `grintion-desktop` or `garb`
 
 Grintion-OS 1.0.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
@@ -28,15 +28,16 @@ artifacts are not signed.
 | --- | --- |
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
-| Networking | `dhcpcd` configures the first wired interface at boot. Wi-Fi tools are present (`iw`, `wpa_supplicant`) but no network manager is included. |
-| Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd and a local hook. |
+| Networking | `dhcpcd` configures the first wired interface at boot. DNS fallback resolvers keep name resolution responsive from early boot. Wi-Fi tools are present (`iw`, `wpa_supplicant`). |
+| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. |
+| Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password` is given. |
-| Packages | `garb` installs, removes, upgrades and verifies `.garb` packages from Ed25519-signed repository indexes. |
+| Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
 | Hardening | Kernel configuration fragment (BPF syscall, kexec and `/dev/mem` off), restricted `/proc` and `dmesg`, ASLR, Yama ptrace scope, io_uring disabled by sysctl, strict network sysctls, `nftables` firewall, PAM faillock. |
 
 Details: [architecture](docs/ARCHITECTURE.md), [installation](docs/INSTALL.md),
-[package manager](docs/PACKAGE-MANAGER.md), [roadmap](docs/ROADMAP.md).
+[desktop & GUI](docs/DESKTOP-GUI.md), [package manager](docs/PACKAGE-MANAGER.md), [roadmap](docs/ROADMAP.md).
 
 ---
 
@@ -55,6 +56,7 @@ Required commands and packages:
 ```sh
 sudo pacman -S --needed base-devel bc bison flex kmod libarchive \
     openssl parted dosfstools e2fsprogs rsync xorriso qemu-full python \
+    pacman gnupg archlinux-keyring \
     python-pytest python-pexpect shellcheck
 ```
 
@@ -135,19 +137,23 @@ Repositories are directories containing `.garb` packages, an `index.json` and a
 detached Ed25519 signature. The client trusts only keys in
 `/etc/garb/keys/*.pub` and checks the signature before reading any index entry.
 
-If `pacman` or `apk` is installed on the running system, `garb` can instead act
-as a wrapper: `install`, `remove`, `update`, `search`, `info`, `verify` and
-`upgrade` are translated to the external manager. Auto-detection only applies
+The image ships **pacman** as an external backend; `apk` is supported by the
+translator but is not installed. `garb` uses pacman for `install`, `remove`,
+`update`, `search`, `info`, `verify` and `upgrade`. Auto-detection only applies
 to the running system (`--root /`); use `--backend pacman|apk|native` to choose
 explicitly. Delegation bypasses garb's signature and transaction checks.
 
+**Backend integration:** `garb` supports dual backends:
+- **Pacman backend (bundled):** Delegates directly to Arch Linux official repositories (`core`, `extra`) using the bundled `pacman` and Arch public keyrings.
+- **Native backend:** Uses Ed25519-signed repository indexes and SHA-256 archive verification for custom packages.
+
 ```sh
-garb update
-garb search hello
-garb info demo-hello
-garb install demo-hello
-garb verify
-garb remove demo-hello
+garb update                      # Synchronize official repository databases
+garb search jq                   # Search packages
+garb info jq                     # Package metadata
+garb install jq                  # Install package and dependencies
+garb verify                      # Verify file integrity
+garb remove jq                   # Remove package
 ```
 
 Build the demo repository from this tree:
@@ -156,8 +162,37 @@ Build the demo repository from this tree:
 make packages          # output/packages + unsigned index
 ```
 
-Signing, the on-disk format, the threat model and current limitations are in
+Signing, the on-disk format, the threat model and delegation details are in
 [docs/PACKAGE-MANAGER.md](docs/PACKAGE-MANAGER.md).
+
+---
+
+## Desktop & GUI Support
+
+Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Full graphical desktop support is available and easily configured:
+
+### Pre-installing with the installer
+
+```sh
+# Pre-install a desktop environment during disk installation
+grintion-install --disk /dev/vda --user myuser --desktop xfce
+```
+
+### Installing via `grintion-desktop`
+
+Use `grintion-desktop` on the live overlay or an installed system to install environments and auto-detect hardware graphics drivers:
+
+```sh
+grintion-desktop list               # View supported desktop environments
+grintion-desktop install xfce       # Fast & lightweight traditional desktop (Recommended)
+grintion-desktop install gnome      # Modern Wayland desktop suite
+grintion-desktop install kde        # KDE Plasma - customizable and modular
+grintion-desktop install sway       # Lightweight Wayland tiling compositor
+grintion-desktop install lxqt       # Ultra-lightweight Qt desktop
+grintion-desktop drivers            # Auto-detect GPU and install graphics drivers
+```
+
+Supported display managers (LightDM, SDDM, GDM) are supervised by runit (`/var/service/display-manager`). See [docs/DESKTOP-GUI.md](docs/DESKTOP-GUI.md) for full instructions.
 
 ---
 
@@ -189,6 +224,8 @@ component from scratch:
   explicitly.
 - `garb` packages are prebuilt file trees. There is no source build recipe, no
   compiler toolchain in the image, and no cross-compilation.
+- The optional `pacman` backend installs Arch packages from official
+  repositories. It is an explicit Arch dependency, not independent packaging.
 
 This is a deliberate trade-off: a small, auditable image now, with a documented
 path to a from-source bootstrap later. Do not describe the image as
@@ -204,11 +241,12 @@ path to a from-source bootstrap later. Do not describe the image as
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
 | Secure Boot | No; Limine is unsigned and there is no shim |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | No |
+| Graphical desktop | Supported; pre-install with `grintion-install --desktop` or install with `grintion-desktop` (XFCE, GNOME, KDE Plasma, Sway, LXQt) |
 | Wi-Fi | Client tools only; no DHCP or roaming daemon for wireless |
 | Disk encryption | Not provided by the installer |
 | Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |
-| Hosted binary repository | No; `make packages` creates a local demo repository |
+| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with Arch official repos) |
+| Hosted binary repository | No Grintion-hosted repository; the pacman backend uses Arch official repositories |
 | Signed release artifacts | No; the ISO and `BUILD-INFO` are not signed |
 
 Unsupported configurations are not "known broken"; they are simply outside what
@@ -219,7 +257,7 @@ this release builds and tests.
 ## Repository layout
 
 ```text
-bin/            grintion-install, grintion-persist, grintion-chroot, garb, limine-deploy
+bin/            grintion-install, grintion-desktop, grintion-persist, grintion-chroot, garb, limine-deploy, grintion-doctor
 build/          kernel, rootfs, initramfs and ISO build scripts
 config/         kernel fragment, required binaries, PAM modules, setuid list
 etc/            live and installed system configuration
@@ -227,7 +265,7 @@ init/           live-init (PID 1) and install-init (installed initramfs PID 1)
 packages/       demo Garbfile packages used by the repository tests
 tests/          unit and QEMU end-to-end tests
 tools/          pinned build tools and sources (busybox, runit, dhcpcd, limine)
-docs/           installation, build, architecture, package and verification docs
+docs/           installation, desktop & GUI, build, architecture, package and verification docs
 ```
 
 ---

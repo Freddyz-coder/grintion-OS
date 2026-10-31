@@ -33,7 +33,7 @@ log "assembling live rootfs for Grintion-OS $GRINTION_VERSION ($KREL)"
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS"/usr/{bin,sbin,lib,lib64,share,include,libexec} \
          "$ROOTFS"/{etc,var,run,proc,sys,dev,tmp,root,home,mnt,media,srv,opt,boot}
-mkdir -p "$ROOTFS"/var/{log,spool/mail,lib/garb,lib/dhcpcd,cache/garb}
+mkdir -p "$ROOTFS"/var/{log,spool/mail,lib/garb,lib/dhcpcd,cache/garb,lib/pacman/local,cache/pacman/pkg}
 mkdir -p "$ROOTFS"/var/service
 mkdir -p "$ROOTFS"/usr/lib/{modules,security,locale,grintion/boot}
 mkdir -p "$ROOTFS"/usr/share/{limine,terminfo,zoneinfo,doc/grintion}
@@ -104,7 +104,7 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 
 # Grintion's own tools and the live init must be in the image; they are not
 # host binaries and therefore never come from the package list.
-for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor; do
+for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor grintion-desktop; do
     [ -f "$GRINTION_REPO_ROOT/bin/$tool" ] || die "missing repository tool: bin/$tool"
     install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/bin/$tool"
 done
@@ -123,6 +123,14 @@ install -D -m 0755 "$STAGE_DHCPCD/usr/libexec/dhcpcd-run-hooks" "$ROOTFS/usr/lib
 mkdir -p "$ROOTFS/usr/libexec/dhcpcd-hooks"
 cp -a "$STAGE_DHCPCD/usr/libexec/dhcpcd-hooks/." "$ROOTFS/usr/libexec/dhcpcd-hooks/"
 chmod 0755 "$ROOTFS/usr/libexec/dhcpcd-hooks/"*
+
+# gpg helpers used by pacman's signature verification. They are libexec
+# programs, not PATH commands, so resolve-libs.py would not see them.
+if [ -d /usr/lib/gnupg ]; then
+    mkdir -p "$ROOTFS/usr/lib/gnupg"
+    cp -a /usr/lib/gnupg/. "$ROOTFS/usr/lib/gnupg/"
+    find "$ROOTFS/usr/lib/gnupg" -type f -exec chmod 0755 {} +
+fi
 
 # ---------------------------------------------------------------- PAM and NSS
 log "installing PAM modules and identity lookup modules"
@@ -221,6 +229,27 @@ cp -a "$GRINTION_REPO_ROOT/etc/." "$ROOTFS/etc/"
 # The runtime doctor checks this list instead of silently trusting the build.
 grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries" \
     | sort -u > "$ROOTFS/etc/grintion/required-commands"
+
+# pacman's CheckSpace option needs mount information. A regular /etc/mtab is
+# not maintained without util-linux's mount helper, so use the kernel view.
+ln -sfn /proc/self/mounts "$ROOTFS/etc/mtab"
+
+# ---------------------------------------------------------------- pacman backend
+log "installing the pacman external backend"
+[ -f "$ROOTFS/etc/pacman.conf" ] || die "etc/pacman.conf missing from rootfs"
+mkdir -p "$ROOTFS/etc/pacman.d/gnupg" "$ROOTFS/etc/pacman.d/hooks" \
+         "$ROOTFS/usr/share/pacman/keyrings"
+chmod 0700 "$ROOTFS/etc/pacman.d/gnupg"
+for keyfile in pubring.gpg trustdb.gpg tofu.db gpg.conf gpg-agent.conf; do
+    [ -f "/etc/pacman.d/gnupg/$keyfile" ] || die "pacman keyring file missing: $keyfile"
+    install -m 0644 "/etc/pacman.d/gnupg/$keyfile" "$ROOTFS/etc/pacman.d/gnupg/$keyfile"
+done
+for keyfile in archlinux.gpg archlinux-trusted archlinux-revoked; do
+    [ -f "/usr/share/pacman/keyrings/$keyfile" ] || die "pacman keyring source missing: $keyfile"
+    install -m 0644 "/usr/share/pacman/keyrings/$keyfile" \
+        "$ROOTFS/usr/share/pacman/keyrings/$keyfile"
+done
+python3 "$GRINTION_REPO_ROOT/build/seed-pacman-db.py" "$ROOTFS"
 
 printf '%s\n' "$GRINTION_VERSION" > "$ROOTFS/etc/grintion/version"
 sed "s/@VERSION@/$GRINTION_VERSION/g" "$ROOTFS/etc/issue.in" > "$ROOTFS/etc/issue"

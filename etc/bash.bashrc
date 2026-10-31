@@ -6,12 +6,14 @@
 command_not_found_handle() {
     printf '[CRITICAL] command not found: %s\n' "$1" >&2
     case "$1" in
-        pacman|apk)
-            printf 'garb delegates to %s only when it is installed on this system.\n' "$1" >&2 ;;
+        startx|sway|xfce4-session|gnome-session|startplasma-x11|startlxqt|i3)
+            printf 'A graphical desktop is not installed yet. Run "grintion-desktop install" to set up a GUI.\n' >&2 ;;
+        apk)
+            printf 'garb delegates to apk only when an apk binary is present.\n' >&2 ;;
         clean)
             printf 'clean is not a Grintion-OS command; use clear to clear the screen.\n' >&2 ;;
         man)
-            printf 'man pages are not installed in this image.\n' >&2 ;;
+            printf 'man pages are not installed in this base image; install with "garb install man-db man-pages".\n' >&2 ;;
     esac
     return 127
 }

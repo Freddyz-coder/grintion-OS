@@ -3,6 +3,7 @@ Minimalist - Independent - Secure - Stable
 
 Useful commands:
   grintion-install --help    install to a disk
+  grintion-desktop --help    install/setup GUI & desktop (XFCE, GNOME, KDE, Sway)
   grintion-persist           create persistent live storage
   grintion-chroot /mnt       enter an installed system
   garb --help                package manager

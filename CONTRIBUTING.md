@@ -1,7 +1,9 @@
 # Contributing to Grintion-OS
 
-Grintion-OS is a small, console-only Linux system. Contributions are welcome
-when they keep the image minimal, auditable and honest about its limits.
+Grintion-OS is a minimalist, independent, secure, and stable Linux system with
+a modular design supporting console administration and graphical desktop
+environments. Contributions are welcome when they keep the image lean,
+auditable, and honest about its capabilities.
 
 ## Before you start
 

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Grintion-OS runit service: display-manager
+# Supervises graphical display managers (LightDM, SDDM, GDM)
+exec 2>&1
+
+for dm in /usr/bin/lightdm /usr/bin/sddm /usr/bin/gdm; do
+    if [ -x "$dm" ]; then
+        exec "$dm"
+    fi
+done
+
+echo "display-manager: no display manager found; install with grintion-desktop"
+exec sleep 3600

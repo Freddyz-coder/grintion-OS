@@ -58,6 +58,16 @@ on the host; `pacman -Qi <package>` reports them.
 | tar | GPL-3.0-or-later |
 | gzip | GPL-3.0-or-later |
 | xz | 0BSD AND LGPL-2.1-or-later |
+| pacman | GPL-2.0-or-later |
+| GnuPG | GPL-3.0-or-later (mixed BSD, LGPL and permissive components) |
+| archlinux-keyring | GPL-3.0-or-later |
+| GPGME | GPL-2.0-or-later and LGPL-2.1-or-later |
+| libarchive | BSD-2-Clause |
+
+The image also contains the optional pacman backend and the Arch public
+keyring. Packages installed through pacman come from Arch official repositories
+and keep the licenses recorded in their package metadata; Grintion-OS does not
+relicense them.
 
 `config/rootfs.required-binaries` is the authoritative list of commands; a
 command may come from a package not named above. Distributing an image built

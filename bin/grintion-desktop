@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# grintion-desktop - Graphical Desktop Environment & Display Manager Manager
+# Grintion-OS: Minimalist - Independent - Secure - Stable
+#
+# Provides seamless installation, driver detection, and runit service
+# configuration for modern desktop environments (XFCE, GNOME, KDE Plasma,
+# LXQt, Sway, i3) on Grintion-OS.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+TARGET_ROOT="/"
+NO_CONFIRM=0
+SKIP_DRIVERS=0
+CHOSEN_DM=""
+
+log()  { printf '\033[1;32m[*]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[-]\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-desktop [COMMAND] [OPTIONS]
+
+Install and configure desktop environments, display managers, and GPU drivers.
+
+Commands:
+  list                  List supported desktop environments and window managers
+  install <desktop>     Install a desktop environment and configure display manager
+  drivers               Detect GPU hardware and install graphics drivers
+  status                Show installed desktop environments, display managers & drivers
+
+Supported Desktops:
+  xfce                  XFCE 4 (Lightweight, fast, full-featured desktop) [Recommended]
+  gnome                 GNOME Desktop (Modern, elegant, Wayland-ready)
+  kde | plasma          KDE Plasma (Feature-rich, customizable Qt desktop)
+  lxqt                  LXQt (Ultra-lightweight Qt desktop)
+  sway                  Sway (Modern Wayland tiling compositor, i3-compatible)
+  i3                    i3 Window Manager (Classic lightweight X11 tiling WM)
+
+Options:
+  --dm, --display-manager <sddm|lightdm|gdm>  Specify display manager
+  --root <path>                               Target root directory (e.g. /mnt)
+  --no-drivers                                Skip GPU driver detection/installation
+  -y, --noconfirm                             Non-interactive; do not prompt
+  -h, --help                                  Show this help message
+
+Examples:
+  grintion-desktop install xfce
+  grintion-desktop install gnome --dm gdm
+  grintion-desktop install kde --root /mnt
+  grintion-desktop drivers
+EOF
+}
+
+detect_gpu_drivers() {
+    local drivers=("mesa")
+    local lspci_out=""
+    if command -v lspci >/dev/null 2>&1; then
+        lspci_out="$(lspci 2>/dev/null || true)"
+    fi
+
+    if echo "$lspci_out" | grep -qi 'Intel'; then
+        log "Intel GPU detected"
+        drivers+=("xf86-video-intel" "vulkan-intel")
+    elif echo "$lspci_out" | grep -qiE 'AMD|ATI|Radeon'; then
+        log "AMD/Radeon GPU detected"
+        drivers+=("xf86-video-amdgpu" "vulkan-radeon")
+    elif echo "$lspci_out" | grep -qi 'NVIDIA'; then
+        log "NVIDIA GPU detected (selecting open-source nouveau/mesa)"
+        drivers+=("xf86-video-nouveau")
+    elif echo "$lspci_out" | grep -qiE 'QEMU|Red Hat|Virtio|Bochs'; then
+        log "Virtual machine / QEMU VirtIO GPU detected"
+        drivers+=("xf86-video-qxl" "xf86-video-fbdev")
+    elif echo "$lspci_out" | grep -qi 'VMware'; then
+        log "VMware SVGA GPU detected"
+        drivers+=("xf86-video-vmware")
+    elif echo "$lspci_out" | grep -qi 'VirtualBox'; then
+        log "VirtualBox GPU detected"
+        drivers+=("virtualbox-guest-utils")
+    else
+        log "Generic / VESA display detected"
+        drivers+=("xf86-video-vesa" "xf86-video-fbdev")
+    fi
+    echo "${drivers[@]}"
+}
+
+pkg_install() {
+    local pkgs=("$@")
+    if [ ${#pkgs[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    local root_flag=()
+    if [ "$TARGET_ROOT" != "/" ]; then
+        root_flag=("--root" "$TARGET_ROOT")
+    fi
+
+    log "Installing packages: ${pkgs[*]}"
+    if command -v pacman >/dev/null 2>&1; then
+        local noconfirm=()
+        if [ "$NO_CONFIRM" -eq 1 ]; then
+            noconfirm=("--noconfirm")
+        fi
+        pacman "${root_flag[@]}" -S "${noconfirm[@]}" --needed "${pkgs[@]}"
+    elif command -v garb >/dev/null 2>&1; then
+        garb "${root_flag[@]}" install "${pkgs[@]}"
+    else
+        die "Neither pacman nor garb package manager found"
+    fi
+}
+
+enable_dm_service() {
+    local dm="$1"
+    local sv_dir="$TARGET_ROOT/etc/sv/display-manager"
+    local var_sv="$TARGET_ROOT/var/service/display-manager"
+
+    mkdir -p "$sv_dir"
+    cat > "$sv_dir/run" <<EOF
+#!/bin/sh
+exec 2>&1
+exec $dm
+EOF
+    chmod 0755 "$sv_dir/run"
+
+    mkdir -p "$(dirname "$var_sv")"
+    ln -sfn "/etc/sv/display-manager" "$var_sv"
+    log "Enabled $dm as runit display-manager service"
+}
+
+cmd_list() {
+    cat <<'EOF'
+Supported Desktop Environments and Window Managers in Grintion-OS:
+
+  [1] XFCE (xfce)
+      Type: Desktop Environment (X11)
+      Default Display Manager: LightDM
+      Description: Fast, lightweight, user-friendly traditional desktop.
+      Recommended for: General desktop use, older hardware, lightweight setups.
+
+  [2] GNOME (gnome)
+      Type: Desktop Environment (Wayland / X11)
+      Default Display Manager: GDM
+      Description: Modern, sleek, touch and gesture friendly desktop suite.
+      Recommended for: Modern workstations and laptops.
+
+  [3] KDE Plasma (kde, plasma)
+      Type: Desktop Environment (Wayland / X11)
+      Default Display Manager: SDDM
+      Description: Gorgeous, highly customizable, modular desktop environment.
+      Recommended for: Power users who want customization and sleek aesthetics.
+
+  [4] LXQt (lxqt)
+      Type: Desktop Environment (X11)
+      Default Display Manager: SDDM
+      Description: Extremely lightweight Qt-based desktop.
+      Recommended for: Minimum resource usage.
+
+  [5] Sway (sway)
+      Type: Tiling Window Manager (Wayland)
+      Default Display Manager: None (starts from console or LightDM)
+      Description: Modern, fast i3-compatible Wayland compositor.
+      Recommended for: Keyboard-driven workflow and minimalists.
+
+  [6] i3 (i3)
+      Type: Tiling Window Manager (X11)
+      Default Display Manager: LightDM
+      Description: Robust, manual tiling window manager.
+      Recommended for: Keyboard-focused productivity.
+EOF
+}
+
+cmd_status() {
+    echo "=== Grintion-OS Desktop & GUI Status ==="
+    echo "Target root: $TARGET_ROOT"
+    
+    echo -n "Display server: "
+    local xorg="" wayland=""
+    [ -f "$TARGET_ROOT/usr/bin/Xorg" ] && xorg="Xorg "
+    [ -f "$TARGET_ROOT/usr/bin/Xwayland" ] && wayland="Wayland/Xwayland "
+    echo "${xorg}${wayland:-None}"
+
+    echo -n "Installed Desktops: "
+    local desktops=()
+    [ -f "$TARGET_ROOT/usr/bin/startxfce4" ] && desktops+=("XFCE")
+    [ -f "$TARGET_ROOT/usr/bin/gnome-shell" ] && desktops+=("GNOME")
+    [ -f "$TARGET_ROOT/usr/bin/startplasma-x11" ] || [ -f "$TARGET_ROOT/usr/bin/startplasma-wayland" ] && desktops+=("KDE Plasma")
+    [ -f "$TARGET_ROOT/usr/bin/startlxqt" ] && desktops+=("LXQt")
+    [ -f "$TARGET_ROOT/usr/bin/sway" ] && desktops+=("Sway")
+    [ -f "$TARGET_ROOT/usr/bin/i3" ] && desktops+=("i3")
+    if [ ${#desktops[@]} -gt 0 ]; then
+        echo "${desktops[*]}"
+    else
+        echo "None"
+    fi
+
+    echo -n "Display Manager: "
+    local dms=()
+    [ -f "$TARGET_ROOT/usr/bin/lightdm" ] && dms+=("LightDM")
+    [ -f "$TARGET_ROOT/usr/bin/sddm" ] && dms+=("SDDM")
+    [ -f "$TARGET_ROOT/usr/bin/gdm" ] && dms+=("GDM")
+    echo "${dms[*]:-None}"
+
+    echo -n "Display Manager service: "
+    if [ -L "$TARGET_ROOT/var/service/display-manager" ]; then
+        echo "Active (/var/service/display-manager)"
+    else
+        echo "Inactive"
+    fi
+}
+
+cmd_drivers() {
+    [ "$(id -u)" -eq 0 ] || die "Driver installation requires root privileges"
+    log "Scanning hardware for GPU devices..."
+    local drivers
+    drivers=($(detect_gpu_drivers))
+    log "Recommended drivers: ${drivers[*]}"
+    pkg_install "${drivers[@]}"
+    log "GPU drivers installed successfully."
+}
+
+cmd_install() {
+    local target_de="${1:-}"
+    if [ -z "$target_de" ]; then
+        cmd_list
+        echo
+        printf "Select desktop to install (xfce/gnome/kde/lxqt/sway/i3): "
+        read -r target_de
+    fi
+
+    [ "$(id -u)" -eq 0 ] || die "Desktop installation requires root privileges"
+
+    local base_pkgs=("xorg-server" "xorg-xinit" "xorg-xrandr" "xterm" "ttf-dejavu")
+    local de_pkgs=()
+    local dm_pkg=""
+    local dm_bin=""
+
+    case "$target_de" in
+        xfce)
+            de_pkgs=("xfce4" "xfce4-goodies" "pavucontrol")
+            dm_pkg="lightdm lightdm-gtk-greeter"
+            dm_bin="/usr/bin/lightdm"
+            ;;
+        gnome)
+            de_pkgs=("gnome" "gnome-terminal" "nautilus")
+            dm_pkg="gdm"
+            dm_bin="/usr/bin/gdm"
+            ;;
+        kde|plasma)
+            de_pkgs=("plasma-meta" "konsole" "dolphin")
+            dm_pkg="sddm"
+            dm_bin="/usr/bin/sddm"
+            ;;
+        lxqt)
+            de_pkgs=("lxqt" "pavucontrol-qt" "qterminal" "pcmanfm-qt")
+            dm_pkg="sddm"
+            dm_bin="/usr/bin/sddm"
+            ;;
+        sway)
+            base_pkgs=("wayland" "xorg-xwayland" "polkit" "ttf-dejavu")
+            de_pkgs=("sway" "swaylock" "swayidle" "waybar" "foot" "wofi")
+            dm_pkg=""
+            dm_bin=""
+            ;;
+        i3)
+            de_pkgs=("i3-wm" "i3status" "i3lock" "dmenu" "rxvt-unicode")
+            dm_pkg="lightdm lightdm-gtk-greeter"
+            dm_bin="/usr/bin/lightdm"
+            ;;
+        *)
+            die "Unknown desktop environment: '$target_de'. Run 'grintion-desktop list' for options."
+            ;;
+    esac
+
+    # Handle display manager override
+    if [ -n "$CHOSEN_DM" ]; then
+        case "$CHOSEN_DM" in
+            lightdm)
+                dm_pkg="lightdm lightdm-gtk-greeter"
+                dm_bin="/usr/bin/lightdm"
+                ;;
+            sddm)
+                dm_pkg="sddm"
+                dm_bin="/usr/bin/sddm"
+                ;;
+            gdm)
+                dm_pkg="gdm"
+                dm_bin="/usr/bin/gdm"
+                ;;
+            none)
+                dm_pkg=""
+                dm_bin=""
+                ;;
+            *)
+                die "Unsupported display manager: $CHOSEN_DM"
+                ;;
+        esac
+    fi
+
+    # 1. Install GPU Drivers
+    if [ "$SKIP_DRIVERS" -eq 0 ]; then
+        log "Detecting and preparing GPU drivers..."
+        local drv_list
+        drv_list=($(detect_gpu_drivers))
+        base_pkgs+=("${drv_list[@]}")
+    fi
+
+    # 2. Collect all packages
+    local all_to_install=()
+    for p in "${base_pkgs[@]}" "${de_pkgs[@]}" $dm_pkg; do
+        [ -n "$p" ] && all_to_install+=("$p")
+    done
+
+    log "Starting installation of $target_de environment..."
+    pkg_install "${all_to_install[@]}"
+
+    # 3. Configure Display Manager if applicable
+    if [ -n "$dm_bin" ]; then
+        enable_dm_service "$dm_bin"
+    fi
+
+    # 4. Configure .xinitrc fallback
+    local xinit_cmd=""
+    case "$target_de" in
+        xfce)  xinit_cmd="exec startxfce4" ;;
+        gnome) xinit_cmd="exec gnome-session" ;;
+        kde|plasma) xinit_cmd="exec startplasma-x11" ;;
+        lxqt)  xinit_cmd="exec startlxqt" ;;
+        i3)    xinit_cmd="exec i3" ;;
+        sway)  xinit_cmd="exec sway" ;;
+    esac
+
+    if [ -n "$xinit_cmd" ]; then
+        local skel_xinit="$TARGET_ROOT/etc/skel/.xinitrc"
+        mkdir -p "$(dirname "$skel_xinit")"
+        echo "$xinit_cmd" > "$skel_xinit"
+        chmod 0755 "$skel_xinit"
+    fi
+
+    log "=============================================================="
+    log "Desktop environment '$target_de' installed successfully!"
+    log "=============================================================="
+    if [ -n "$dm_bin" ]; then
+        echo "Display Manager: $dm_bin (managed by runit: /var/service/display-manager)"
+        echo "To start now:    sv start display-manager"
+    else
+        echo "Launch command:  $xinit_cmd (or run 'startx' / 'sway')"
+    fi
+    echo "=============================================================="
+}
+
+# Parse options
+COMMAND=""
+POSITIONAL=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        list|drivers|status)
+            COMMAND="$1"; shift ;;
+        install)
+            COMMAND="$1"
+            if [ $# -gt 1 ] && [[ "$2" != --* ]]; then
+                POSITIONAL+=("$2")
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        --dm|--display-manager)
+            CHOSEN_DM="${2:-}"; shift 2 ;;
+        --root)
+            TARGET_ROOT="${2:-}"; shift 2 ;;
+        --no-drivers)
+            SKIP_DRIVERS=1; shift ;;
+        -y|--noconfirm)
+            NO_CONFIRM=1; shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            if [ -z "$COMMAND" ]; then
+                COMMAND="install"
+                POSITIONAL+=("$1")
+                shift
+            else
+                die "Unknown option or argument: $1"
+            fi
+            ;;
+    esac
+done
+
+case "${COMMAND:-install}" in
+    list)    cmd_list ;;
+    drivers) cmd_drivers ;;
+    status)  cmd_status ;;
+    install) cmd_install "${POSITIONAL[0]:-}" ;;
+    *)       usage; exit 1 ;;
+esac

@@ -159,7 +159,7 @@ def test_pacman_backend_translation(tmp_path: Path) -> None:
     env["GARB_FAKE_LOG"] = str(log)
     result = run(root, "install", "foo", backend="pacman", env=env)
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == ["--root", str(root), "-S", "foo"]
+    assert log.read_text().splitlines() == ["--root", str(root), "-S", "--noconfirm", "foo"]
 
 
 def test_apk_backend_translation(tmp_path: Path) -> None:

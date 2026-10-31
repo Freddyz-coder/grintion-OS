@@ -20,6 +20,7 @@ image with an unexpected userland.
 ```sh
 sudo pacman -S --needed base-devel bc bison flex kmod cpio gzip curl \
     openssl parted dosfstools e2fsprogs rsync xorriso \
+    pacman gnupg archlinux-keyring \
     python python-pytest python-pexpect \
     qemu-full edk2-ovmf shellcheck
 ```
@@ -38,9 +39,18 @@ What each group is for:
 | `python`, `python-pytest`, `python-pexpect` | build scripts, tests |
 | `qemu-full`, `edk2-ovmf` | runtime tests only |
 | `shellcheck` | `make check` lint (optional, but CI runs it) |
+| `pacman`, `gnupg`, `archlinux-keyring` | optional pacman backend, keyring and gpg helpers copied into the image |
 
 `/dev/kvm` is strongly recommended for runtime tests. Without it the tests still
 run under TCG but take much longer.
+
+The live image also carries the optional pacman backend. `build/make-rootfs.sh`
+copies `/etc/pacman.conf`, the public Arch keyring, the keyring sources and gpg
+helpers, then runs `build/seed-pacman-db.py` to seed pacman's local database
+from the build host. The seed step is what prevents `pacman -S` from trying to
+reinstall glibc over the curated rootfs. The script also creates
+`/etc/mtab` as a symlink to `/proc/self/mounts`, which pacman's `CheckSpace`
+needs to monitor available storage. See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
 
 ---
 
@@ -57,7 +67,7 @@ make help
 | `make install-initramfs` | Builds the tiny busybox + `e2fsck` initramfs used by installed disks: `output/initramfs-install.img`. |
 | `make rootfs` | Assembles the live root and packs it into `output/initramfs.img`. Depends on `tools`, `kernel` and `install-initramfs`. |
 | `make iso` | Creates `output/grintion-os-x86_64.iso`, installs the Limine BIOS record, writes `BUILD-INFO` and the `.sha256`. |
-| `make check` | Static gate: shell syntax, shellcheck, Python compilation, executable bits, host commands, doc links, absolute paths, `garb` tests. |
+| `make check` | Static gate: shell syntax, shellcheck, Python compilation, executable bits, host commands, doc links, absolute paths, `garb` tests. It does not run pacman against the network. |
 | `make test-garb` | `make check` plus the package-manager suite (included in check already). |
 | `make test-boot` | QEMU live boot on BIOS and UEFI. |
 | `make test-install` | QEMU install to a disk, reboot, log in, verify. |

@@ -1,0 +1,5 @@
+# Fallback resolvers. dhcpcd prepends this file to /etc/resolv.conf and adds
+# the DHCP-provided servers after it. The fallback keeps DNS working during the
+# first seconds of boot and on networks whose DHCP server supplies no DNS.
+nameserver 1.1.1.1
+nameserver 8.8.8.8
