@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.4] - 2026-10-31
+
+### Fixed
+
+- **Authentic Grintion-OS Logo:** Replaced placeholder banner across `/etc/grintion-logo.txt`, `/etc/issue.in`, `/etc/issue.installed.in`, and `bin/grintion-persist` with the authentic Grintion-OS block emblem.
+- **Console Login Output Cleanliness:** Redirected background `dhcpcd` logs in `etc/sv/network/run` to `/var/log/dhcpcd.log` so network carrier/lease negotiation messages no longer spill over the active login prompt on `tty1`.
+
+---
+
 ## [0.5.3] - 2026-10-31
 
 ### Fixed
