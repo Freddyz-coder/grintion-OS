@@ -46,14 +46,14 @@ interface_branding: Grintion-OS $GRINTION_VERSION (MISS)
 /Grintion-OS $GRINTION_VERSION (live, RAM)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 console=ttyS0,115200 grintion.serial=1 rdinit=/init quiet loglevel=4 panic=10 slab_nomerge init_on_alloc=1 init_on_free=1
+    cmdline: console=ttyS0,115200 console=tty0 grintion.serial=1 rdinit=/init quiet loglevel=4 panic=10 slab_nomerge init_on_alloc=1 init_on_free=1
     initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 
 /Grintion-OS $GRINTION_VERSION (recovery shell)
     protocol: linux
     kernel_path: boot():/vmlinuz-grintion
-    cmdline: console=tty0 console=ttyS0,115200 grintion.serial=1 rdinit=/bin/sh quiet
+    cmdline: console=ttyS0,115200 console=tty0 grintion.serial=1 rdinit=/bin/sh quiet
     initrd_path: boot():/initramfs.img
     module_path: boot():/initramfs.img
 EOF

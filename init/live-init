@@ -14,10 +14,18 @@ export PATH
 
 msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
 rescue() {
+    trap - EXIT ERR
     msg "$*"
-    msg "dropping to a recovery shell"
-    exec /bin/sh
+    msg "dropping to an emergency recovery shell"
+    msg "type 'reboot -f' to reboot, or 'poweroff -f' to shut down"
+    while true; do
+        /bin/sh -i 2>&1 || true
+        msg "recovery shell exited; restarting in 3 seconds..."
+        sleep 3
+    done
 }
+trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
+
 
 mkdir -p /proc /sys /dev /run /sys/fs/cgroup
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
@@ -80,4 +88,5 @@ done
 # as PID 1, which runit requires. The old root stays hidden behind the new
 # process root and is never written to.
 [ -x /newroot/sbin/init ] || rescue "the overlay has no /sbin/init"
-exec chroot /newroot /sbin/init
+exec chroot /newroot /sbin/init || rescue "failed to execute /sbin/init"
+

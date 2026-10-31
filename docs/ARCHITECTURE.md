@@ -38,8 +38,9 @@ Two menu entries share the same kernel and initramfs:
 | live | `rdinit=/init quiet ...` | normal live boot |
 | recovery shell | `rdinit=/bin/sh quiet` | shell before any overlay or service starts |
 
-Both add `console=tty0 console=ttyS0,115200` so the image is testable and
-usable headless over serial.
+Both add `console=ttyS0,115200 console=tty0` so the display screen (`tty0`)
+is the primary console with active keyboard input, while logs are also mirrored
+to serial (`ttyS0`) for headless virtualization.
 
 ---
 

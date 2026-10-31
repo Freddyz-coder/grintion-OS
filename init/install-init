@@ -13,10 +13,18 @@ export PATH
 
 msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
 rescue() {
+    trap - EXIT ERR
     msg "$*"
-    msg "dropping to a recovery shell; type 'exit' to halt"
-    exec /bin/sh
+    msg "dropping to an emergency recovery shell"
+    msg "type 'reboot -f' to reboot, or 'poweroff -f' to shut down"
+    while true; do
+        /bin/sh -i 2>&1 || true
+        msg "recovery shell exited; restarting in 3 seconds..."
+        sleep 3
+    done
 }
+trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
+
 
 mkdir -p /proc /sys /dev /run /newroot
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
@@ -65,4 +73,4 @@ mount --move /sys /newroot/sys
 mount --move /dev /newroot/dev
 mount --move /run /newroot/run
 
-exec switch_root /newroot /sbin/init
+exec switch_root /newroot /sbin/init || rescue "failed to switch_root to /sbin/init"

@@ -220,5 +220,9 @@ wired interface. Check `sv status /var/service/network` and
 `cat /var/log/messages`. Virtio and e1000 NICs are supported by the kernel
 configuration.
 
-**Serial console.** Both boot entries add `console=ttyS0,115200`. Add
-`grintion.serial=1` to keep kernel messages on the serial port.
+**Virtual Machine Requirements (VirtualBox / QEMU / VMware):**
+- **RAM:** Minimum **2048 MB (2 GB)** recommended for the live environment. Because Grintion-OS runs from a high-speed memory overlay (unpacking the live root filesystem into RAM), virtual machines configured with under 1024 MB RAM will encounter an out-of-memory error during initramfs decompression (`Initramfs unpacking failed: write error`).
+- **CPUs:** 2 vCPUs recommended.
+- **Graphics Controller:** VMSVGA (VirtualBox) or VirtIO GPU (QEMU).
+
+**Serial console.** Both boot entries add `console=ttyS0,115200 console=tty0` so the display screen (`tty0`) is the primary active console while maintaining serial output mirroring (`ttyS0`).

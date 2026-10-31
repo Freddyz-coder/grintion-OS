@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.5.1] - 2026-10-31
+
+### Fixed
+
+- **Primary Console Routing (`console=tty0`):** Swapped console ordering in `build/build-iso.sh`, `bin/grintion-install`, and `bin/limine-deploy` from `console=tty0 console=ttyS0,115200` to `console=ttyS0,115200 console=tty0`. In Linux, the last `console=` parameter becomes `/dev/console` (primary standard input/output). Placing `tty0` last ensures that the display screen and keyboard are the primary interactive console on VirtualBox, VMware, and physical hardware, while still mirroring kernel log messages over serial (`ttyS0`).
+- **Emergency Rescue & Kernel Panic Prevention:** Hardened `init/live-init` and `init/install-init` with an interactive shell loop and an early exit trap (`trap 'rescue ...' EXIT ERR`). If an error or out-of-memory condition occurs during early boot, PID 1 no longer exits with `exitcode=0x00000100` (`Kernel panic: Attempted to kill init!`), but instead stays active and presents an interactive emergency shell on the screen.
+- **Virtual Machine Hardware Guidelines:** Added VM memory and hardware configuration guidelines to `docs/INSTALL.md` noting the minimum 2048 MB RAM requirement for live overlay decompression.
+
+---
+
+## [0.5.0] - 2026-10-31
 
 ### Added
 
@@ -40,9 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `jq --version` runs correctly.
   - `garb remove jq` cleanly removes installed packages.
 
+
 ---
 
-## [1.0.0] - 2026-10-31
+## [0.4.0] - 2026-10-30
 
 The first supported release: a console-only x86_64 system that boots from a
 hybrid BIOS/UEFI ISO, runs from an overlay, installs to a disk, and uses a
@@ -131,7 +142,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.2.1-alpha] - 2026-10-30
+## [0.3.0-alpha] - 2026-10-28
 
 ### Fixed
 
@@ -150,7 +161,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.2.0-alpha] - 2026-10-30
+## [0.2.0-alpha] - 2026-10-28
 
 ### Added
 
@@ -170,7 +181,7 @@ current documentation as the source of truth.
 
 ---
 
-## [0.1.0-alpha] - 2026-10-28
+## [0.1.0-alpha] - 2026-10-26
 
 ### Added
 

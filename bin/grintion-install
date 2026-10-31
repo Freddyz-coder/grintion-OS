@@ -366,13 +366,13 @@ interface_branding: Grintion-OS $VERSION
 /Grintion-OS $VERSION
     protocol: linux
     kernel_path: boot():/EFI/grintion/vmlinuz-grintion
-    cmdline: root=UUID=$ROOT_UUID rw quiet console=tty0 console=ttyS0,115200 grintion.serial=1
+    cmdline: root=UUID=$ROOT_UUID rw quiet console=ttyS0,115200 console=tty0 grintion.serial=1
     module_path: boot():/EFI/grintion/initramfs-install.img
 
 /Grintion-OS $VERSION (recovery)
     protocol: linux
     kernel_path: boot():/EFI/grintion/vmlinuz-grintion
-    cmdline: root=UUID=$ROOT_UUID rw single console=tty0 console=ttyS0,115200 grintion.serial=1
+    cmdline: root=UUID=$ROOT_UUID rw single console=ttyS0,115200 console=tty0 grintion.serial=1
     module_path: boot():/EFI/grintion/initramfs-install.img
 EOF
     cp "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"
