@@ -104,9 +104,11 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 
 # Grintion's own tools and the live init must be in the image; they are not
 # host binaries and therefore never come from the package list.
-for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor grintion-desktop; do
+for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor grintion-desktop poweroff reboot shutdown halt; do
     [ -f "$GRINTION_REPO_ROOT/bin/$tool" ] || die "missing repository tool: bin/$tool"
     install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/bin/$tool"
+    # Also install to /usr/sbin for classic SysV paths
+    install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/sbin/$tool"
 done
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/live-init" "$ROOTFS/init"
 

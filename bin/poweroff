@@ -1,0 +1,7 @@
+#!/bin/sh
+# Grintion-OS poweroff wrapper
+sync
+if [ -x /usr/bin/busybox ]; then
+    exec /usr/bin/busybox poweroff -f
+fi
+exec /usr/bin/systemctl poweroff -f

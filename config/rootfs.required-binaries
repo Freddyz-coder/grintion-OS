@@ -214,10 +214,6 @@ ssh-copy-id
 ssh-keyscan
 
 # System control and boot
-reboot
-poweroff
-halt
-shutdown
 sysctl
 chroot
 pivot_root

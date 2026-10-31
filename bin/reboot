@@ -1,0 +1,7 @@
+#!/bin/sh
+# Grintion-OS reboot wrapper
+sync
+if [ -x /usr/bin/busybox ]; then
+    exec /usr/bin/busybox reboot -f
+fi
+exec /usr/bin/systemctl reboot -f

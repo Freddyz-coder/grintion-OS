@@ -1,0 +1,6 @@
+#!/bin/sh
+# Grintion-OS shutdown wrapper
+case "$*" in
+    *-r*) exec /usr/bin/reboot ;;
+    *)    exec /usr/bin/poweroff ;;
+esac
