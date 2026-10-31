@@ -286,3 +286,7 @@ Report vulnerabilities privately as described in `SECURITY.md`.
 Grintion-OS is licensed under the GNU General Public License, version 3 or
 later. See [LICENSE](LICENSE). Upstream components keep their own licenses;
 see [THIRD-PARTY.md](THIRD-PARTY.md).
+
+## Network
+
+if your using a virtual machine make sure your using `Intel PRO/1000 MT Desktop (82540EM)` as the adapter type 

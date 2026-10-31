@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Primary Console Routing (`console=tty0`):** Swapped console ordering in `build/build-iso.sh`, `bin/grintion-install`, and `bin/limine-deploy` from `console=tty0 console=ttyS0,115200` to `console=ttyS0,115200 console=tty0`. In Linux, the last `console=` parameter becomes `/dev/console` (primary standard input/output). Placing `tty0` last ensures that the display screen and keyboard are the primary interactive console on VirtualBox, VMware, and physical hardware, while still mirroring kernel log messages over serial (`ttyS0`).
 - **Emergency Rescue & Kernel Panic Prevention:** Hardened `init/live-init` and `init/install-init` with an interactive shell loop and an early exit trap (`trap 'rescue ...' EXIT ERR`). If an error or out-of-memory condition occurs during early boot, PID 1 no longer exits with `exitcode=0x00000100` (`Kernel panic: Attempted to kill init!`), but instead stays active and presents an interactive emergency shell on the screen.
 - **Virtual Machine Hardware Guidelines:** Added VM memory and hardware configuration guidelines to `docs/INSTALL.md` noting the minimum 2048 MB RAM requirement for live overlay decompression.
+- **Desktop Installer (`grintion-desktop`):** Fixed standard output contamination in GPU driver detection (`detect_gpu_drivers`) so log messages are emitted to `stderr` rather than being treated as package names. Added numeric selection support (`1`–`6`) to the interactive prompt.
 
 ---
 
