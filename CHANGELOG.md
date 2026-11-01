@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-11-01
+
+This release is a correctness pass over 0.6.1: every item in the handoff bug
+report is addressed, and `garb` gains the missing lifecycle commands and safety
+checks.
+
+### Added
+
+- **`garb clean`, `garb list`, `garb info --installed`, `garb verify --format json`:** cache purge, installed/upgradable listings, installed-only metadata and machine-readable integrity reports.
+- **Package conflict detection:** installing a file already owned by another package is refused unless `--force` is used.
+- **Local archive dependency resolution:** `garb install ./pkg.garb` now resolves and installs the archive's `[dependencies] runtime` entries from the loaded indexes, and fails fast when one is unavailable.
+- **Full timezone database:** the live image ships `/usr/share/zoneinfo`, so the documented `ln -sf /usr/share/zoneinfo/Region/City /etc/localtime` step works.
+- **UEFI installer test target:** `make test-install-uefi` runs the end-to-end install on OVMF.
+- **Regression tests:** shutdown parsing, `limine-deploy`, reverse dependencies, local dependencies, conflicts, JSON verification, cache cleaning, malformed Garbfiles and symlinks to directories.
+
+### Fixed
+
+- **`limine-deploy`:** installs the kernel and initramfs referenced by `limine.conf` into `EFI/grintion/` (or aborts) instead of producing an unbootable ESP. New `--kernel`, `--initramfs` and `--asset-dir` options.
+- **`shutdown`:** real option parsing (`-r`, `-h`, `-P`, `-H`, `-c`, `now`, `+MINUTES`, `HH:MM`); `-c` cancels instead of powering off, and `-h +5` schedules instead of acting immediately.
+- **Power wrappers:** `poweroff`, `reboot` and `halt` run runit stage 3 first, so services stop cleanly and the random seed is saved.
+- **`garb remove`:** refuses to remove a package that another installed package depends on unless `--force` is given.
+- **`garb` rollback:** replaces a directory destination safely and keeps the backup directory when any restore step fails, instead of losing the originals.
+- **`garb build`:** packages symlinks that point at directories instead of silently dropping them.
+- **`garb` errors:** malformed TOML and bad integers print a `[-]` message rather than a Python traceback; unsigned repositories work with `--allow-unsigned` even when no `index.json.sig` exists.
+- **Live root account:** `/etc/shadow` now ships `root:*:...` (locked) instead of an empty password field; console access still uses the `live-shell` bypass.
+- **`display-manager` service:** `exec`s the daemon so runit supervises a live process, and `grintion-desktop` records the chosen DM in `/etc/grintion/display-manager` instead of regenerating a drifting run script.
+- **`network` service:** starts `dhcpcd` only on wired interfaces, matching the documentation and avoiding wireless carrier timeouts.
+- **`grintion-persist`:** requires root up front instead of failing halfway through formatting.
+- **`grintion-desktop`:** fixed status reporting and no longer writes a bogus `exec sway` into `.xinitrc` (Sway is Wayland-only).
+- **Early boot:** `live-init` and `install-init` share one `recovery.sh`, so the rescue shell is maintained in one place.
+- **Version metadata:** `VERSION`, `/etc/grintion/version`, the `garb` version, README and current-facing docs all report 0.7.0.
+
+### Security
+
+- The live image no longer exposes a PAM account with a blank password. `su` and `login` require a real secret; the ephemeral console session is provided by `agetty --skip-login` + `live-shell`.
+
+---
+
 ## [0.6.1] - 2026-10-31
 
 ### Fixed

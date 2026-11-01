@@ -1,13 +1,18 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 1.0.0 and for
-the uncommitted pacman-backend work. It does not claim coverage of hardware or
+This document records what was actually executed for Grintion-OS 0.6.1 and the
+earlier pacman-backend work. It does not claim coverage of hardware or
 configurations that were not tested.
 
-**Status: not release-ready.** The working tree contains uncommitted pacman
-support. The last published commit is `18c6695`. The current ISO is a local
-development artifact, not a release candidate, and it predates the `/etc/mtab`
-fix now present in `build/make-rootfs.sh`.
+> **0.7.0 status (2026-11-01):** the 0.7.0 source changes are covered by
+> `tests/test_garb.py` and `tests/test_system_tools.py` (22 pytest cases), plus
+> shell syntax and Python compilation checks. The ISO and the QEMU boot/install
+> matrix below were **not** rebuilt or re-run for 0.7.0. Treat the 0.6.1 results
+> as historical, not as 0.7.0 coverage.
+
+**Status: historical 0.6.1 baseline.** These results were recorded before the
+0.7.0 fixes; the 0.7.0 source has not been rebuilt into an ISO here. The last
+published baseline commit was `18c6695`.
 
 ## Environment
 

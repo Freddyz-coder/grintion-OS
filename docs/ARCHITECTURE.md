@@ -112,7 +112,7 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 | --- | --- |
 | `agetty-tty1`, `agetty-tty2` | local consoles |
 | `agetty-ttyS0` | serial console |
-| `network` | waits for a non-loopback interface, then `dhcpcd --nobackground --waitip=4 --timeout=30` |
+| `network` | waits for a wired (non-wireless, non-loopback) interface, then runs `dhcpcd --nobackground --waitip=4 --timeout=30` on it |
 | `firewall` | loads `/etc/nftables.conf` with `nft -f`, then sleeps |
 | `syslog` | `busybox syslogd -n -O /var/log/messages` |
 | `local` | mounts the ESP if `/etc/fstab` lists `/boot/efi`, runs `swapon -a`, then sleeps |
@@ -213,10 +213,9 @@ pacman instead of using this layout. Auto-detection is limited to `--root /`;
 the signed-repository implementation remains available with `--backend native`.
 The image ships `/etc/pacman.conf`, the Arch public keyring and a local package
 database seeded from the build host by `build/seed-pacman-db.py`, so pacman
-does not overwrite the curated glibc. The current development ISO can
-synchronize databases but package installation fails at commit because
-`/etc/mtab` is missing; see [VERIFICATION.md](VERIFICATION.md).
-See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
+does not overwrite the curated glibc. `/etc/mtab` points at
+`/proc/self/mounts`, so `CheckSpace` sees the overlay mounts and package
+installation works. See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
 
 An index is signed with Ed25519 over the exact `index.json` bytes. `garb update`
 fetches `index.json` and `index.json.sig`, verifies with `openssl pkeyutl
@@ -225,9 +224,11 @@ verified against the index SHA-256 before extraction.
 
 Installation is staged: extract into a temporary directory, verify every
 declared file hash, check for undeclared files, then move files into place while
-moving any existing files into a backup directory. A failure restores the
-backup and removes files installed so far. The database is written atomically
-with `os.replace`.
+moving any existing files into a backup directory. A declared path owned by
+another package is refused unless `--force` is used. A failure restores the
+backup and removes files installed so far; an incomplete restore keeps the
+backup directory and reports it. The database is written atomically with
+`os.replace`. Removal refuses to break a reverse dependency unless forced.
 
 See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 
@@ -270,6 +271,6 @@ Vendored binaries:
 
 - Limine 8.7.0 bootloader assets.
 
-This split is the main architectural compromise of 1.0.0. See
+This split is the main architectural compromise of 0.7.0. See
 [BUILDING.md](BUILDING.md) and the "What independent means" section in the
 README.

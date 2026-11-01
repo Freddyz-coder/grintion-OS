@@ -116,7 +116,7 @@ grintion-desktop install i3         # Classic X11 tiling window manager
 
 Grintion-OS uses `runit` for fast, declarative service supervision.
 
-When a display manager is installed, `grintion-desktop` creates and enables the `/var/service/display-manager` service:
+When a display manager is installed, `grintion-desktop` records the choice in `/etc/grintion/display-manager`, uses the tracked `/etc/sv/display-manager/run` script, and enables the service with a `/var/service/display-manager` link:
 
 ```sh
 # Check display manager status
@@ -132,4 +132,4 @@ sv restart display-manager
 
 For console users who prefer manual start without a display manager:
 - For X11 desktops: configure `~/.xinitrc` (created by `grintion-desktop`) and run `startx`.
-- For Sway: run `sway` directly from the console prompt.
+- For Sway: run `sway` directly from the console prompt (no `.xinitrc`; copy `/etc/sway/config` to `~/.config/sway/config` to customise it).

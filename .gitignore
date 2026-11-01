@@ -16,3 +16,7 @@ tools/bin/bc
 
 .venv/
 
+# Internal planning documents (not part of the public source tree)
+featureAdding.md
+handoff.md
+

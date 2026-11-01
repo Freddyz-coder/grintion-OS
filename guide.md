@@ -17,7 +17,7 @@
 
 - **Boot Menu:** Select `Grintion-OS (x86_64)`
 - **User:** `root`
-- **Password:** `root` (or press Enter)
+- **Password:** none. The live console auto-logs in through `live-shell`; the PAM root account is locked, so `su`/`login` do not accept a blank password.
 
 ---
 
@@ -138,7 +138,8 @@ startx
 | `sudo garb install <pkg>` | Install package |
 | `sudo garb remove <pkg>` | Remove package |
 | `garb search <query>` | Search packages |
-| `sudo garb clean` | Clean package cache |
+| `garb list [--upgradable]` | List installed or upgradable packages |
+| `sudo garb clean` | Purge cached repository data (run `garb update` afterwards) |
 
 ### Common Packages
 ```bash

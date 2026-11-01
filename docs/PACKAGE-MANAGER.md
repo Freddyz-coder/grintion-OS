@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 1.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.7 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution and transactional installs. It does **not** build
 from source, run maintainer scripts, or deliver delta updates.
 
@@ -21,11 +21,14 @@ from source, run maintainer scripts, or deliver delta updates.
 | `garb update` | Fetch `index.json` and `index.json.sig` from every configured repository and verify the signature before parsing. |
 | `garb search QUERY` | Search available and installed packages. |
 | `garb info PACKAGE` | Show version, description, license, architecture, dependencies and file count. |
-| `garb install PACKAGE...` | Install packages and their runtime dependencies. Accepts names or a path to a `.garb` archive. |
+| `garb install PACKAGE...` | Install packages and their runtime dependencies, including the dependencies of a local `.garb` archive. Accepts names or archive paths. |
 | `garb install --upgrade PACKAGE` | Replace an installed package with the index version. |
 | `garb upgrade [PACKAGE...]` | Upgrade every installed package, or only the named ones. |
-| `garb remove PACKAGE...` | Remove packages. Refuses to delete files whose hashes no longer match unless `--force` is used. |
-| `garb verify [PACKAGE...]` | Re-hash every installed file and report modifications. `--quick` checks presence only. |
+| `garb remove PACKAGE...` | Remove packages. Refuses to break another installed package's dependency, or to delete files whose hashes no longer match, unless `--force` is used. |
+| `garb verify [PACKAGE...]` | Re-hash every installed file and report modifications. `--quick` checks presence only; `--format json` emits a machine-readable report (native backend only). |
+| `garb list [--upgradable\|--available]` | List installed packages (default), packages with a newer index version, or repository packages. Native backend only. |
+| `garb info PACKAGE [--installed]` | Show package metadata; `--installed` refuses to fall back to repository data (pacman maps this to `-Qi`). |
+| `garb clean` | Remove cached repository indexes and downloads. Native backend only. Run `garb update` before the next install. |
 | `garb build GARBFILE [-o DIR]` | Build one package archive from a `Garbfile`. |
 | `garb repo-build SRCDIR OUTDIR` | Build every `SRCDIR/*/Garbfile` into `OUTDIR`. |
 | `garb repo-index DIR [--key KEY]` | Write `index.json` for the archives in `DIR`, optionally signing it. |
@@ -35,6 +38,13 @@ from source, run maintainer scripts, or deliver delta updates.
 
 The global `--root` option must appear before the subcommand. All paths below
 are relative to that root.
+
+`garb clean` empties `/var/cache/garb/repos/`; the installed database in
+`/var/lib/garb/db.json` is untouched. `garb update` refreshes the cache.
+`garb list` and `garb clean` read the native database/cache; they do not report
+or purge packages installed by the pacman backend. Use `pacman -Q`, `pacman
+-Qu` and `pacman -Sc` for those. A local `.garb` archive always selects the
+native backend because pacman and apk cannot read the format.
 
 ---
 
@@ -89,11 +99,6 @@ Rules and limits:
 - pacman uses Arch official repositories with
   `SigLevel = Required DatabaseOptional`. Package scripts and hooks may assume
   systemd; no Grintion-specific hook setup is provided.
-- **Known failure:** the current ISO aborts `garb install` with
-  `could not determine filesystem mount points` because `/etc/mtab` is absent.
-  `build/make-rootfs.sh` now creates that symlink, but the current rootfs/ISO
-  were built before it. `garb update` works; installation is not verified
-  until a rebuild passes.
 - Repository, package-building and signing commands (`build`, `repo-build`,
   `repo-index`, `keygen`, `sign-index`) always use the native implementation.
 
@@ -267,19 +272,26 @@ resulting index is unsigned and useful only with `--allow-unsigned`.
 ## Install semantics
 
 1. Resolve the requested names and runtime dependencies from the cached,
-   verified indexes. Dependencies are installed before their dependents.
+   verified indexes, including the dependencies of local `.garb` archives.
+   Dependencies are installed before their dependents. An archive whose
+   dependency is neither installed nor available fails before anything is
+   written.
 2. Download (or copy) the archive and verify its SHA-256 from the index.
 3. Extract into a staging directory under `/var/lib/garb/tmp`, rejecting
    absolute paths, `..` traversal and escaping symlinks.
 4. Verify every declared file hash and mode, and reject files that the package
    does not declare.
-5. Move files into place, backing up any file that is replaced.
-6. Write `/var/lib/garb/db.json` atomically with `os.replace`.
+5. Refuse the transaction when a declared path is already owned by another
+   installed package, unless `--force` is given.
+6. Move files into place, backing up any file or directory that is replaced.
+7. Write `/var/lib/garb/db.json` atomically with `os.replace`.
 
 If any step fails, files installed so far are removed and the backup is
-restored. `remove` deletes the recorded files in reverse order and refuses to
-delete a file whose current hash differs from the database, unless `--force` is
-given.
+restored; when a restore step fails, the backup directory is kept under
+`/var/lib/garb/tmp/` and its path is reported. `remove` deletes the recorded
+files in reverse order, refuses to leave another installed package without a
+dependency, and refuses to delete a file whose current hash differs from the
+database, unless `--force` is given.
 
 A successful upgrade is not reversible: the previous file set is not kept after
 the transaction commits.

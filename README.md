@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.6.1
+- **Version:** 0.7.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -16,7 +16,7 @@ indexes.
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup, with full support for installing modern graphical desktops (XFCE, GNOME, KDE Plasma, Sway, etc.) and GPU drivers via `grintion-desktop` or `garb`
 
-Grintion-OS 0.6.1 is built from this tree. There is no hosted binary
+Grintion-OS 0.7.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -28,7 +28,7 @@ artifacts are not signed.
 | --- | --- |
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
-| Networking | `dhcpcd` configures the first wired interface at boot. DNS fallback resolvers keep name resolution responsive from early boot. Wi-Fi tools are present (`iw`, `wpa_supplicant`). |
+| Networking | `dhcpcd` configures the detected wired interfaces at boot. DNS fallback resolvers keep name resolution responsive from early boot. Wi-Fi tools are present (`iw`, `wpa_supplicant`). |
 | Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password` is given. |
@@ -40,8 +40,6 @@ Details: [architecture](docs/ARCHITECTURE.md), [installation](docs/INSTALL.md),
 [desktop & GUI](docs/DESKTOP-GUI.md), [package manager](docs/PACKAGE-MANAGER.md), [roadmap](docs/ROADMAP.md).
 
 ---
-
-I added a .iso on the `out` folder
 
 ## Install
 
@@ -90,6 +88,9 @@ garb search jq                   # Search packages
 garb info jq                     # Package metadata
 garb install jq                  # Install package and dependencies
 garb verify                      # Verify file integrity
+garb list                        # List native-backend packages
+garb list --upgradable           # Native-backend upgrades
+garb clean                       # Purge the native repository cache
 garb remove jq                   # Remove package
 ```
 
@@ -140,6 +141,7 @@ make check       # syntax, config contracts, Python unit tests, package tests
 make test-garb   # signed repository and transaction tests
 make test-boot   # boot the ISO under BIOS and UEFI in QEMU
 make test-install # install to a disk, reboot, log in, check networking
+make test-install-uefi # install under UEFI/OVMF and reboot from it
 make test-all    # all of the above
 ```
 
@@ -172,7 +174,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 1.0.0 |
+| Feature | 0.7.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
@@ -210,7 +212,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 1.0.0 has no Secure
+sensitive. The short version: the design is defensive, but 0.7.0 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 
@@ -226,4 +228,5 @@ see [THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## Network
 
-if your using a virtual machine make sure your using `Intel PRO/1000 MT Desktop (82540EM)` as the adapter type 
+When running in a virtual machine, set the network adapter to
+`Intel PRO/1000 MT Desktop (82540EM)` so the bundled `e1000` driver is used.

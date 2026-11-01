@@ -2,14 +2,14 @@
 
 Grintion-OS is a small console system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-1.0.0 release actually provides, what it does not, and how to report a problem.
+0.7.0 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | Security fixes on a best-effort basis |
-| Earlier snapshots | No |
+| 0.7.x | Security fixes on a best-effort basis |
+| Earlier versions | No |
 
 There is no long-term-support branch and no guaranteed response time. Security
 fixes are published as a new release; there are no automatic updates.
@@ -72,9 +72,11 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
 
 ### Accounts and access
 
-- The live image logs in as `root` on the console with no password. This is
-  deliberate for an installation medium and is not a property of installed
-  systems.
+- The live image logs in as `root` on the console without a password through
+  `agetty --skip-login` and `live-shell`. The PAM root account is locked (`*`
+  in `/etc/shadow`), so `su` and `login` do not accept a blank password. This
+  console bypass is deliberate for an installation medium and is not a property
+  of installed systems.
 - The installer creates one administrative user in `wheel`. Root is locked
   unless `--root-password` is supplied.
 - `sudo` is restricted to `wheel`; `/etc/sudoers` is mode `0440`.
@@ -87,9 +89,9 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
 - The default nftables ruleset drops unsolicited inbound traffic, allows
   loopback, established/related traffic, DHCP replies and ICMP, and permits all
   outbound traffic.
-- The only network daemon enabled at boot is `dhcpcd` on the first wired
-  interface. There is no SSH server, web server or remote administration
-  service enabled by default.
+- The only network daemon enabled at boot is `dhcpcd` on the detected wired
+  interfaces (wireless interfaces are skipped). There is no SSH server, web
+  server or remote administration service enabled by default.
 - The image contains the OpenSSH client, not `sshd`.
 
 ### Packages
@@ -100,7 +102,9 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
   is re-hashed during installation; undeclared files and path traversal are
   rejected.
 - A failed transaction restores replaced files and removes files installed
-  during the attempt.
+  during the attempt; an incomplete restore keeps the backup and reports its
+  path. Installs refuse files owned by another package, and removal refuses to
+  break a reverse dependency, unless `--force` is used.
 - No repository key is trusted by default and no repository is configured.
 - The image also contains **pacman** as an external backend for `garb`. It
   verifies Arch packages against the Arch public keyring with
