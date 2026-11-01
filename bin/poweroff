@@ -1,5 +1,9 @@
 #!/bin/sh
 # Grintion-OS poweroff wrapper
+[ "$(id -u)" -eq 0 ] || { echo "[-] poweroff: must be root" >&2; exit 1; }
+# Run the runit stage 3 shutdown so services stop cleanly and the random seed
+# is saved; busybox -f alone kills init without running it.
+[ -x /etc/runit/3 ] && /etc/runit/3 >/dev/null 2>&1 || true
 sync
 if [ -x /usr/bin/busybox ]; then
     exec /usr/bin/busybox poweroff -f

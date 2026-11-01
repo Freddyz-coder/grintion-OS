@@ -112,6 +112,7 @@ for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy
     install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/sbin/$tool"
 done
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/live-init" "$ROOTFS/init"
+install -D -m 0755 "$GRINTION_REPO_ROOT/init/recovery.sh" "$ROOTFS/recovery.sh"
 
 # dhcpcd is built from the pinned upstream tarball. The staged install tree is
 # reused so the binary and its hook scripts always come from one build.
@@ -192,9 +193,14 @@ if [ -d /usr/lib/ossl-modules ]; then
     mkdir -p "$ROOTFS/usr/lib/ossl-modules"
     cp -a /usr/lib/ossl-modules/. "$ROOTFS/usr/lib/ossl-modules/"
 fi
-if [ -f /usr/share/zoneinfo/UTC ]; then
-    install -D -m 0644 /usr/share/zoneinfo/UTC "$ROOTFS/usr/share/zoneinfo/UTC"
+# Ship the full timezone database so the documented
+# `ln -sf /usr/share/zoneinfo/Region/City /etc/localtime` step works.
+if [ -d /usr/share/zoneinfo ]; then
+    log "deploying the timezone database"
+    cp -a /usr/share/zoneinfo/. "$ROOTFS/usr/share/zoneinfo/"
     ln -sfn /usr/share/zoneinfo/UTC "$ROOTFS/etc/localtime"
+else
+    die "host timezone database is missing: /usr/share/zoneinfo"
 fi
 for f in /etc/services /etc/protocols; do
     [ -f "$f" ] && install -D -m 0644 "$f" "$ROOTFS$f"

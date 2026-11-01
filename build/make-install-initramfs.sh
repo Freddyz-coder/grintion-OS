@@ -40,6 +40,7 @@ E2FSCK="$(command -v e2fsck || true)"
 python3 "$GRINTION_REPO_ROOT/build/copy-with-libs.py" --root "$ROOT" --dest usr/bin "$E2FSCK"
 
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/install-init" "$ROOT/init"
+install -D -m 0755 "$GRINTION_REPO_ROOT/init/recovery.sh" "$ROOT/recovery.sh"
 
 python3 "$GRINTION_REPO_ROOT/build/mkinitramfs.py" "$ROOT" "$OUTPUT/initramfs-install.img" --epoch "$SOURCE_DATE_EPOCH"
 log "installed initramfs complete: $OUTPUT/initramfs-install.img ($(du -h "$OUTPUT/initramfs-install.img" | cut -f1))"

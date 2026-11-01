@@ -1,6 +1,115 @@
 #!/bin/sh
 # Grintion-OS shutdown wrapper
-case "$*" in
-    *-r*) exec /usr/bin/reboot ;;
-    *)    exec /usr/bin/poweroff ;;
+#
+# Parses the classic shutdown options instead of pattern-matching "$*". The
+# previous version powered off for every argument that did not contain "-r",
+# so "shutdown -c" (cancel) powered the machine off.
+
+set -u
+
+PIDFILE=/run/shutdown.pid
+ACTION=poweroff
+WHEN=now
+CANCEL=0
+DRY_RUN=0
+
+usage() {
+    cat <<'EOF'
+Usage: shutdown [OPTIONS] [TIME]
+
+Options:
+  -r, --reboot      reboot after shutting down
+  -h, -P            power off (default)
+  -H, --halt        halt without powering off
+  -c                cancel a scheduled shutdown
+  --dry-run         print what would happen and exit
+  now               act immediately (default)
+  +MINUTES          wait MINUTES before acting
+  HH:MM             act at that local time today or tomorrow
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -r|--reboot)      ACTION=reboot ;;
+        -h|--poweroff|-P) ACTION=poweroff ;;
+        -H|--halt)        ACTION=halt ;;
+        -c|--cancel)      CANCEL=1 ;;
+        --dry-run)        DRY_RUN=1 ;;
+        -f|--force|-n)    : ;;
+        now)              WHEN=now ;;
+        +[0-9]*)          WHEN=${1#+} ;;
+        [0-9][0-9]:[0-9][0-9])
+            target=$(date -d "today $1" +%s 2>/dev/null) || {
+                echo "[-] shutdown: invalid time: $1" >&2
+                exit 1
+            }
+            current=$(date +%s)
+            WHEN=$((target - current))
+            [ "$WHEN" -lt 0 ] && WHEN=$((WHEN + 86400))
+            ;;
+        -t)
+            # Accepted for compatibility; the delay is the TIME argument.
+            shift
+            ;;
+        *)
+            echo "[-] shutdown: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+if [ "$CANCEL" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "shutdown: would cancel any scheduled shutdown"
+        exit 0
+    fi
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE")
+        if kill "$pid" 2>/dev/null; then
+            echo "shutdown: cancelled the scheduled shutdown"
+        else
+            echo "shutdown: no scheduled shutdown is running"
+        fi
+        rm -f "$PIDFILE"
+    else
+        echo "shutdown: no scheduled shutdown"
+    fi
+    exit 0
+fi
+
+case "$WHEN" in
+    now|0) DELAY=0 ;;
+    *[!0-9]*)
+        echo "[-] shutdown: invalid time: $WHEN" >&2
+        exit 1
+        ;;
+    *) DELAY=$((WHEN * 60)) ;;
 esac
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'shutdown: would %s in %s seconds\n' "$ACTION" "$DELAY"
+    exit 0
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[-] shutdown: must be root" >&2
+    exit 1
+fi
+
+if [ "$DELAY" -eq 0 ]; then
+    rm -f "$PIDFILE"
+    exec "/usr/bin/$ACTION"
+fi
+
+mkdir -p /run
+if [ -f "$PIDFILE" ]; then
+    old_pid=$(cat "$PIDFILE")
+    kill "$old_pid" 2>/dev/null || true
+    rm -f "$PIDFILE"
+fi
+nohup /bin/sh -c "sleep $DELAY; rm -f '$PIDFILE'; exec /usr/bin/$ACTION" >/dev/null 2>&1 &
+echo $! > "$PIDFILE"
+echo "shutdown: $ACTION scheduled in $DELAY seconds (cancel with 'shutdown -c')"

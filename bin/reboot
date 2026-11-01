@@ -1,5 +1,7 @@
 #!/bin/sh
 # Grintion-OS reboot wrapper
+[ "$(id -u)" -eq 0 ] || { echo "[-] reboot: must be root" >&2; exit 1; }
+[ -x /etc/runit/3 ] && /etc/runit/3 >/dev/null 2>&1 || true
 sync
 if [ -x /usr/bin/busybox ]; then
     exec /usr/bin/busybox reboot -f

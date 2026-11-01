@@ -12,18 +12,8 @@ set -eu
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
-rescue() {
-    trap - EXIT ERR
-    msg "$*"
-    msg "dropping to an emergency recovery shell"
-    msg "type 'reboot -f' to reboot, or 'poweroff -f' to shut down"
-    while true; do
-        /bin/sh -i 2>&1 || true
-        msg "recovery shell exited; restarting in 3 seconds..."
-        sleep 3
-    done
-}
+[ -r /recovery.sh ] || { echo "[-] /recovery.sh is missing from the initramfs" >&2; exec /bin/sh -i; }
+. /recovery.sh
 trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
 
 

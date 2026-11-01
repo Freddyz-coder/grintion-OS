@@ -127,18 +127,12 @@ enable_dm_service() {
         fi
     fi
 
-    mkdir -p "$sv_dir"
-    cat > "$sv_dir/run" <<EOF
-#!/bin/sh
-mkdir -p /var/log
-exec >> /var/log/display-manager.log 2>&1
-if [ -x "$dm" ]; then
-    "$dm"
-    sleep 3
-    exit 1
-fi
-exec sleep 3600
-EOF
+    mkdir -p "$TARGET_ROOT/etc/grintion"
+    printf '%s\n' "$(basename "$dm")" > "$TARGET_ROOT/etc/grintion/display-manager"
+
+    # Use the tracked service script instead of regenerating it here, so the
+    # deployed copy cannot drift from etc/sv/display-manager/run (handoff L7).
+    [ -f "$sv_dir/run" ] || die "tracked display-manager service is missing: $sv_dir/run"
     chmod 0755 "$sv_dir/run"
 
     mkdir -p "$(dirname "$var_sv")"
@@ -193,19 +187,25 @@ cmd_status() {
     echo "Target root: $TARGET_ROOT"
     
     echo -n "Display server: "
-    local xorg="" wayland=""
-    [ -f "$TARGET_ROOT/usr/bin/Xorg" ] && xorg="Xorg "
-    [ -f "$TARGET_ROOT/usr/bin/Xwayland" ] && wayland="Wayland/Xwayland "
-    echo "${xorg}${wayland:-None}"
+    local servers=()
+    if [ -f "$TARGET_ROOT/usr/bin/Xorg" ]; then servers+=("Xorg"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/Xwayland" ]; then servers+=("Wayland/Xwayland"); fi
+    if [ ${#servers[@]} -gt 0 ]; then
+        echo "${servers[*]}"
+    else
+        echo "None"
+    fi
 
     echo -n "Installed Desktops: "
     local desktops=()
-    [ -f "$TARGET_ROOT/usr/bin/startxfce4" ] && desktops+=("XFCE")
-    [ -f "$TARGET_ROOT/usr/bin/gnome-shell" ] && desktops+=("GNOME")
-    [ -f "$TARGET_ROOT/usr/bin/startplasma-x11" ] || [ -f "$TARGET_ROOT/usr/bin/startplasma-wayland" ] && desktops+=("KDE Plasma")
-    [ -f "$TARGET_ROOT/usr/bin/startlxqt" ] && desktops+=("LXQt")
-    [ -f "$TARGET_ROOT/usr/bin/sway" ] && desktops+=("Sway")
-    [ -f "$TARGET_ROOT/usr/bin/i3" ] && desktops+=("i3")
+    if [ -f "$TARGET_ROOT/usr/bin/startxfce4" ]; then desktops+=("XFCE"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/gnome-shell" ]; then desktops+=("GNOME"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/startplasma-x11" ] || [ -f "$TARGET_ROOT/usr/bin/startplasma-wayland" ]; then
+        desktops+=("KDE Plasma")
+    fi
+    if [ -f "$TARGET_ROOT/usr/bin/startlxqt" ]; then desktops+=("LXQt"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/sway" ]; then desktops+=("Sway"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/i3" ]; then desktops+=("i3"); fi
     if [ ${#desktops[@]} -gt 0 ]; then
         echo "${desktops[*]}"
     else
@@ -214,10 +214,14 @@ cmd_status() {
 
     echo -n "Display Manager: "
     local dms=()
-    [ -f "$TARGET_ROOT/usr/bin/lightdm" ] && dms+=("LightDM")
-    [ -f "$TARGET_ROOT/usr/bin/sddm" ] && dms+=("SDDM")
-    [ -f "$TARGET_ROOT/usr/bin/gdm" ] && dms+=("GDM")
-    echo "${dms[*]:-None}"
+    if [ -f "$TARGET_ROOT/usr/bin/lightdm" ]; then dms+=("LightDM"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/sddm" ]; then dms+=("SDDM"); fi
+    if [ -f "$TARGET_ROOT/usr/bin/gdm" ]; then dms+=("GDM"); fi
+    if [ ${#dms[@]} -gt 0 ]; then
+        echo "${dms[*]}"
+    else
+        echo "None"
+    fi
 
     echo -n "Display Manager service: "
     if [ -L "$TARGET_ROOT/var/service/display-manager" ]; then
@@ -358,7 +362,6 @@ cmd_install() {
         kde|plasma) xinit_cmd="exec startplasma-x11" ;;
         lxqt)  xinit_cmd="exec startlxqt" ;;
         i3)    xinit_cmd="exec i3" ;;
-        sway)  xinit_cmd="exec sway" ;;
     esac
 
     if [ -n "$xinit_cmd" ]; then
@@ -382,6 +385,11 @@ cmd_install() {
         fi
     fi
 
+    if [ "$target_de" = "sway" ]; then
+        log "Sway is Wayland-only; start it with 'sway', not 'startx'"
+        echo "Sway config:  ~/.config/sway/config (copy /etc/sway/config first)"
+    fi
+
     log "=============================================================="
     log "Desktop environment '$target_de' installed successfully!"
     log "=============================================================="
@@ -389,7 +397,11 @@ cmd_install() {
         echo "Display Manager: $dm_bin (managed by runit: /var/service/display-manager)"
         echo "To start now:    sudo sv start /var/service/display-manager"
     else
-        echo "Launch command:  $xinit_cmd (or run 'startx' / 'sway')"
+        if [ "$target_de" = "sway" ]; then
+            echo "Launch command:  sway"
+        else
+            echo "Launch command:  $xinit_cmd (or run 'startx')"
+        fi
     fi
     echo "=============================================================="
 }

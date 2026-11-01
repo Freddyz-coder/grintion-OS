@@ -1,5 +1,7 @@
 #!/bin/sh
 # Grintion-OS halt wrapper
+[ "$(id -u)" -eq 0 ] || { echo "[-] halt: must be root" >&2; exit 1; }
+[ -x /etc/runit/3 ] && /etc/runit/3 >/dev/null 2>&1 || true
 sync
 if [ -x /usr/bin/busybox ]; then
     exec /usr/bin/busybox halt -f

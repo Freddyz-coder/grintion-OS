@@ -4,6 +4,8 @@
 
 set -eu
 
+[ "$(id -u)" -eq 0 ] || { echo "[-] grintion-persist must run as root" >&2; exit 1; }
+
 cat <<'EOF'
         █
        █▓█

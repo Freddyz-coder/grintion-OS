@@ -1,20 +1,29 @@
 #!/bin/sh
 # Grintion-OS runit service: display-manager
-# Supervises graphical display managers (LightDM, SDDM, GDM)
+# Supervises graphical display managers (LightDM, SDDM, GDM).
+#
+# The daemon is exec'd so runit tracks a live process; launching it without
+# exec let the run script exit while the DM kept running, so a restart could
+# race the old instance for the display.
 mkdir -p /var/log
 exec >> /var/log/display-manager.log 2>&1
 
-found=0
+# grintion-desktop records the chosen display manager here.
+if [ -r /etc/grintion/display-manager ]; then
+    configured="/usr/bin/$(cat /etc/grintion/display-manager)"
+    if [ -x "$configured" ]; then
+        echo "display-manager: starting $configured"
+        exec "$configured"
+    fi
+    echo "display-manager: configured display manager is not installed: $configured"
+fi
+
 for dm in /usr/bin/lightdm /usr/bin/sddm /usr/bin/gdm; do
     if [ -x "$dm" ]; then
-        found=1
-        "$dm"
-        sleep 3
-        exit 1
+        echo "display-manager: starting $dm"
+        exec "$dm"
     fi
 done
 
-if [ "$found" -eq 0 ]; then
-    echo "display-manager: no display manager found; install with grintion-desktop"
-    exec sleep 3600
-fi
+echo "display-manager: no display manager found; install with grintion-desktop"
+exec sleep 3600

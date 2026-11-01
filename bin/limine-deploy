@@ -4,17 +4,29 @@
 
 set -eu
 
+ASSET_DIR=/usr/share/limine
 EFI_DIR=""
 DISK_DEV=""
 ROOT_UUID=""
+KERNEL_SRC=/usr/lib/grintion/boot/vmlinuz-grintion
+INITRAMFS_SRC=/usr/lib/grintion/boot/initramfs-install.img
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --efi)       EFI_DIR=${2:-}; shift 2 ;;
         --disk)      DISK_DEV=${2:-}; shift 2 ;;
         --root-uuid) ROOT_UUID=${2:-}; shift 2 ;;
+        --asset-dir) ASSET_DIR=${2:-}; shift 2 ;;
+        --kernel)    KERNEL_SRC=${2:-}; shift 2 ;;
+        --initramfs) INITRAMFS_SRC=${2:-}; shift 2 ;;
         -h|--help)
-            echo "Usage: limine-deploy --efi <esp> [--disk <dev>] [--root-uuid <uuid>]"
+            echo "Usage: limine-deploy --efi <esp> --root-uuid <uuid> [options]"
+            echo ""
+            echo "Options:"
+            echo "  --disk <dev>        also write the Limine BIOS boot record"
+            echo "  --asset-dir <dir>   Limine assets (default: /usr/share/limine)"
+            echo "  --kernel <file>     kernel to install (default: /usr/lib/grintion/boot/vmlinuz-grintion)"
+            echo "  --initramfs <file>  initramfs to install (default: /usr/lib/grintion/boot/initramfs-install.img)"
             exit 0
             ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
@@ -25,12 +37,20 @@ done
 [ -d "$EFI_DIR" ] || { echo "[-] not a directory: $EFI_DIR" >&2; exit 1; }
 [ -n "$ROOT_UUID" ] || { echo "[-] --root-uuid is required" >&2; exit 1; }
 
+# The generated limine.conf points at these files, so they must be installed.
+# Without this check every manual deployment produced an unbootable ESP.
+[ -f "$KERNEL_SRC" ] || { echo "[-] kernel not found: $KERNEL_SRC" >&2; exit 1; }
+[ -f "$INITRAMFS_SRC" ] || { echo "[-] initramfs not found: $INITRAMFS_SRC" >&2; exit 1; }
+
 mkdir -p "$EFI_DIR/EFI/BOOT" "$EFI_DIR/EFI/grintion"
 for asset in limine-bios.sys BOOTX64.EFI BOOTAA64.EFI; do
-    [ -f "/usr/share/limine/$asset" ] || { echo "[-] missing asset: $asset" >&2; exit 1; }
-    cp "/usr/share/limine/$asset" "$EFI_DIR/EFI/BOOT/$asset"
+    [ -f "$ASSET_DIR/$asset" ] || { echo "[-] missing asset: $ASSET_DIR/$asset" >&2; exit 1; }
+    cp "$ASSET_DIR/$asset" "$EFI_DIR/EFI/BOOT/$asset"
 done
 mv "$EFI_DIR/EFI/BOOT/limine-bios.sys" "$EFI_DIR/limine-bios.sys"
+
+install -m 0644 "$KERNEL_SRC" "$EFI_DIR/EFI/grintion/vmlinuz-grintion"
+install -m 0644 "$INITRAMFS_SRC" "$EFI_DIR/EFI/grintion/initramfs-install.img"
 
 cat > "$EFI_DIR/limine.conf" <<EOF
 timeout: 5
@@ -45,8 +65,13 @@ EOF
 cp "$EFI_DIR/limine.conf" "$EFI_DIR/EFI/BOOT/limine.conf"
 
 if [ -n "$DISK_DEV" ] && [ -b "$DISK_DEV" ]; then
-    [ -x /usr/share/limine/limine ] || { echo "[-] limine binary missing" >&2; exit 1; }
-    /usr/share/limine/limine bios-install "$DISK_DEV"
+    [ -x "$ASSET_DIR/limine" ] || { echo "[-] limine binary missing: $ASSET_DIR/limine" >&2; exit 1; }
+    "$ASSET_DIR/limine" bios-install "$DISK_DEV"
 fi
+
+# Fail closed if the entry's files did not land where limine.conf points.
+for rel in EFI/grintion/vmlinuz-grintion EFI/grintion/initramfs-install.img; do
+    [ -f "$EFI_DIR/$rel" ] || { echo "[-] install failed: $EFI_DIR/$rel is missing" >&2; exit 1; }
+done
 
 echo "[+] Limine deployed to $EFI_DIR"

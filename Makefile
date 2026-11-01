@@ -9,7 +9,7 @@ VERSION := $(shell cat VERSION)
 ISO := output/grintion-os-x86_64.iso
 
 .PHONY: all help tools kernel install-initramfs rootfs iso check test test-garb \
-        test-boot test-install test-all packages clean distclean release
+        test-boot test-install test-install-uefi test-all packages clean distclean release
 
 all: iso
 
@@ -27,6 +27,7 @@ help:
 	@echo "  make test-garb         package-manager integration tests"
 	@echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
 	@echo "  make test-install      install to a QEMU disk and reboot from it"
+	@echo "  make test-install-uefi install under UEFI/OVMF and reboot from it"
 	@echo "  make test-all          check + boot tests + install test"
 	@echo "  make packages          build the local demo repository"
 	@echo "  make clean             remove build/work and generated output"
@@ -61,6 +62,9 @@ test-boot: iso
 
 test-install: iso
 	@./build/test-install.sh
+
+test-install-uefi: iso
+	@./build/test-install.sh --uefi
 
 test-all: check test-boot test-install
 

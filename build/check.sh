@@ -129,7 +129,7 @@ if ! "$PYTHON_BIN" -c 'import pytest' >/dev/null 2>&1; then
     fi
 fi
 if [ "$PYTEST_READY" -eq 1 ]; then
-    "$PYTHON_BIN" -m pytest -q tests/test_garb.py || fail "garb tests failed"
+    "$PYTHON_BIN" -m pytest -q tests/test_garb.py tests/test_system_tools.py || fail "garb/system tool tests failed"
 fi
 
 if [ "$FAILED" -ne 0 ]; then
