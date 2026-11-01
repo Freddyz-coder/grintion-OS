@@ -40,6 +40,24 @@ stale relative to the tree.
 Field report: `ProblemsWhenInstalling.txt`. Three defects were reproduced on
 the 0.8.0 ISO before being fixed, then re-tested on 0.8.1.
 
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 132,249,600 bytes (127 MiB) |
+| SHA-256 | `0dd5002519b82fbcb64e8e096a292e6dcb8493d5fc73934d96e9afb2abf65d8b` |
+| Kernel | `6.12.114-grintion` |
+| Host | Arch Linux x86_64, KVM |
+| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
+| Guest RAM / vCPU | 2-3 GiB / 2 |
+| Network | QEMU user networking, `e1000` |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `make check` | Pass | 37 pytest cases plus shell syntax, executable bits, host inputs, documentation links and the home-path scan |
+| Live boot, BIOS | Pass | Stricter shutdown assertion: a plain `poweroff` must exit QEMU |
+| Live boot, UEFI | Pass | Same assertion under OVMF |
+| `./build/test-install.sh` (BIOS) | Pass | Install, reboot from disk, login, DHCP, sudo |
+
 | Check | 0.8.0 (before) | 0.8.1 (after) |
 | --- | --- | --- |
 | Live boot, DHCP | `network: starting dhcpcd on eth0 sit0`, `sit0: unsupported interface type`, no IPv4 address at the prompt | `network: starting dhcpcd on eth0`, `eth0 inet 10.0.2.15/24`, `ping -c 2 8.8.8.8` exit 0 |
