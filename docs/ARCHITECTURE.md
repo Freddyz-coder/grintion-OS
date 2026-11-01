@@ -289,6 +289,6 @@ Vendored binaries:
 
 - Limine 8.7.0 bootloader assets.
 
-This split is the main architectural compromise of 0.7.0. See
+This split is the main architectural compromise of 0.8.0. See
 [BUILDING.md](BUILDING.md) and the "What independent means" section in the
 README.

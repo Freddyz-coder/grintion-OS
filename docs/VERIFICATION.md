@@ -4,15 +4,9 @@ This document records what was actually executed for Grintion-OS 0.6.1 and the
 earlier pacman-backend work. It does not claim coverage of hardware or
 configurations that were not tested.
 
-> **0.7.0 status (2026-11-01):** the 0.7.0 source changes are covered by the
-> pytest suites for `garb`, system tools, networking and desktop profiles, plus
-> shell syntax and Python compilation checks. The ISO and the QEMU boot/install
-> matrix below were **not** rebuilt or re-run for 0.7.0. Treat the 0.6.1 results
-> as historical, not as 0.7.0 coverage.
-
-**Status: historical 0.6.1 baseline.** These results were recorded before the
-0.7.0 fixes; the 0.7.0 source has not been rebuilt into an ISO here. The last
-published baseline commit was `18c6695`.
+**Status: 0.8.0 verified.** The 0.8.0 ISO was built and tested on 2026-11-01:
+both live boots and both install tests passed. The 0.6.1 results below are
+historical. The last published 0.6.1 baseline commit was `18c6695`.
 
 ## Environment
 
@@ -39,6 +33,32 @@ The current ISO was built at 08:09. The untracked `etc/resolv.conf.head`
 (08:12) is **not** in it. `build/work/rootfs/etc/mtab` is also absent even
 though `build/make-rootfs.sh` now contains the symlink, so the rootfs/ISO are
 stale relative to the tree.
+
+## 0.8.0 results (2026-11-01)
+
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 127 MiB |
+| SHA-256 | `0d86610c97a73f20b297cf4049ffcbc392a879a5a3846cd5d92fa880ca429158` |
+| Kernel | `6.12.114-grintion` |
+| Host | Arch Linux x86_64, KVM |
+| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
+| Guest RAM / vCPU | 2 GiB / 2 |
+| Network | QEMU user networking, `e1000` |
+| shellcheck | Not installed; static lint was skipped |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `make check` | Pass | Shell syntax, Python compilation, executable bits, host inputs, documentation links, home-path scan, and 33 pytest cases |
+| `make test-boot` | Pass | BIOS and UEFI; root shell, kernel release, DHCP lease, supervised `network` service, live marker, conntrack firewall rule, `sudo -n true`, `grintion-doctor` exit 0 |
+| `./build/test-install.sh` (BIOS) | Pass | `lsblk` partition discovery, ext4 root, UUID `/etc/fstab`, account creation, Limine deployment, reboot and login |
+| `./build/test-install.sh --uefi` | Pass | Same install verification under OVMF, rebooting from the installed disk |
+
+`make test-boot` rebuilds the ISO because the `iso` target is phony; the
+artifact above is the final build used by both install tests. The ISO exceeds
+GitHub's 100 MB git-file limit, so it is published as a Release asset rather
+than committed to the tree.
 
 ## Baseline results (commit `18c6695`, ISO `b05e...`)
 

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-11-01
+
+This release adds the networking, desktop-profile and installer work planned
+as F1, F4 and F3 Stage 1.
+
+### Added
+
+- **Network configuration and Wi-Fi (F1):** `/etc/grintion/network.conf`, `network.lib.sh`, `grintion-network` (`status`, `set-static`, `connect`, `disconnect`, `wifi-scan`, `apply`) and an opt-in supervised `wpa_supplicant` service. The `network` service now applies DHCP/static configuration instead of running unfiltered `dhcpcd`.
+- **Desktop profiles (F4):** `/etc/grintion/desktops.d/*.conf`, `grintion-desktop uninstall`, `list --json`, and `/etc/grintion/drivers.conf` for the GPU matrix.
+- **Installer Stage 1 (F3):** `--swap-size MIB` creates a swap partition, and partition names come from `lsblk` after `partprobe` instead of a device-name suffix guess.
+- **Regression tests:** network configuration, desktop profiles and installer argument handling.
+
+### Security
+
+- Wi-Fi credentials are written with mode `0600` to both `network.conf` and the generated `wpa_supplicant.conf`.
+
+### Release
+
+- The 0.8.0 ISO (127 MiB, SHA-256 `0d86610c97a73f20b297cf4049ffcbc392a879a5a3846cd5d92fa880ca429158`) passed the BIOS and UEFI live boot tests and the BIOS and UEFI install tests. It is published as a GitHub Release asset because it exceeds the 100 MB git-file limit.
+
+LUKS full-disk encryption, custom partitioning, Secure Boot and ARM64 remain
+roadmap items; they were not started.
+
+---
+
 ## [0.7.0] - 2026-11-01
 
 This release is a correctness pass over 0.6.1: every item in the handoff bug
@@ -20,10 +45,7 @@ checks.
 - **Local archive dependency resolution:** `garb install ./pkg.garb` now resolves and installs the archive's `[dependencies] runtime` entries from the loaded indexes, and fails fast when one is unavailable.
 - **Full timezone database:** the live image ships `/usr/share/zoneinfo`, so the documented `ln -sf /usr/share/zoneinfo/Region/City /etc/localtime` step works.
 - **UEFI installer test target:** `make test-install-uefi` runs the end-to-end install on OVMF.
-- **Network configuration and Wi-Fi (F1):** `/etc/grintion/network.conf`, `network.lib.sh`, `grintion-network` (`status`, `set-static`, `connect`, `disconnect`, `wifi-scan`, `apply`) and an opt-in supervised `wpa_supplicant` service. The `network` service now applies DHCP/static configuration instead of running unfiltered `dhcpcd`.
-- **Desktop profiles (F4):** `/etc/grintion/desktops.d/*.conf`, `grintion-desktop uninstall`, `list --json`, and `/etc/grintion/drivers.conf` for the GPU matrix.
-- **Installer Stage 1 (F3):** `--swap-size MIB` creates a swap partition, and partition names come from `lsblk` after `partprobe` instead of a device-name suffix guess.
-- **Regression tests:** shutdown parsing, `limine-deploy`, reverse dependencies, local dependencies, conflicts, JSON verification, cache cleaning, malformed Garbfiles, symlinks to directories, network configuration and desktop profiles.
+- **Regression tests:** shutdown parsing, `limine-deploy`, reverse dependencies, local dependencies, conflicts, JSON verification, cache cleaning, malformed Garbfiles and symlinks to directories.
 
 ### Fixed
 
@@ -45,10 +67,6 @@ checks.
 ### Security
 
 - The live image no longer exposes a PAM account with a blank password. `su` and `login` require a real secret; the ephemeral console session is provided by `agetty --skip-login` + `live-shell`.
-- Wi-Fi credentials are written with mode `0600` to both `network.conf` and the generated `wpa_supplicant.conf`.
-
-LUKS full-disk encryption, custom partitioning, Secure Boot and ARM64 remain
-roadmap items; they were not started.
 
 ---
 

@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.7.0 installs from the live ISO to a single disk. The installer
+Grintion-OS 0.8.0 installs from the live ISO to a single disk. The installer
 repartitions the **entire** target disk: a 512 MiB EFI system partition and an
 ext4 root partition. There is no dual-boot or custom-partition mode in this
 release.
@@ -25,8 +25,8 @@ the Limine bootloader is not signed and there is no shim.
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.7.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.7.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.8.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.8.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
