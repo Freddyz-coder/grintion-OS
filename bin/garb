@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-VERSION = "1.0.0"
+VERSION = "0.7.0"
 SCHEMA = 1
 DEFAULT_DB = "var/lib/garb/db.json"
 DEFAULT_REPOS = "etc/garb/repos.d"
@@ -251,6 +251,12 @@ def load_indexes(paths: Paths) -> dict:
         except (OSError, json.JSONDecodeError):
             warn(f"ignoring unreadable index: {index_path}")
             continue
+        if not isinstance(data, dict):
+            warn(f"ignoring index that is not a JSON object: {index_path}")
+            continue
+        if data.get("schema") != SCHEMA:
+            warn(f"ignoring index with unsupported schema {data.get('schema')!r}: {index_path}")
+            continue
         for name, entry in data.get("packages", {}).items():
             entry = dict(entry)
             entry["_repo"] = index_path.parent.name
@@ -274,13 +280,14 @@ def cmd_update(args: argparse.Namespace) -> None:
         name, url = repo["name"], repo["url"]
         log(f"updating repository {name}")
         index = fetch_repo_file(url, "index.json")
-        signature = fetch_repo_file(url, "index.json.sig")
         public_key = paths.keys / f"{name}.pub"
         if args.key:
             public_key = Path(args.key)
         if args.allow_unsigned:
             warn(f"accepting unsigned repository {name}")
+            signature = b""
         else:
+            signature = fetch_repo_file(url, "index.json.sig")
             verify_signature(index, signature, public_key)
         parsed = json.loads(index)
         if parsed.get("schema") != SCHEMA:
@@ -288,7 +295,10 @@ def cmd_update(args: argparse.Namespace) -> None:
         target = paths.cache / "repos" / name
         target.mkdir(parents=True, exist_ok=True)
         (target / "index.json").write_bytes(index)
-        (target / "index.json.sig").write_bytes(signature)
+        if signature:
+            (target / "index.json.sig").write_bytes(signature)
+        else:
+            (target / "index.json.sig").unlink(missing_ok=True)
         log(f"{name}: {len(parsed.get('packages', {}))} packages")
 
 
@@ -314,9 +324,9 @@ def cmd_search(args: argparse.Namespace) -> None:
 def cmd_info(args: argparse.Namespace) -> None:
     db = Database(args.paths)
     installed = db.installed(args.package)
-    index = load_indexes(args.paths).get(args.package)
+    index = None if args.installed else load_indexes(args.paths).get(args.package)
     if not installed and not index:
-        die(f"package not found: {args.package}")
+        die(f"package not installed: {args.package}" if args.installed else f"package not found: {args.package}")
     entry = installed or index
     print(f"Package:      {args.package}")
     print(f"Status:       {'installed' if installed else 'available'}")
@@ -338,7 +348,10 @@ def read_metadata(archive: Path) -> dict:
                 handle = tar.extractfile(member)
                 if handle is None:
                     raise GarbError("metadata member is not a file")
-                return json.loads(handle.read().decode("utf-8"))
+                metadata = json.loads(handle.read().decode("utf-8"))
+                if not isinstance(metadata, dict):
+                    raise GarbError("package metadata is not a JSON object")
+                return metadata
     raise GarbError(f"missing {METADATA_NAME} in {archive}")
 
 
@@ -364,6 +377,8 @@ def extract_staged(archive: Path, staging: Path) -> tuple[dict, list[dict]]:
                 if handle is None:
                     raise GarbError("metadata member is not a file")
                 metadata = json.loads(handle.read().decode("utf-8"))
+                if not isinstance(metadata, dict):
+                    raise GarbError("package metadata is not a JSON object")
                 continue
             verify_member(member)
             rel = normalise_member(member.name)
@@ -426,11 +441,46 @@ def verify_staged(staging: Path, metadata: dict) -> list[dict]:
     return declared
 
 
+def remove_path(path: Path) -> None:
+    """Remove a file, symlink or directory tree if it exists."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def reverse_dependents(db: Database, name: str, ignore: set[str] | None = None) -> list[str]:
+    skip = ignore or set()
+    return sorted(
+        package
+        for package, entry in db.data["packages"].items()
+        if package != name
+        and package not in skip
+        and name in entry.get("dependencies", [])
+    )
+
+
+def file_conflicts(db: Database, name: str, files: list[dict]) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    for package, entry in db.data["packages"].items():
+        if package == name:
+            continue
+        for item in entry.get("files", []):
+            owners.setdefault(item["path"], package)
+    conflicts = {}
+    for item in files:
+        owner = owners.get(item["path"])
+        if owner:
+            conflicts[item["path"]] = owner
+    return conflicts
+
+
 def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -> dict:
     files = verify_staged(staging, metadata)
     paths.tmp.mkdir(parents=True, exist_ok=True)
     backup = Path(tempfile.mkdtemp(prefix="garb-backup-", dir=paths.tmp))
     installed: list[dict] = []
+    backup_kept = False
     try:
         for item in files:
             rel = normalise_member(item["path"])
@@ -449,22 +499,34 @@ def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -
                 os.chmod(dst, mode)
             installed.append(item)
     except Exception as exc:
+        problems: list[str] = []
         for item in reversed(installed):
-            dst = paths.inside(item["path"])
             try:
-                if dst.exists() or dst.is_symlink():
-                    dst.unlink()
-            except OSError:
-                pass
-        for saved in backup.rglob("*"):
-            if saved.is_file() or saved.is_symlink():
-                rel = str(saved.relative_to(backup))
-                dst = paths.inside(rel)
+                remove_path(paths.inside(item["path"]))
+            except OSError as cleanup_exc:
+                problems.append(f"remove {item['path']}: {cleanup_exc}")
+        for saved in sorted(backup.rglob("*"), key=lambda path: len(path.parts)):
+            if not (saved.is_file() or saved.is_symlink()):
+                continue
+            rel = str(saved.relative_to(backup))
+            dst = paths.inside(rel)
+            try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
+                # A non-empty directory at the destination used to make
+                # os.replace fail, after which the backup was deleted anyway.
+                remove_path(dst)
                 os.replace(saved, dst)
+            except OSError as restore_exc:
+                problems.append(f"restore {rel}: {restore_exc}")
+        if problems:
+            backup_kept = True
+            warn(f"rollback incomplete; backups kept in {backup}")
+            for problem in problems:
+                warn(f"  {problem}")
         raise GarbError(f"transaction rolled back: {exc}") from exc
     finally:
-        shutil.rmtree(backup, ignore_errors=True)
+        if not backup_kept:
+            shutil.rmtree(backup, ignore_errors=True)
 
     return {
         "name": metadata["name"],
@@ -549,25 +611,44 @@ def cmd_install(args: argparse.Namespace) -> None:
                 die(f"package not found in any repository: {spec}")
             targets.append((spec, Path(), entry))
 
-    # Resolve repository dependencies first.
-    names = []
-    for name, archive, metadata in targets:
-        if archive == Path():
-            names.append(name)
-    selected = resolve_dependencies(names, index, db, upgrading=args.upgrade) if names else []
+    repository_names = [name for name, archive, _ in targets if archive == Path()]
+    local_targets = [(name, archive, metadata) for name, archive, metadata in targets if archive != Path()]
+    local_names = {name for name, _, _ in local_targets}
+
+    # Local archives used to skip dependency resolution entirely. Resolve their
+    # runtime dependencies against the indexes and the installed database too.
+    local_dependencies: list[str] = []
+    for name, _archive, metadata in local_targets:
+        for dependency in metadata.get("dependencies", []):
+            if dependency in local_names or db.installed(dependency):
+                continue
+            if dependency not in index:
+                die(f"{name} requires {dependency}, which is not installed and not in any repository")
+            local_dependencies.append(dependency)
+
+    selected: list[str] = []
+    for requested in (local_dependencies, repository_names):
+        if not requested:
+            continue
+        for name in resolve_dependencies(requested, index, db, upgrading=args.upgrade):
+            if name not in selected:
+                selected.append(name)
+
     plan: list[tuple[str, Path, dict]] = []
     for name in selected:
         entry = index[name]
         plan.append((name, fetch_archive(paths, name, entry), entry))
-    for name, archive, metadata in targets:
-        if archive != Path():
-            plan.append((name, archive, metadata))
+    plan.extend(local_targets)
 
     if not plan:
         log("nothing to install")
         return
 
+    seen: set[str] = set()
     for name, archive, entry in plan:
+        if name in seen:
+            continue
+        seen.add(name)
         if db.installed(name) and not args.upgrade and not args.force:
             log(f"{name} is already installed (use --upgrade or --force)")
             continue
@@ -577,6 +658,14 @@ def cmd_install(args: argparse.Namespace) -> None:
             metadata, _members = extract_staged(archive, staging)
             if metadata.get("name") != name:
                 raise GarbError(f"archive name mismatch: expected {name}, got {metadata.get('name')}")
+            conflicts = file_conflicts(db, name, metadata.get("files", []))
+            if conflicts and not args.force:
+                owners = ", ".join(sorted(set(conflicts.values())))
+                sample = ", ".join(f"{rel} ({owner})" for rel, owner in sorted(conflicts.items())[:5])
+                raise GarbError(
+                    f"{name} conflicts with files owned by {owners}: {sample}; "
+                    "use --force to overwrite"
+                )
             entry_db = commit_package(paths, staging, metadata, archive)
             db.add(name, entry_db)
             db.save()
@@ -588,12 +677,16 @@ def cmd_install(args: argparse.Namespace) -> None:
 def cmd_remove(args: argparse.Namespace) -> None:
     paths = args.paths
     db = Database(paths)
+    removing = set(args.package)
     changed = False
     for name in args.package:
         entry = db.installed(name)
         if entry is None:
             warn(f"{name} is not installed")
             continue
+        dependents = reverse_dependents(db, name, ignore=removing)
+        if dependents and not args.force:
+            die(f"{name} is required by: {', '.join(dependents)} (use --force to remove it anyway)")
         modified = []
         for item in entry.get("files", []):
             target = paths.inside(item["path"])
@@ -635,35 +728,54 @@ def cmd_verify(args: argparse.Namespace) -> None:
     names = args.package or sorted(db.data["packages"])
     failures = 0
     checked = 0
+    report = []
     for name in names:
         entry = db.installed(name)
         if entry is None:
             warn(f"{name} is not installed")
             failures += 1
+            report.append({"package": name, "ok": False, "files": []})
             continue
         bad = 0
+        files = []
         for item in entry.get("files", []):
             target = paths.inside(item["path"])
             checked += 1
+            status = "ok"
             if item.get("type") == "symlink":
                 if not target.is_symlink() or os.readlink(target) != item.get("target"):
-                    print(f"  [BAD] {name}: {item['path']} (symlink)")
-                    bad += 1
+                    status = "symlink-mismatch"
+            elif not target.is_file() or target.is_symlink():
+                status = "missing"
+            elif not args.quick and sha256_file(target) != item.get("sha256"):
+                status = "tampered"
+            files.append({"path": item["path"], "status": status})
+            if status == "ok":
                 continue
-            if not target.is_file() or target.is_symlink():
-                print(f"  [MISSING] {name}: {item['path']}")
-                bad += 1
-                continue
-            if not args.quick and sha256_file(target) != item.get("sha256"):
-                print(f"  [TAMPERED] {name}: {item['path']}")
-                bad += 1
+            bad += 1
+            if args.format == "text":
+                label = {
+                    "symlink-mismatch": "[BAD]",
+                    "missing": "[MISSING]",
+                    "tampered": "[TAMPERED]",
+                }[status]
+                suffix = " (symlink)" if status == "symlink-mismatch" else ""
+                print(f"  {label} {name}: {item['path']}{suffix}")
         if bad:
             failures += 1
-        else:
+        elif args.format == "text":
             print(f"  [OK] {name} ({len(entry.get('files', []))} files)")
+        report.append({"package": name, "ok": not bad, "files": files})
+    if args.format == "json":
+        print(json.dumps(
+            {"checked": checked, "failed": failures, "packages": report},
+            indent=2,
+            sort_keys=True,
+        ))
     if failures:
         die(f"integrity check failed for {failures} package(s), {checked} files checked")
-    print(f"[+] integrity check passed: {checked} files checked")
+    if args.format == "text":
+        print(f"[+] integrity check passed: {checked} files checked")
 
 
 def cmd_upgrade(args: argparse.Namespace) -> None:
@@ -687,6 +799,41 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     args.force = False
     args.upgrade = True
     cmd_install(args)
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    paths = args.paths
+    db = Database(paths)
+    index = load_indexes(paths) if (args.available or args.upgradable) else {}
+    names = sorted(index if args.available else db.data["packages"])
+    printed = 0
+    for name in names:
+        installed = db.installed(name)
+        available = index.get(name)
+        if args.upgradable:
+            if installed is None or available is None:
+                continue
+            if version_tuple(available.get("version", "0")) <= version_tuple(installed.get("version", "0")):
+                continue
+        entry = installed or available or {}
+        state = "installed" if installed else "available"
+        print(f"  {name:<24} {entry.get('version', '?')}-{entry.get('release', 1)}  [{state}]  {entry.get('description', '')}")
+        printed += 1
+    if not printed:
+        print("[-] no packages to list")
+
+
+def cmd_clean(args: argparse.Namespace) -> None:
+    repositories = args.paths.cache / "repos"
+    removed = 0
+    if repositories.is_dir():
+        for entry in repositories.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+    print(f"[+] cleaned {removed} cached repositories; run 'garb update' to refresh")
 
 
 def version_tuple(value: str) -> tuple:
@@ -720,11 +867,13 @@ def build_package(manifest: Path, output_dir: Path) -> Path:
     files = []
     if source_root.is_dir():
         for path in sorted(source_root.rglob("*")):
-            if path.is_dir():
-                continue
             rel = str(path.relative_to(source_root))
+            # Check is_symlink() before is_dir(): is_dir() follows links, so a
+            # symlink to a directory used to be dropped silently.
             if path.is_symlink():
                 files.append({"path": rel, "type": "symlink", "target": os.readlink(path)})
+            elif path.is_dir():
+                continue
             elif path.is_file():
                 files.append({
                     "path": rel,
@@ -762,7 +911,7 @@ def build_package(manifest: Path, output_dir: Path) -> Path:
             tar.addfile(info, io.BytesIO(payload))
             if source_root.is_dir():
                 for path in sorted(source_root.rglob("*")):
-                    if path.is_dir():
+                    if path.is_dir() and not path.is_symlink():
                         continue
                     rel = str(path.relative_to(source_root))
                     info = tar.gettarinfo(str(path), arcname=rel)
@@ -874,7 +1023,7 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
         elif command == "search":
             argv += ["-Ss", args.query]
         elif command == "info":
-            argv += ["-Si", args.package]
+            argv += ["-Qi" if getattr(args, "installed", False) else "-Si", args.package]
         elif command == "install":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
@@ -884,6 +1033,8 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
                 raise GarbError("--force is not supported by the pacman backend")
             argv += ["-R", "--noconfirm", *args.package]
         elif command == "verify":
+            if getattr(args, "format", "text") != "text":
+                raise GarbError("--format json is a native-garb option")
             argv.append("-Qk" if args.quick else "-Qkk")
             argv += args.package
         elif command == "upgrade":
@@ -914,6 +1065,8 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
     elif command == "verify":
         if args.quick:
             raise GarbError("--quick is not supported by the apk backend")
+        if getattr(args, "format", "text") != "text":
+            raise GarbError("--format json is a native-garb option")
         argv += ["audit", *args.package]
     elif command == "upgrade":
         argv += ["upgrade", *args.package]
@@ -962,6 +1115,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     info = sub.add_parser("info", help="show package details")
     info.add_argument("package")
+    info.add_argument("--installed", action="store_true", help="only report installed packages")
     info.set_defaults(func=cmd_info)
 
     install = sub.add_parser("install", help="install packages")
@@ -978,11 +1132,21 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="verify installed file hashes")
     verify.add_argument("package", nargs="*")
     verify.add_argument("--quick", action="store_true")
+    verify.add_argument("--format", choices=("text", "json"), default="text", help="output format")
     verify.set_defaults(func=cmd_verify)
 
     upgrade = sub.add_parser("upgrade", help="upgrade installed packages")
     upgrade.add_argument("package", nargs="*")
     upgrade.set_defaults(func=cmd_upgrade)
+
+    listing = sub.add_parser("list", help="list installed packages")
+    listing_group = listing.add_mutually_exclusive_group()
+    listing_group.add_argument("--upgradable", action="store_true", help="only packages with a newer index version")
+    listing_group.add_argument("--available", action="store_true", help="list repository packages instead")
+    listing.set_defaults(func=cmd_list)
+
+    clean = sub.add_parser("clean", help="remove cached repository indexes and downloads")
+    clean.set_defaults(func=cmd_clean)
 
     build = sub.add_parser("build", help="build one .garb from a Garbfile")
     build.add_argument("manifest")
@@ -1015,6 +1179,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         backend = args.backend
+        # A local .garb archive cannot be handed to pacman/apk; native garb is
+        # the only implementation that understands the format.
+        if args.command == "install" and any(Path(spec).is_file() for spec in args.package):
+            if backend not in ("auto", "native"):
+                raise GarbError("local .garb archives require the native backend")
+            backend = "native"
         if args.command in EXTERNAL_COMMANDS and backend != "native":
             # Auto-detection is limited to the running system. A staging root
             # must opt in explicitly so tests and image builds never invoke the
@@ -1030,7 +1200,7 @@ def main() -> int:
         args.func(args)
     except GarbError as exc:
         die(str(exc))
-    except (OSError, json.JSONDecodeError, tarfile.TarError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as exc:
         die(str(exc))
     return 0
 

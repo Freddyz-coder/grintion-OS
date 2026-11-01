@@ -177,6 +177,164 @@ def test_apk_backend_translation(tmp_path: Path) -> None:
     assert log.read_text().splitlines() == ["--root", str(root), "del", "foo"]
 
 
+def test_remove_refuses_reverse_dependencies(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    result = run(root, "remove", "libfoo", check=False)
+    assert result.returncode != 0
+    assert "required by" in result.stderr
+    assert (root / "usr/share/libfoo/data.txt").exists()
+    run(root, "remove", "libfoo", "--force")
+    assert not (root / "usr/share/libfoo/data.txt").exists()
+
+
+def test_local_archive_resolves_dependencies(environment: dict) -> None:
+    root = environment["root"]
+    archive = next(environment["repo"].glob("app-*.garb"))
+    run(root, "install", str(archive))
+    assert (root / "usr/bin/app").read_text() == "app-ok\n"
+    assert (root / "usr/share/libfoo/data.txt").exists()
+
+
+def test_local_archive_missing_dependency_fails(environment: dict, tmp_path: Path) -> None:
+    root = tmp_path / "bare-root"
+    root.mkdir()
+    archive = next(environment["repo"].glob("app-*.garb"))
+    result = run(root, "install", str(archive), check=False)
+    assert result.returncode != 0
+    assert "libfoo" in result.stderr
+
+
+def test_file_conflict_is_refused(environment: dict) -> None:
+    root = environment["root"]
+    src = environment["src"]
+    repo = environment["repo"]
+    keys = environment["keys"]
+    run(root, "install", "app")
+    write_package(src, "other", files={"usr/bin/app": "other-ok\n"})
+    subprocess.run([sys.executable, str(GARB), "repo-build", str(src), str(repo)], check=True, capture_output=True)
+    subprocess.run([sys.executable, str(GARB), "repo-index", str(repo), "--key", str(keys / "private.pem")],
+                   check=True, capture_output=True)
+    run(root, "update")
+    result = run(root, "install", "other", check=False)
+    assert result.returncode != 0
+    assert "conflicts" in result.stderr.lower()
+    assert (root / "usr/bin/app").read_text() == "app-ok\n"
+    run(root, "install", "other", "--force")
+    assert (root / "usr/bin/app").read_text() == "other-ok\n"
+
+
+def test_clean_and_list(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    listed = run(root, "list").stdout
+    assert "app" in listed and "libfoo" in listed
+    assert "app" in run(root, "list", "--available").stdout
+    assert run(root, "list", "--upgradable").stdout.strip() == "[-] no packages to list"
+    cleaned = run(root, "clean")
+    assert "cleaned" in cleaned.stdout
+    assert not any((root / "var/cache/garb/repos").iterdir())
+    run(root, "update")
+    run(root, "list", "--available")
+
+
+def test_verify_json_output(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    payload = json.loads(run(root, "verify", "--format", "json").stdout)
+    assert payload["failed"] == 0
+    (root / "usr/bin/app").write_text("evil\n")
+    result = run(root, "verify", "--format", "json", check=False)
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert payload["failed"] == 1
+    assert any(item["status"] == "tampered" for item in payload["packages"][0]["files"])
+
+
+def test_malformed_garbfile_has_no_traceback(tmp_path: Path) -> None:
+    package = tmp_path / "bad"
+    package.mkdir()
+    (package / "Garbfile").write_text("[package\nname = ")
+    result = run(tmp_path / "root", "build", str(package / "Garbfile"),
+                 "-o", str(tmp_path / "out"), check=False)
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert result.stderr.startswith("[-]")
+
+
+def test_symlink_to_directory_is_packaged(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "linker"
+    (package / "root/usr/share/linker").mkdir(parents=True)
+    (package / "root/usr/share/linker/data.txt").write_text("data\n")
+    (package / "root/usr/lib").mkdir(parents=True)
+    (package / "root/usr/lib/linker").symlink_to("../share/linker")
+    (package / "Garbfile").write_text(
+        "[package]\n"
+        'name = "linker"\n'
+        'version = "1.0.0"\n'
+        "release = 1\n"
+    )
+    out = tmp_path / "out"
+    subprocess.run([sys.executable, str(GARB), "build", str(package / "Garbfile"), "-o", str(out)],
+                   check=True, capture_output=True)
+    archive = next(out.glob("*.garb"))
+    with tarfile.open(archive) as tar:
+        assert "usr/lib/linker" in tar.getnames()
+        assert tar.getmember("usr/lib/linker").issym()
+        assert tar.getmember("usr/lib/linker").linkname == "../share/linker"
+
+
+def test_allow_unsigned_repository_without_signature(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    repo = tmp_path / "repo"
+    root = tmp_path / "root"
+    src.mkdir()
+    write_package(src, "solo")
+    subprocess.run([sys.executable, str(GARB), "repo-build", str(src), str(repo)], check=True, capture_output=True)
+    subprocess.run([sys.executable, str(GARB), "repo-index", str(repo)], check=True, capture_output=True)
+    (root / "etc/garb/repos.d").mkdir(parents=True)
+    (root / "etc/garb/repos.d/demo.conf").write_text(f"url={repo}\n")
+    run(root, "update", "--allow-unsigned")
+    assert (root / "var/cache/garb/repos/demo/index.json").exists()
+
+
+def test_pacman_backend_maps_installed_info(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "info", "foo", "--installed", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["--root", str(root), "-Qi", "foo"]
+
+
+def test_pacman_backend_rejects_json_verify(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(tmp_path / "pacman")
+    (tmp_path / "pacman").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "pacman").chmod(0o755)
+    result = run(root, "verify", "--format", "json", backend="pacman", env=env, check=False)
+    assert result.returncode != 0
+    assert "native-garb" in result.stderr
+
+
+def test_local_archive_rejects_external_backend(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    archive = tmp_path / "pkg.garb"
+    archive.write_bytes(b"not a real archive")
+    result = run(root, "install", str(archive), backend="pacman", check=False)
+    assert result.returncode != 0
+    assert "native backend" in result.stderr
+
+
 def test_upgrade(environment: dict) -> None:
     root = environment["root"]
     src = environment["src"]
