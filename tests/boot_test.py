@@ -82,11 +82,12 @@ def boot(iso: str, uefi: bool, timeout: int) -> None:
             detail = run("cat /tmp/doctor.log")
             raise AssertionError(f"runtime doctor failed:\n{detail}")
 
-        child.sendline("poweroff -f")
-        try:
-            child.expect(pexpect.EOF, timeout=60)
-        except pexpect.TIMEOUT:
-            pass
+        # A plain poweroff, not -f: the wrapper must run the runit stage 3
+        # sequence and still power the machine off. The shutdown used to stop
+        # the getty that owned this console, which killed poweroff itself and
+        # left the VM running (ProblemsWhenInstalling.txt #8).
+        child.sendline("poweroff")
+        child.expect(pexpect.EOF, timeout=90)
     finally:
         child.close(force=True)
 

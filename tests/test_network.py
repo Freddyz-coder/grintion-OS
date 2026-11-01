@@ -93,6 +93,46 @@ def test_status_reports_configuration(tmp_path: Path) -> None:
     assert "TestNet" in result.stdout
 
 
+def _make_link(netdir: Path, name: str, kind: int, wireless: bool = False) -> None:
+    link = netdir / name
+    link.mkdir()
+    (link / "type").write_text(f"{kind}\n")
+    if wireless:
+        (link / "wireless").mkdir()
+
+
+def test_wired_interfaces_skips_pseudo_links(tmp_path: Path) -> None:
+    # /sys/class/net lists kernel pseudo interfaces (sit0, ip6tnl0, dummy0) that
+    # have no carrier to lease from. Handing sit0 to dhcpcd produced
+    # "sit0: unsupported interface type" and delayed the lease on eth0, which is
+    # how a fresh boot ended up without an address.
+    netdir = tmp_path / "net"
+    netdir.mkdir()
+    _make_link(netdir, "lo", 772)
+    _make_link(netdir, "eth0", 1)
+    _make_link(netdir, "sit0", 776)
+    _make_link(netdir, "dummy0", 1)
+    _make_link(netdir, "ip6tnl0", 769)
+    _make_link(netdir, "wlan0", 1, wireless=True)
+
+    env = os.environ.copy()
+    env["GRINTION_SYSFS_NET"] = str(netdir)
+    result = subprocess.run(
+        ["sh", "-c", '. "$1"; network_wired_interfaces', "sh", str(LIB)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    assert sorted(result.stdout.split()) == ["dummy0", "eth0"]
+
+
+def test_network_service_uses_the_filtered_scan() -> None:
+    script = (REPO_ROOT / "etc" / "sv" / "network" / "run").read_text()
+    assert "network_wired_interfaces" in script
+    assert "/sys/class/net/*" not in script
+
+
 def test_dry_run_does_not_modify(tmp_path: Path) -> None:
     config = tmp_path / "network.conf"
     original = "[interface enp0s3]\nmode = dhcp\n"

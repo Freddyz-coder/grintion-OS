@@ -1,0 +1,26 @@
+#!/bin/sh
+# Grintion-OS runit service: dbus (system message bus)
+#
+# Enable with: ln -sfn /etc/sv/dbus /var/service/dbus
+# `grintion-desktop install` enables it automatically. Without it, LightDM,
+# SDDM and GDM exit straight away and `sv start display-manager` times out.
+exec 2>&1
+
+if [ ! -x /usr/bin/dbus-daemon ]; then
+    echo "dbus: dbus-daemon is not installed (install the 'dbus' package)"
+    exec sleep 86400
+fi
+
+# dbus-daemon drops privileges to the <user> in system.conf (Arch uses "dbus",
+# older configurations use "messagebus"). Fall back to the name it asks for.
+dbus_user=$(sed -n 's:.*<user>\(.*\)</user>.*:\1:p' /usr/share/dbus-1/system.conf 2>/dev/null | head -n 1)
+dbus_user=${dbus_user:-dbus}
+if ! id -u "$dbus_user" >/dev/null 2>&1; then
+    echo "dbus: the '$dbus_user' account is missing; run 'grintion-desktop install <environment>'"
+    exec sleep 86400
+fi
+
+mkdir -p /run/dbus
+chown "$dbus_user:$dbus_user" /run/dbus 2>/dev/null || true
+
+exec /usr/bin/dbus-daemon --system --nofork --nopidfile

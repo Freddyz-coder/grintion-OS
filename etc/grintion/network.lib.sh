@@ -71,3 +71,24 @@ network_interfaces() {
 network_wifi_configured() {
     [ -n "$(network_conf_get wifi ssid)" ]
 }
+
+# Interfaces that dhcpcd can lease an address on.
+#
+# /sys/class/net also lists kernel pseudo interfaces (sit0, ip6tnl0, tunl0,
+# dummy0). They have no link to lease from, and handing them to dhcpcd makes it
+# log "unsupported interface type" and delay the real DHCP exchange on eth0,
+# which is how a fresh boot ended up with no address (see
+# ProblemsWhenInstalling.txt). ARPHRD_ETHER is 1; wireless links are handled by
+# the wpa_supplicant service and skipped here.
+network_wired_interfaces() {
+    _netdir="${GRINTION_SYSFS_NET:-/sys/class/net}"
+    for _path in "$_netdir"/*; do
+        [ -e "$_path" ] || continue
+        _iface="${_path##*/}"
+        [ "$_iface" = lo ] && continue
+        [ -e "$_path/wireless" ] && continue
+        [ -e "$_path/phy80211" ] && continue
+        [ "$(cat "$_path/type" 2>/dev/null)" = 1 ] || continue
+        printf '%s\n' "$_iface"
+    done
+}

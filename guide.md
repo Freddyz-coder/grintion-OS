@@ -25,47 +25,41 @@
 
 ### Test Connection
 ```bash
+grintion-network status     # configured interfaces and service state
 ping -c 3 1.1.1.1
 ```
 
+The live shell appears before DHCP has finished, so a ping in the first few
+seconds can report "Network is unreachable". `grintion-network status` tells you
+whether the lease has landed.
+
 ### Wired (DHCP)
-If no IP was assigned automatically:
+This is automatic at boot on every wired interface. If no address was assigned:
 ```bash
-# 1. Identify interface (e.g. eth0, enp0s3)
-ip link
-
-# 2. Bring up interface and request IP
-ip link set eth0 up
-dhcpcd eth0
-
-# Or restart network service
-sv restart network
+sudo sv restart network
+grintion-network status
+tail -n 20 /var/log/dhcpcd.log
 ```
 
 ### Wi-Fi Setup
 ```bash
-# 1. Unblock and bring up wireless interface
-rfkill unblock wifi 2>/dev/null || true
-ip link set wlan0 up
+grintion-network wifi-scan                    # list visible networks
+sudo grintion-network connect "SSID" "PASSWORD"
+```
 
-# 2. Generate configuration
-wpa_passphrase "SSID" "PASSWORD" > /etc/wpa_supplicant/wpa_supplicant.conf
-
-# 3. Connect and obtain IP
-wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
-dhcpcd wlan0
-
-# 4. Verify
-ping -c 3 1.1.1.1
+`connect` writes `/etc/grintion/network.conf` (mode 0600), enables the
+`wpa_supplicant` service and restarts `network`. To forget the network:
+```bash
+sudo grintion-network disconnect
 ```
 
 ### Static IP
 ```bash
-ip link set eth0 up
-ip addr add 192.168.1.50/24 dev eth0
-ip route add default via 192.168.1.1 dev eth0
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
+sudo grintion-network set-static eth0 192.168.1.50/24 192.168.1.1 1.1.1.1,8.8.8.8
 ```
+
+The last argument is a comma-separated DNS list. The address survives reboot
+because it is stored in `/etc/grintion/network.conf`, not applied by hand.
 
 ### Fix DNS (Domains Not Resolving)
 If `ping 1.1.1.1` works but domain names fail:
@@ -100,7 +94,7 @@ grintion-install --disk /dev/sda
 
 ## 5. First Boot
 
-1. Power off: `poweroff`
+1. Power off: `poweroff` (`sudo poweroff` in the installed system)
 2. Remove the ISO / installation media.
 3. Boot and log in with your created user credentials.
 4. Verify sudo:
@@ -118,9 +112,13 @@ Install pre-configured desktop environments and GPU drivers:
 # Install desktop (options: xfce, gnome, kde, lxqt, sway, i3)
 sudo grintion-desktop install xfce
 
-# Enable login manager on boot
+# grintion-desktop enables and starts the login manager for you; to redo it by hand:
+sudo ln -sfn /etc/sv/dbus /var/service/dbus
 sudo ln -sfn /etc/sv/display-manager /var/service/display-manager
 sudo sv restart display-manager
+
+# If the manager will not stay up, read its log
+sudo tail -n 40 /var/log/display-manager.log
 
 # Or launch XFCE manually without a display manager
 echo "exec startxfce4" > ~/.xinitrc
@@ -164,5 +162,7 @@ sudo garb install firefox nano vim git htop fastfetch
 ## 9. Troubleshooting
 
 - **No network in VirtualBox:** Change VM Adapter to `Intel PRO/1000 MT Desktop (82540EM)` in Settings → Network → Advanced.
-- **Reboot / Poweroff:** Use `sudo reboot` or `sudo poweroff` (add `-f` to force).
+- **Reboot / Poweroff:** Use `sudo reboot` or `sudo poweroff`; `-f` skips the
+  service shutdown and powers off immediately. `poweroff` without root fails on
+  purpose, exactly like it does without `sudo` on Arch.
 - **Change resolution:** Run `xrandr -s 1920x1080` or use Settings → Display in XFCE.

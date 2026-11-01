@@ -7,6 +7,13 @@ export PATH
 echo "[*] stopping supervised services"
 for service in /var/service/*; do
     [ -d "$service" ] || continue
+    # Never stop a getty: it owns the console session that is asking for the
+    # shutdown, and runsv signals the whole process group. Stopping it killed
+    # the poweroff command with the session, so the machine stayed up with a
+    # dead console (ProblemsWhenInstalling.txt #8 and #12).
+    case "${service##*/}" in
+        agetty-*) continue ;;
+    esac
     sv -w 5 force-stop "$service" >/dev/null 2>&1 || true
 done
 

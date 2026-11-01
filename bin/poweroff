@@ -1,11 +1,36 @@
 #!/bin/sh
 # Grintion-OS poweroff wrapper
+#
+# Runs the runit stage 3 shutdown so services stop cleanly and the random seed
+# is saved, then powers the machine off with busybox. The shutdown runs in its
+# own session: this command is normally typed on a console owned by agetty, and
+# stopping that service signals the whole process group, which killed poweroff
+# before it could act and left the machine running on a dead console
+# (ProblemsWhenInstalling.txt #8 and #12).
+set -u
+
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        -f|--force) FORCE=1 ;;
+        -h|--help)  printf 'Usage: poweroff [-f]\n'; exit 0 ;;
+        -*)         printf '[-] poweroff: unknown option: %s\n' "$arg" >&2; exit 1 ;;
+        *)          : ;;
+    esac
+done
+
 [ "$(id -u)" -eq 0 ] || { echo "[-] poweroff: must be root" >&2; exit 1; }
-# Run the runit stage 3 shutdown so services stop cleanly and the random seed
-# is saved; busybox -f alone kills init without running it.
-[ -x /etc/runit/3 ] && /etc/runit/3 >/dev/null 2>&1 || true
-sync
-if [ -x /usr/bin/busybox ]; then
-    exec /usr/bin/busybox poweroff -f
+
+BB=/usr/bin/busybox
+[ -x "$BB" ] || BB=/bin/busybox
+[ -x "$BB" ] || { echo "[-] poweroff: busybox is missing" >&2; exit 1; }
+
+# -f means "do not run the shutdown sequence", the same as busybox and sysvinit.
+if [ "$FORCE" -eq 0 ] && command -v setsid >/dev/null 2>&1; then
+    exec setsid -w /bin/sh -c \
+        '/etc/runit/3 >/dev/null 2>&1 || true; sync; exec "$0" poweroff -f' "$BB"
 fi
-exec /usr/bin/systemctl poweroff -f
+
+[ "$FORCE" -eq 1 ] || /etc/runit/3 >/dev/null 2>&1 || true
+sync
+exec "$BB" poweroff -f

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,24 @@ def test_shutdown_rejects_unknown_option() -> None:
     result = run(SHUTDOWN, "--dry-run", "-Z")
     assert result.returncode != 0
     assert "unknown option" in result.stderr
+
+
+def test_stage3_never_stops_a_getty() -> None:
+    # runsv signals a service's whole process group, so stopping the getty that
+    # owns the console killed the poweroff command and left the machine running.
+    stage3 = (REPO_ROOT / "etc" / "runit" / "3").read_text()
+    assert "agetty-*" in stage3
+
+
+def test_poweroff_requires_root_and_accepts_force() -> None:
+    poweroff = REPO_ROOT / "bin" / "poweroff"
+    result = run(poweroff, "-h")
+    assert result.returncode == 0
+    assert "-f" in result.stdout
+    if os.geteuid() != 0:
+        result = run(poweroff, "-f")
+        assert result.returncode == 1
+        assert "must be root" in result.stderr
 
 
 def test_installer_help_lists_swap_size() -> None:

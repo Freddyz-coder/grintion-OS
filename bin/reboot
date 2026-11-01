@@ -1,9 +1,31 @@
 #!/bin/sh
 # Grintion-OS reboot wrapper
+#
+# The shutdown runs in its own session so stopping a service cannot kill it
+# before the reboot happens (see bin/poweroff).
+set -u
+
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        -f|--force) FORCE=1 ;;
+        -h|--help)  printf 'Usage: reboot [-f]\n'; exit 0 ;;
+        -*)         printf '[-] reboot: unknown option: %s\n' "$arg" >&2; exit 1 ;;
+        *)          : ;;
+    esac
+done
+
 [ "$(id -u)" -eq 0 ] || { echo "[-] reboot: must be root" >&2; exit 1; }
-[ -x /etc/runit/3 ] && /etc/runit/3 >/dev/null 2>&1 || true
-sync
-if [ -x /usr/bin/busybox ]; then
-    exec /usr/bin/busybox reboot -f
+
+BB=/usr/bin/busybox
+[ -x "$BB" ] || BB=/bin/busybox
+[ -x "$BB" ] || { echo "[-] reboot: busybox is missing" >&2; exit 1; }
+
+if [ "$FORCE" -eq 0 ] && command -v setsid >/dev/null 2>&1; then
+    exec setsid -w /bin/sh -c \
+        '/etc/runit/3 >/dev/null 2>&1 || true; sync; exec "$0" reboot -f' "$BB"
 fi
-exec /usr/bin/systemctl reboot -f
+
+[ "$FORCE" -eq 1 ] || /etc/runit/3 >/dev/null 2>&1 || true
+sync
+exec "$BB" reboot -f

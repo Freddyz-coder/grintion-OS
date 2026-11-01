@@ -53,12 +53,7 @@ if [ -r "$NETWORK_CONF" ] && [ -n "$(network_interfaces)" ]; then
 else
     i=0
     while [ "$i" -lt 10 ]; do
-        for path in /sys/class/net/*; do
-            [ -e "$path" ] || continue
-            iface=${path##*/}
-            [ "$iface" = lo ] && continue
-            [ -e "$path/wireless" ] && continue
-            [ -e "$path/phy80211" ] && continue
+        for iface in $(network_wired_interfaces); do
             DHCP_IFACES="$DHCP_IFACES $iface"
         done
         [ -n "$DHCP_IFACES" ] && break

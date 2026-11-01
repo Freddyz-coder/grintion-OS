@@ -135,18 +135,82 @@ pkg_install() {
         root_flag=("--root" "$TARGET_ROOT")
     fi
 
-    log "Installing packages: ${pkgs[*]}"
+    local manager=()
     if command -v pacman >/dev/null 2>&1; then
         local noconfirm=()
         if [ "$NO_CONFIRM" -eq 1 ]; then
             noconfirm=("--noconfirm")
         fi
-        pacman "${root_flag[@]}" -Sy "${noconfirm[@]}" --needed --overwrite '*' "${pkgs[@]}"
+        # No --needed: the image ships a seeded pacman database that already
+        # lists many packages whose files were never copied (dbus is installed
+        # according to the database but has no /usr/bin/dbus-daemon). With
+        # --needed pacman skipped those packages, their dependencies stayed
+        # missing, and the package scriptlets failed while the desktop still
+        # looked installed (ProblemsWhenInstalling.txt #9).
+        manager=(pacman "${root_flag[@]}" -Sy "${noconfirm[@]}" --overwrite '*' "${pkgs[@]}")
     elif command -v garb >/dev/null 2>&1; then
-        garb "${root_flag[@]}" install "${pkgs[@]}"
+        manager=(garb "${root_flag[@]}" install "${pkgs[@]}")
     else
         die "Neither pacman nor garb package manager found"
     fi
+
+    log "Installing packages: ${pkgs[*]}"
+    local out="" rc=0
+    set +e
+    out="$("${manager[@]}" 2>&1)"
+    rc=$?
+    set -e
+    if [ -n "$out" ]; then
+        printf '%s\n' "$out"
+    fi
+    [ "$rc" -eq 0 ] || die "package installation failed (exit $rc)"
+
+    # pacman returns 0 even when a package's .INSTALL script fails, so a
+    # desktop environment can look "installed" while its binaries are missing.
+    # Arch scriptlets call systemd-sysusers/systemd-tmpfiles, which do not exist
+    # here; say so instead of leaving unexplained 'error:' lines behind
+    # (ProblemsWhenInstalling.txt #9).
+    local errors=0
+    errors=$(printf '%s\n' "$out" | grep -c '^error:' 2>/dev/null) || errors=0
+    if [ "${errors:-0}" -gt 0 ]; then
+        warn "the package manager printed $errors error line(s) above"
+        warn "package scriptlets assume systemd and a full desktop library stack; the commands below are verified separately"
+    fi
+}
+
+# Fail loudly when the package manager claimed success but the commands the
+# desktop needs are not there.
+verify_binaries() {
+    local missing=() bin
+    for bin in "$@"; do
+        [ -n "$bin" ] || continue
+        [ -x "$TARGET_ROOT$bin" ] || missing+=("$bin")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        die "installation did not provide: ${missing[*]}"$'\n'"        run 'sudo garb update' to refresh the databases, then retry; the package manager errors are above"
+    fi
+}
+
+# Accounts that packages normally create with systemd-sysusers. Without them
+# the service daemon refuses to start, which is why the display manager never
+# came up (ProblemsWhenInstalling.txt #10).
+ensure_service_account() {
+    local user="$1" home="$2" shell=/usr/bin/nologin
+    [ "$TARGET_ROOT" = "/" ] || return 0
+    id -u "$user" >/dev/null 2>&1 && return 0
+    [ -x "$shell" ] || shell=/bin/false
+    groupadd -r "$user" 2>/dev/null || true
+    useradd -r -g "$user" -d "$home" -s "$shell" "$user" 2>/dev/null || true
+}
+
+# dbus-daemon drops privileges to the <user> in system.conf. Arch names it
+# "dbus"; older configurations use "messagebus" (ProblemsWhenInstalling.txt #10).
+dbus_service_user() {
+    local conf="$TARGET_ROOT/usr/share/dbus-1/system.conf" name=""
+    if [ -r "$conf" ]; then
+        name="$(sed -n 's:.*<user>\(.*\)</user>.*:\1:p' "$conf" | head -n 1)"
+    fi
+    printf '%s\n' "${name:-dbus}"
 }
 
 enable_dm_service() {
@@ -176,6 +240,22 @@ enable_dm_service() {
     # deployed copy cannot drift from etc/sv/display-manager/run (handoff L7).
     [ -f "$sv_dir/run" ] || die "tracked display-manager service is missing: $sv_dir/run"
     chmod 0755 "$sv_dir/run"
+
+    # Every supported display manager needs the D-Bus system bus and the account
+    # that the dbus package normally creates with systemd-sysusers.
+    local dbus_user
+    dbus_user="$(dbus_service_user)"
+    ensure_service_account "$dbus_user" /run/dbus
+    mkdir -p "$TARGET_ROOT/run/dbus"
+    chown "$dbus_user:$dbus_user" "$TARGET_ROOT/run/dbus" 2>/dev/null || true
+    local dbus_dir="$TARGET_ROOT/etc/sv/dbus"
+    if [ -f "$dbus_dir/run" ]; then
+        chmod 0755 "$dbus_dir/run"
+        mkdir -p "$(dirname "$TARGET_ROOT/var/service/dbus")"
+        ln -sfn "/etc/sv/dbus" "$TARGET_ROOT/var/service/dbus"
+    else
+        warn "tracked dbus service is missing: $dbus_dir/run"
+    fi
 
     mkdir -p "$(dirname "$var_sv")"
     ln -sfn "/etc/sv/display-manager" "$var_sv"
@@ -357,6 +437,12 @@ cmd_install() {
         esac
     fi
 
+    # A display manager talks to the D-Bus system bus, so make sure the
+    # service has a daemon to talk to.
+    if [ -n "$dm_bin" ] && [[ " $dm_pkg " != *" dbus "* ]]; then
+        dm_pkg="$dm_pkg dbus"
+    fi
+
     # 1. Install GPU Drivers
     if [ "$SKIP_DRIVERS" -eq 0 ]; then
         log "Detecting and preparing GPU drivers..."
@@ -373,6 +459,21 @@ cmd_install() {
 
     log "Starting installation of $target_de environment..."
     pkg_install "${all_to_install[@]}"
+
+    # The package manager can exit 0 with a half-installed desktop, so check
+    # the commands the profile promises before reporting success.
+    local expected=()
+    if [ -n "$dm_bin" ]; then
+        expected+=("$dm_bin")
+    fi
+    if [ -n "$xinit_cmd" ]; then
+        local launch="${xinit_cmd#exec }"
+        launch="${launch%% *}"
+        if [ -n "$launch" ]; then
+            expected+=("/usr/bin/$launch")
+        fi
+    fi
+    verify_binaries "${expected[@]}"
 
     # Ensure mcookie exists for startx
     if [ ! -x "$TARGET_ROOT/usr/bin/mcookie" ]; then
@@ -417,9 +518,32 @@ cmd_install() {
     log "=============================================================="
     log "Desktop environment '$target_de' installed successfully!"
     log "=============================================================="
+    local dm_running=0
     if [ -n "$dm_bin" ]; then
+        if [ "$TARGET_ROOT" = "/" ]; then
+            # runsvdir picks the new service up by itself; give the manager a
+            # moment to settle and report the truth instead of a start command
+            # that will only time out (ProblemsWhenInstalling.txt #10).
+            sleep 3
+            local dm_state
+            dm_state="$(sv status /var/service/display-manager 2>&1 || true)"
+            if printf '%s\n' "$dm_state" | grep -q '^run:'; then
+                dm_running=1
+            else
+                warn "display-manager did not come up: $(printf '%s' "$dm_state" | tr '\n' ' ')"
+                if [ -r /var/log/display-manager.log ]; then
+                    warn "last lines of /var/log/display-manager.log:"
+                    tail -n 20 /var/log/display-manager.log >&2 || true
+                fi
+            fi
+        fi
         echo "Display Manager: $dm_bin (managed by runit: /var/service/display-manager)"
-        echo "To start now:    sudo sv start /var/service/display-manager"
+        if [ "$dm_running" -eq 1 ]; then
+            echo "Status:          running (restart with: sudo sv restart display-manager)"
+        else
+            echo "To start now:    sudo sv start display-manager"
+            echo "If it stops again: sudo tail -n 40 /var/log/display-manager.log"
+        fi
     else
         if [ "$target_de" = "sway" ]; then
             echo "Launch command:  sway"
