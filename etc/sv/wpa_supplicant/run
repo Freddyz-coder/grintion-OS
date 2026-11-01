@@ -1,0 +1,53 @@
+#!/bin/sh
+# Grintion-OS runit service: wpa_supplicant
+#
+# Starts wpa_supplicant in the foreground for the [wifi] section of
+# network.conf. Enabled by `grintion-network connect`; not linked into
+# /var/service by default because the base image has no Wi-Fi credentials.
+exec >>/var/log/wpa_supplicant.log 2>&1
+
+[ -r /etc/grintion/network.lib.sh ] && . /etc/grintion/network.lib.sh
+
+iface=$(network_conf_get wifi interface)
+iface=${iface:-wlan0}
+ssid=$(network_conf_get wifi ssid)
+psk=$(network_conf_get wifi psk)
+
+if [ -z "$ssid" ]; then
+    echo "wpa_supplicant: no [wifi] ssid configured; sleeping"
+    exec sleep 3600
+fi
+
+if [ ! -e "/sys/class/net/$iface" ]; then
+    echo "wpa_supplicant: interface not present: $iface"
+    exec sleep 60
+fi
+
+command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+ip link set "$iface" up 2>/dev/null || true
+
+mkdir -p /etc/wpa_supplicant /run/wpa_supplicant
+CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+{
+    printf 'ctrl_interface=/run/wpa_supplicant\n'
+    printf 'network={\n\tssid="%s"\n' "$ssid"
+    if [ -z "$psk" ]; then
+        printf '\tkey_mgmt=NONE\n'
+    else
+        case "$psk" in
+            *[!0-9a-fA-F]*) printf '\tpsk="%s"\n' "$psk" ;;
+            *)
+                if [ ${#psk} -eq 64 ]; then
+                    printf '\tpsk=%s\n' "$psk"
+                else
+                    printf '\tpsk="%s"\n' "$psk"
+                fi
+                ;;
+        esac
+    fi
+    printf '}\n'
+} > "$CONF"
+chmod 0600 "$CONF"
+
+echo "wpa_supplicant: connecting $iface to $ssid"
+exec wpa_supplicant -i "$iface" -c "$CONF"

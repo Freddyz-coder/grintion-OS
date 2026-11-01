@@ -1,0 +1,264 @@
+#!/bin/sh
+# grintion-network - configure wired, static and Wi-Fi networking.
+#
+# The service reads /etc/grintion/network.conf through network.lib.sh. This CLI
+# edits that file atomically and restarts the supervised services.
+
+set -eu
+
+CONFIG=${GRINTION_NETWORK_CONF:-/etc/grintion/network.conf}
+LIB=${GRINTION_NETWORK_LIB:-/etc/grintion/network.lib.sh}
+APPLY=1
+DRY_RUN=0
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-network [OPTIONS] COMMAND [ARGS]
+
+Commands:
+  status                       Show configured interfaces and service state
+  set-static IFACE ADDRESS [GATEWAY] [DNS]
+                               Configure a static IPv4 address (CIDR); DNS is comma separated
+  connect SSID [PASSPHRASE]    Configure and start a Wi-Fi network
+  disconnect                   Remove the Wi-Fi network and stop wpa_supplicant
+  wifi-scan                    Scan for visible Wi-Fi networks
+  apply                        Restart the supervised network services
+
+Options:
+  --config FILE                Use an alternate network.conf
+  --no-apply                   Edit configuration without restarting services
+  --dry-run                    Print the action without changing anything
+  -h, --help                   Show this help
+EOF
+}
+
+die() { printf '[-] grintion-network: %s\n' "$*" >&2; exit 1; }
+warn() { printf '[!] grintion-network: %s\n' "$*" >&2; }
+log() { printf '[*] grintion-network: %s\n' "$*"; }
+
+COMMAND=""
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --config)   CONFIG=${2:-}; shift 2 ;;
+        --no-apply) APPLY=0; shift ;;
+        --dry-run)  DRY_RUN=1; shift ;;
+        -h|--help)  usage; exit 0 ;;
+        --)         shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+        -*)         die "unknown option: $1" ;;
+        *)
+            if [ -z "$COMMAND" ]; then
+                COMMAND="$1"
+            else
+                POSITIONAL+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+[ -n "$COMMAND" ] || { usage >&2; exit 1; }
+
+if [ ! -r "$LIB" ]; then
+    # Running from a source checkout rather than the installed image.
+    LIB="$(dirname "$0")/../etc/grintion/network.lib.sh"
+fi
+[ -r "$LIB" ] || die "network library not found: $LIB"
+export GRINTION_NETWORK_CONF="$CONFIG"
+. "$LIB"
+
+ensure_config() {
+    [ -f "$CONFIG" ] && return 0
+    mkdir -p "$(dirname "$CONFIG")"
+    cat > "$CONFIG" <<'EOF'
+# Grintion-OS network configuration.
+# With no [interface ...] sections, DHCP runs on every detected wired interface.
+EOF
+}
+
+replace_section() {
+    section="$1"
+    entries="$2"
+    ensure_config
+    tmp=$(mktemp "${CONFIG}.XXXXXX")
+    {
+        found=0
+        skip=0
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ "$line" = "[$section]" ]; then
+                found=1
+                printf '%s\n' "$line"
+                printf '%s\n' "$entries"
+                skip=1
+                continue
+            fi
+            if [ "$skip" -eq 1 ]; then
+                case "$line" in
+                    \[*\]) skip=0 ;;
+                    *) continue ;;
+                esac
+            fi
+            printf '%s\n' "$line"
+        done < "$CONFIG"
+        if [ "$found" -eq 0 ]; then
+            printf '\n[%s]\n' "$section"
+            printf '%s\n' "$entries"
+        fi
+    } > "$tmp"
+    mv "$tmp" "$CONFIG"
+    # The file can contain a Wi-Fi passphrase; never leave it world-readable.
+    chmod 0600 "$CONFIG" 2>/dev/null || true
+}
+
+remove_section() {
+    section="$1"
+    ensure_config
+    tmp=$(mktemp "${CONFIG}.XXXXXX")
+    awk -v section="[$section]" '
+        $0 == section { skip=1; next }
+        skip && /^[[:space:]]*\[/ { skip=0 }
+        skip { next }
+        { print }
+    ' "$CONFIG" > "$tmp"
+    mv "$tmp" "$CONFIG"
+    chmod 0600 "$CONFIG" 2>/dev/null || true
+}
+
+apply_services() {
+    if ! command -v sv >/dev/null 2>&1; then
+        warn "sv is not available; restart network and wpa_supplicant manually"
+        return 0
+    fi
+    mkdir -p /var/service
+    if network_wifi_configured; then
+        ln -sfn /etc/sv/wpa_supplicant /var/service/wpa_supplicant
+        sv restart wpa_supplicant 2>/dev/null || sv start wpa_supplicant 2>/dev/null \
+            || warn "could not start wpa_supplicant"
+    else
+        sv stop wpa_supplicant 2>/dev/null || true
+        rm -f /var/service/wpa_supplicant
+    fi
+    if [ -d /etc/sv/network ]; then
+        ln -sfn /etc/sv/network /var/service/network
+        sv restart network 2>/dev/null || sv start network 2>/dev/null \
+            || warn "could not restart network"
+    fi
+}
+
+cmd_status() {
+    echo "Configuration: $CONFIG"
+    if [ -r "$CONFIG" ]; then
+        sections=$(network_sections || true)
+        if [ -z "$sections" ]; then
+            echo "  (no explicit interface sections; wired DHCP is automatic)"
+        fi
+        for section in $sections; do
+            if [ "$section" = "wifi" ]; then
+                ssid=$(network_conf_get wifi ssid || true)
+                iface=$(network_conf_get wifi interface || true)
+                echo "  wifi ${iface:-wlan0}: ssid=${ssid:-<not configured>}"
+            else
+                echo "  interface $section: mode=$(network_conf_get "$section" mode || true)" \
+                     "address=$(network_conf_get "$section" static_ip || true)" \
+                     "gateway=$(network_conf_get "$section" gateway || true)"
+            fi
+        done
+    fi
+    echo
+    if command -v ip >/dev/null 2>&1; then
+        ip -br addr 2>/dev/null || true
+    fi
+    echo
+    if command -v sv >/dev/null 2>&1; then
+        sv status network wpa_supplicant 2>/dev/null || true
+    fi
+}
+
+cmd_set_static() {
+    iface=${1:-}
+    address=${2:-}
+    gateway=${3:-}
+    dns=${4:-}
+    [ -n "$iface" ] && [ -n "$address" ] || die "usage: set-static IFACE ADDRESS [GATEWAY] [DNS]"
+    entries="mode = static
+static_ip = $address"
+    [ -n "$gateway" ] && entries="$entries
+gateway = $gateway"
+    [ -n "$dns" ] && entries="$entries
+dns = $dns"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "would configure $iface static $address"
+        return 0
+    fi
+    replace_section "interface $iface" "$entries"
+    log "configured $iface as $address"
+    if [ "$APPLY" -eq 1 ]; then
+        apply_services
+    fi
+}
+
+cmd_connect() {
+    ssid=${1:-}
+    [ -n "$ssid" ] || die "usage: connect SSID [PASSPHRASE]"
+    if [ $# -ge 2 ]; then
+        psk=$2
+    elif [ -t 0 ]; then
+        printf 'Wi-Fi passphrase for %s (leave empty for an open network): ' "$ssid"
+        stty -echo
+        read -r psk
+        stty echo
+        printf '\n'
+    else
+        die "a passphrase is required in non-interactive mode"
+    fi
+    iface=$(network_conf_get wifi interface || true)
+    iface=${iface:-wlan0}
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "would connect $iface to $ssid"
+        return 0
+    fi
+    entries="interface = $iface
+ssid = $ssid
+psk = $psk"
+    replace_section wifi "$entries"
+    log "configured $iface for $ssid"
+    if [ "$APPLY" -eq 1 ]; then
+        apply_services
+    fi
+}
+
+cmd_disconnect() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "would remove the Wi-Fi configuration"
+        return 0
+    fi
+    remove_section wifi
+    log "removed the Wi-Fi configuration"
+    if [ "$APPLY" -eq 1 ]; then
+        apply_services
+    fi
+}
+
+cmd_wifi_scan() {
+    iface=$(network_conf_get wifi interface || true)
+    iface=${iface:-wlan0}
+    command -v iw >/dev/null 2>&1 || command -v iwlist >/dev/null 2>&1 \
+        || die "neither iw nor iwlist is installed"
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+    command -v ip >/dev/null 2>&1 && ip link set "$iface" up 2>/dev/null || true
+    if command -v iw >/dev/null 2>&1; then
+        iw dev "$iface" scan 2>/dev/null | awk -F': ' '/^[[:space:]]*SSID:/ { print $2 }'
+    else
+        iwlist "$iface" scan 2>/dev/null | awk -F': ' '/ESSID:/ { gsub(/"/, "", $2); print $2 }'
+    fi
+}
+
+case "$COMMAND" in
+    status)      cmd_status ;;
+    set-static)  cmd_set_static "${POSITIONAL[@]:-}" ;;
+    connect)     cmd_connect "${POSITIONAL[@]:-}" ;;
+    disconnect)  cmd_disconnect ;;
+    wifi-scan)   cmd_wifi_scan ;;
+    apply)       apply_services ;;
+    *)           usage >&2; exit 1 ;;
+esac

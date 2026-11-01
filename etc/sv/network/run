@@ -1,32 +1,88 @@
 #!/bin/sh
 # Grintion-OS runit service: network
-# Runs dhcpcd on wired interfaces only. Wi-Fi is configured manually (see
-# docs/INSTALL.md); handing wlan* to dhcpcd produced carrier timeouts/churn.
+#
+# Applies /etc/grintion/network.conf through network.lib.sh. With no explicit
+# [interface ...] sections it falls back to DHCP on every wired interface.
+# Wi-Fi association is handled by the wpa_supplicant service; this service only
+# runs DHCP on the configured wireless interface.
 exec >>/var/log/dhcpcd.log 2>&1
 
-i=0
-WIRED=""
-while [ "$i" -lt 10 ]; do
-    WIRED=""
-    for path in /sys/class/net/*; do
-        [ -e "$path" ] || continue
-        iface=${path##*/}
-        [ "$iface" = lo ] && continue
-        # /sys/class/net/<iface>/wireless and phy80211 identify wireless NICs.
-        [ -e "$path/wireless" ] && continue
-        [ -e "$path/phy80211" ] && continue
-        WIRED="$WIRED $iface"
-    done
-    [ -n "$WIRED" ] && break
-    sleep 1
-    i=$((i + 1))
-done
+[ -r /etc/grintion/network.lib.sh ] && . /etc/grintion/network.lib.sh
 
-if [ -z "$WIRED" ]; then
-    echo "network: no wired interface present; not starting DHCP"
-    exec sleep 300
+DHCP_IFACES=""
+STATIC_USED=0
+
+if [ -r "$NETWORK_CONF" ] && [ -n "$(network_interfaces)" ]; then
+    for iface in $(network_interfaces); do
+        if [ ! -e "/sys/class/net/$iface" ]; then
+            echo "network: configured interface is not present: $iface"
+            continue
+        fi
+        mode=$(network_conf_get "$iface" mode)
+        mode=${mode:-dhcp}
+        case "$mode" in
+            static)
+                address=$(network_conf_get "$iface" static_ip)
+                gateway=$(network_conf_get "$iface" gateway)
+                dns=$(network_conf_get "$iface" dns)
+                if [ -z "$address" ]; then
+                    echo "network: $iface is static but static_ip is empty"
+                    continue
+                fi
+                ip link set "$iface" up
+                ip addr flush dev "$iface" 2>/dev/null || true
+                ip addr add "$address" dev "$iface"
+                if [ -n "$gateway" ]; then
+                    ip route replace default via "$gateway" dev "$iface"
+                fi
+                if [ -n "$dns" ]; then
+                    : > /etc/resolv.conf
+                    printf '%s\n' "$dns" | tr ',' '\n' | while IFS= read -r server; do
+                        server=$(printf '%s' "$server" | tr -d ' ')
+                        [ -n "$server" ] && printf 'nameserver %s\n' "$server" >> /etc/resolv.conf
+                    done
+                fi
+                echo "network: $iface configured static $address"
+                STATIC_USED=1
+                ;;
+            *)
+                DHCP_IFACES="$DHCP_IFACES $iface"
+                ;;
+        esac
+    done
+else
+    i=0
+    while [ "$i" -lt 10 ]; do
+        for path in /sys/class/net/*; do
+            [ -e "$path" ] || continue
+            iface=${path##*/}
+            [ "$iface" = lo ] && continue
+            [ -e "$path/wireless" ] && continue
+            [ -e "$path/phy80211" ] && continue
+            DHCP_IFACES="$DHCP_IFACES $iface"
+        done
+        [ -n "$DHCP_IFACES" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
 fi
 
-echo "network: starting dhcpcd on$WIRED"
-# WIRED is intentionally unquoted: dhcpcd takes one interface name per argument.
-exec dhcpcd --nobackground --waitip=4 --timeout=30 $WIRED
+wifi_iface=$(network_conf_get wifi interface)
+wifi_iface=${wifi_iface:-wlan0}
+if network_wifi_configured && [ -e "/sys/class/net/$wifi_iface" ]; then
+    DHCP_IFACES="$DHCP_IFACES $wifi_iface"
+fi
+
+if [ -n "$DHCP_IFACES" ]; then
+    echo "network: starting dhcpcd on$DHCP_IFACES"
+    # WIRED is intentionally unquoted: dhcpcd takes one interface per argument.
+    exec dhcpcd --nobackground --waitip=4 --timeout=30 $DHCP_IFACES
+fi
+
+if [ "$STATIC_USED" -eq 1 ]; then
+    echo "network: static configuration applied; no DHCP interface"
+    exec sleep 3600
+fi
+
+echo "network: no configured or wired interface present"
+exec sleep 300
