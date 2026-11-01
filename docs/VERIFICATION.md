@@ -4,8 +4,8 @@ This document records what was actually executed for Grintion-OS 0.6.1 and the
 earlier pacman-backend work. It does not claim coverage of hardware or
 configurations that were not tested.
 
-> **0.7.0 status (2026-11-01):** the 0.7.0 source changes are covered by
-> `tests/test_garb.py` and `tests/test_system_tools.py` (22 pytest cases), plus
+> **0.7.0 status (2026-11-01):** the 0.7.0 source changes are covered by the
+> pytest suites for `garb`, system tools, networking and desktop profiles, plus
 > shell syntax and Python compilation checks. The ISO and the QEMU boot/install
 > matrix below were **not** rebuilt or re-run for 0.7.0. Treat the 0.6.1 results
 > as historical, not as 0.7.0 coverage.

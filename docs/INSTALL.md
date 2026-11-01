@@ -86,6 +86,7 @@ Useful flags:
 | `--dry-run` | Validate arguments, tools and the disk, then exit. |
 | `--root-password PASS` | Set a root password. By default root is locked on the installed system; use `sudo` from the created user. |
 | `--no-bootloader` | Skip Limine, for an externally managed boot setup. |
+| `--swap-size MIB` | Add a linux-swap partition at the end of the disk (default: none). |
 | `--force` | Allow running from a system that is not the live image. |
 
 ### After installation
@@ -188,20 +189,38 @@ Things to know:
 
 ---
 
-## Wi-Fi
+## Networking
 
-The image contains `iw`, `wpa_supplicant` and `wpa_passphrase`, but no network
-manager and no wireless DHCP service. For a quick manual connection:
+The `network` service reads `/etc/grintion/network.conf`. With no explicit
+`[interface ...]` sections it runs DHCP on every detected wired interface.
+Configure static addressing with:
 
 ```sh
-ip link set wlan0 up
-wpa_passphrase "SSID" "passphrase" > /etc/wpa_supplicant/wpa_supplicant.conf
-wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
-dhcpcd wlan0
+grintion-network set-static enp0s3 192.168.1.50/24 192.168.1.1 1.1.1.1,8.8.8.8
 ```
 
-The `network` service only starts `dhcpcd` on wired interfaces. This is a known
-limitation of 0.7.0, not a supported roaming setup.
+`grintion-network status` shows the configuration, current addresses and service
+state. `grintion-network apply` restarts the supervised services after manual
+configuration edits.
+
+### Wi-Fi
+
+`grintion-network connect` writes the `[wifi]` section, enables the supervised
+`wpa_supplicant` service and restarts networking:
+
+```sh
+grintion-network connect "SSID"
+grintion-network connect "SSID" "passphrase"   # non-interactive
+grintion-network status
+grintion-network disconnect
+```
+
+The passphrase is stored in `/etc/grintion/network.conf` with mode `0600`; the
+generated `wpa_supplicant.conf` is also `0600`. A 64-hex PSK is accepted without
+quotes. `grintion-network wifi-scan` lists visible SSIDs.
+
+The manual tools (`iw`, `wpa_supplicant`, `wpa_cli`, `rfkill`) remain available
+for debugging, but the supervised service is the supported path.
 
 ---
 
@@ -219,10 +238,11 @@ the disk is attached and that the firmware boot order points at it.
 Secure Boot is off, and the ESP contains `EFI/BOOT/BOOTX64.EFI`. The installer
 installs Limine to the removable-media path, so no NVRAM entry is required.
 
-**No network after install.** The `network` service runs `dhcpcd` on the first
-wired interface. Check `sv status /var/service/network` and
-`cat /var/log/messages`. Virtio and e1000 NICs are supported by the kernel
-configuration.
+**No network after install.** Check `grintion-network status`, then
+`sv status /var/service/network` and `cat /var/log/dhcpcd.log`. The service
+honours `/etc/grintion/network.conf`; with no interface sections it runs DHCP on
+every detected wired interface. Virtio and e1000 NICs are supported by the
+kernel configuration.
 
 **Virtual Machine Requirements (VirtualBox / QEMU / VMware):**
 - **RAM:** Minimum **2048 MB (2 GB)** recommended for the live environment. Because Grintion-OS runs from a high-speed memory overlay (unpacking the live root filesystem into RAM), virtual machines configured with under 1024 MB RAM will encounter an out-of-memory error during initramfs decompression (`Initramfs unpacking failed: write error`).

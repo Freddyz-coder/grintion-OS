@@ -28,7 +28,7 @@ artifacts are not signed.
 | --- | --- |
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
-| Networking | `dhcpcd` configures the detected wired interfaces at boot. DNS fallback resolvers keep name resolution responsive from early boot. Wi-Fi tools are present (`iw`, `wpa_supplicant`). |
+| Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
 | Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password` is given. |
@@ -60,7 +60,8 @@ grintion-install --unattended --disk /dev/vda \
     --hostname box --user grintion --password 'change-me'
 ```
 
-Add `--dry-run` to print the plan without touching the disk. See
+Add `--dry-run` to print the plan without touching the disk, or
+`--swap-size MIB` to add a swap partition. See
 [docs/INSTALL.md](docs/INSTALL.md) for persistence, post-install steps and
 troubleshooting.
 
@@ -181,7 +182,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Secure Boot | No; Limine is unsigned and there is no shim |
 | ARM64 | Build scripts are x86_64-only |
 | Graphical desktop | Supported; pre-install with `grintion-install --desktop` or install with `grintion-desktop` (XFCE, GNOME, KDE Plasma, Sway, LXQt) |
-| Wi-Fi | Client tools only; no DHCP or roaming daemon for wireless |
+| Wi-Fi | `grintion-network` writes the `[wifi]` config and enables the supervised `wpa_supplicant` service |
 | Disk encryption | Not provided by the installer |
 | Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with Arch official repos) |

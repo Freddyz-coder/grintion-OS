@@ -112,10 +112,17 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 | --- | --- |
 | `agetty-tty1`, `agetty-tty2` | local consoles |
 | `agetty-ttyS0` | serial console |
-| `network` | waits for a wired (non-wireless, non-loopback) interface, then runs `dhcpcd --nobackground --waitip=4 --timeout=30` on it |
+| `network` | applies `/etc/grintion/network.conf` (DHCP or static), or auto-detects wired interfaces for DHCP when no interface sections exist |
+| `wpa_supplicant` | opt-in Wi-Fi association for the `[wifi]` section; enabled by `grintion-network connect` |
 | `firewall` | loads `/etc/nftables.conf` with `nft -f`, then sleeps |
 | `syslog` | `busybox syslogd -n -O /var/log/messages` |
 | `local` | mounts the ESP if `/etc/fstab` lists `/boot/efi`, runs `swapon -a`, then sleeps |
+
+`/etc/grintion/network.conf` is parsed by `etc/grintion/network.lib.sh`
+(`network_conf_get`, `network_sections`). `grintion-network` edits that file
+atomically and restarts the services; `grintion-network connect` links
+`/etc/sv/wpa_supplicant` into `/var/service` and writes a mode-0600
+`wpa_supplicant.conf` from the plaintext passphrase or 64-hex PSK.
 
 There is no udev. `devtmpfs` creates device nodes and `mdev` applies
 `/etc/mdev.conf` for hotplug.
@@ -157,6 +164,7 @@ The disk layout is fixed:
 GPT
   p1  1 MiB .. 513 MiB   FAT32, LABEL=GRINTIONESP, ESP flag
   p2  513 MiB .. 100%    ext4,  LABEL=GRINTION_ROOT
+  p3  optional end       linux-swap, LABEL=GRINTION_SWAP (--swap-size MIB)
 ```
 
 There is no swap partition and no LVM. `local` runs `swapon -a`, so a user can
@@ -172,8 +180,11 @@ steps rather than a Python framework:
 1. argument parsing and a root/live-image check;
 2. tool presence check (`parted`, `partprobe`, `mkfs.vfat`, `mkfs.ext4`,
    `blkid`, `rsync`, `openssl`, `python3`);
-3. disk size check (4 GiB minimum), `parted` GPT creation, `partprobe`;
-4. `mkfs.vfat -F32 -n GRINTIONESP`, `mkfs.ext4 -L GRINTION_ROOT -m 0`;
+3. disk size check (4 GiB minimum), optional `--swap-size`, `parted` GPT
+   creation, `partprobe`, then partition discovery through `lsblk` rather than
+   guessing the suffix from the device name;
+4. `mkfs.vfat -F32 -n GRINTIONESP`, `mkfs.ext4 -L GRINTION_ROOT -m 0`, and
+   `mkswap -L GRINTION_SWAP` when swap was requested;
 5. mount the root and ESP, `rsync` the live root (excluding `/proc`, `/sys`,
    `/dev`, `/run`, `/tmp`, `/mnt`, `/media`, `/lost+found`);
 6. write `machine-id`, hostname, hosts and fstab;
@@ -191,6 +202,13 @@ login test covers.
 
 `--dry-run` stops after validation. `--force` allows running from an installed
 system, which is useful for testing but not a supported upgrade path.
+
+Desktop installs are data-driven: `grintion-desktop` reads
+`/etc/grintion/desktops.d/<name>.conf` (`PACKAGES`, `DM`, `DM_BIN`, `XINITRC`,
+`DISPLAY_SERVER`) and `/etc/grintion/drivers.conf` supplies the GPU package
+matrix. `list --json` exposes the profiles and `uninstall <name>` reverses an
+install; display-manager supervision uses the tracked
+`/etc/sv/display-manager/run` script.
 
 ---
 

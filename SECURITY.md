@@ -89,9 +89,12 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
 - The default nftables ruleset drops unsolicited inbound traffic, allows
   loopback, established/related traffic, DHCP replies and ICMP, and permits all
   outbound traffic.
-- The only network daemon enabled at boot is `dhcpcd` on the detected wired
-  interfaces (wireless interfaces are skipped). There is no SSH server, web
-  server or remote administration service enabled by default.
+- The network daemons enabled at boot are `dhcpcd` on the detected wired
+  interfaces and, when `grintion-network connect` has configured Wi-Fi, the
+  supervised `wpa_supplicant` service. Wi-Fi credentials live in
+  `/etc/grintion/network.conf` and `/etc/wpa_supplicant/wpa_supplicant.conf`,
+  both mode `0600`. There is no SSH server, web server or remote administration
+  service enabled by default.
 - The image contains the OpenSSH client, not `sshd`.
 
 ### Packages

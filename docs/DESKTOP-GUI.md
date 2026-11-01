@@ -45,9 +45,10 @@ grintion-desktop install i3         # Classic X11 tiling window manager
 
 | Command | Description |
 | --- | --- |
-| `grintion-desktop list` | Display available desktop environments, window managers, and their characteristics. |
-| `grintion-desktop install <name>` | Install desktop packages, install recommended GPU drivers, and configure display manager. |
-| `grintion-desktop drivers` | Automatically detect GPU hardware (Intel, AMD, NVIDIA, QEMU/KVM, VMware) and install driver packages. |
+| `grintion-desktop list [--json]` | Display available desktop profiles; `--json` emits machine-readable profile data. |
+| `grintion-desktop install <name>` | Install desktop packages, install recommended GPU drivers, and configure the display manager. |
+| `grintion-desktop uninstall <name>` | Remove the profile's packages and display-manager service. |
+| `grintion-desktop drivers` | Automatically detect GPU hardware and install packages from `/etc/grintion/drivers.conf`. |
 | `grintion-desktop status` | Show current display server, installed desktops, and active display manager services. |
 
 ### Options
@@ -56,6 +57,41 @@ grintion-desktop install i3         # Classic X11 tiling window manager
 - `--root <path>`: Install into a specific root filesystem (e.g. `/mnt` for disk installation).
 - `--no-drivers`: Skip automatic GPU driver detection and installation.
 - `-y, --noconfirm`: Run non-interactively without prompting for confirmation.
+
+### Profiles
+
+Desktop definitions live in `/etc/grintion/desktops.d/<name>.conf`:
+
+```sh
+NAME=xfce
+DESCRIPTION="XFCE 4 (X11)"
+PACKAGES="xorg-server ... xfce4 xfce4-goodies pavucontrol"
+DM="lightdm lightdm-gtk-greeter"
+DM_BIN="/usr/bin/lightdm"
+XINITRC="exec startxfce4"
+DISPLAY_SERVER=x11
+```
+
+The CLI discovers every `*.conf` in that directory, so a local profile can be
+added without editing the script. `list --json` returns the same fields for
+provisioning tools. `uninstall <name>` removes the profile's packages, the
+`/var/service/display-manager` link and `/etc/grintion/display-manager`;
+`--root <path>` operates on a mounted target instead of the running system.
+
+Wayland-only profiles (Sway) leave `DM` and `XINITRC` empty and are started with
+`sway`; `grintion-desktop` never writes `exec sway` into `.xinitrc`.
+
+### GPU driver matrix
+
+`/etc/grintion/drivers.conf` is a tab-separated list of an extended regular
+expression and the packages to install; the first match wins and `default` is
+the fallback:
+
+```text
+Intel	xf86-video-intel vulkan-intel
+NVIDIA	xf86-video-nouveau
+default	xf86-video-vesa xf86-video-fbdev
+```
 
 ---
 
@@ -133,3 +169,6 @@ sv restart display-manager
 For console users who prefer manual start without a display manager:
 - For X11 desktops: configure `~/.xinitrc` (created by `grintion-desktop`) and run `startx`.
 - For Sway: run `sway` directly from the console prompt (no `.xinitrc`; copy `/etc/sway/config` to `~/.config/sway/config` to customise it).
+
+The selected display manager is recorded in `/etc/grintion/display-manager` and
+supervised by the tracked `/etc/sv/display-manager/run` service.
