@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHUTDOWN = REPO_ROOT / "bin" / "shutdown"
 LIMINE = REPO_ROOT / "bin" / "limine-deploy"
+INSTALLER = REPO_ROOT / "bin" / "grintion-install"
 
 
 def run(script: Path, *args: str) -> subprocess.CompletedProcess:
@@ -38,6 +39,17 @@ def test_shutdown_rejects_unknown_option() -> None:
     result = run(SHUTDOWN, "--dry-run", "-Z")
     assert result.returncode != 0
     assert "unknown option" in result.stderr
+
+
+def test_installer_help_lists_swap_size() -> None:
+    result = subprocess.run(
+        [str(INSTALLER), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--swap-size" in result.stdout
 
 
 def test_limine_deploy_installs_referenced_files(tmp_path: Path) -> None:

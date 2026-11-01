@@ -22,6 +22,7 @@ DRY_RUN=0
 NO_BOOTLOADER=0
 FORCE=0
 ESP_SIZE_MIB=512
+SWAP_SIZE_MIB=0
 
 usage() {
     cat <<'EOF'
@@ -36,6 +37,7 @@ Options:
   --password PASS       Password for --user (prefer the interactive prompt)
   --root-password PASS  Set the root password (default: root stays locked)
   --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, none)
+  --swap-size MIB       Add a linux-swap partition at the end of the disk (default: 0)
   --unattended          Never prompt; requires --disk, --user and --password
   --dry-run             Validate the plan and exit without changing anything
   --no-bootloader       Skip Limine installation
@@ -62,6 +64,7 @@ while [ $# -gt 0 ]; do
         --password)      USER_PASSWORD=${2:-}; shift 2 ;;
         --root-password) ROOT_PASSWORD=${2:-}; shift 2 ;;
         --desktop)       DESKTOP=${2:-}; shift 2 ;;
+        --swap-size)     SWAP_SIZE_MIB=${2:-}; shift 2 ;;
         --unattended)    UNATTENDED=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --no-bootloader) NO_BOOTLOADER=1; shift ;;
@@ -93,6 +96,13 @@ fi
 [ -b "$DISK" ] || die "not a block device: $DISK"
 DISK_SIZE="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 0)"
 [ "$DISK_SIZE" -ge 4294967296 ] || die "target disk must be at least 4 GiB"
+case "$SWAP_SIZE_MIB" in
+    ''|*[!0-9]*) die "invalid --swap-size: $SWAP_SIZE_MIB" ;;
+esac
+DISK_MIB=$((DISK_SIZE / 1048576))
+if [ "$SWAP_SIZE_MIB" -gt 0 ] && [ "$SWAP_SIZE_MIB" -gt "$((DISK_MIB - 1024))" ]; then
+    die "--swap-size must leave at least 1 GiB for the ESP and root"
+fi
 
 # Refuse to overwrite a mounted disk.
 if findmnt -rn -S "$DISK" >/dev/null 2>&1 || findmnt -rn -S "${DISK}1" >/dev/null 2>&1; then
@@ -140,11 +150,6 @@ if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
     DESKTOP=${DESKTOP:-none}
 fi
 
-case "$DISK" in
-    *[0-9]) ESP="${DISK}p1"; ROOT_PART="${DISK}p2" ;;
-    *)      ESP="${DISK}1";  ROOT_PART="${DISK}2" ;;
-esac
-
 if [ -n "$ROOT_PASSWORD" ] && [ "$UNATTENDED" -ne 1 ] && [ -z "${ROOT_PASSWORD_SET-}" ]; then
     :
 fi
@@ -161,8 +166,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     cat <<EOF
 Plan:
   disk:       $DISK ($(numfmt --to=iec "$DISK_SIZE"))
-  ESP:        $ESP (${ESP_SIZE_MIB} MiB, vfat, LABEL=GRINTIONESP)
-  root:       $ROOT_PART (ext4, LABEL=GRINTION_ROOT)
+  ESP:        first partition (${ESP_SIZE_MIB} MiB, vfat, LABEL=GRINTIONESP)
+  root:       second partition (ext4, LABEL=GRINTION_ROOT)
+  swap:       $([ "$SWAP_SIZE_MIB" -gt 0 ] && echo "${SWAP_SIZE_MIB} MiB (linux-swap)" || echo none)
   hostname:   $HOSTNAME
   user:       $USER_NAME (wheel)
   bootloader: $([ "$NO_BOOTLOADER" -eq 1 ] && echo skipped || echo Limine BIOS+UEFI)
@@ -188,18 +194,43 @@ cleanup() {
 trap cleanup EXIT
 
 log "partitioning $DISK"
+ROOT_END="100%"
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    ROOT_END="$((DISK_MIB - SWAP_SIZE_MIB))MiB"
+fi
 parted -s "$DISK" mklabel gpt
 parted -s "$DISK" mkpart ESP fat32 1MiB "$((1 + ESP_SIZE_MIB))MiB"
 parted -s "$DISK" set 1 esp on
-parted -s "$DISK" mkpart GRINTION_ROOT ext4 "$((1 + ESP_SIZE_MIB))MiB" 100%
+parted -s "$DISK" mkpart GRINTION_ROOT ext4 "$((1 + ESP_SIZE_MIB))MiB" "$ROOT_END"
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    parted -s "$DISK" mkpart GRINTION_SWAP linux-swap "$ROOT_END" 100%
+fi
 partprobe "$DISK" 2>/dev/null || true
 sleep 1
-[ -b "$ESP" ] || die "ESP did not appear: $ESP"
-[ -b "$ROOT_PART" ] || die "root partition did not appear: $ROOT_PART"
+
+# Derive the real partition names from lsblk instead of guessing the suffix
+# from the device name (F3 Stage 1).
+PARTITIONS="$(lsblk -lnpo NAME,TYPE "$DISK" | awk '$2 == "part" {print $1}')"
+ESP="$(printf '%s\n' "$PARTITIONS" | sed -n '1p')"
+ROOT_PART="$(printf '%s\n' "$PARTITIONS" | sed -n '2p')"
+SWAP_PART="$(printf '%s\n' "$PARTITIONS" | sed -n '3p')"
+[ -b "$ESP" ] || die "ESP did not appear: ${ESP:-<none>}"
+[ -b "$ROOT_PART" ] || die "root partition did not appear: ${ROOT_PART:-<none>}"
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    [ -b "$SWAP_PART" ] || die "swap partition did not appear: ${SWAP_PART:-<none>}"
+fi
 
 log "formatting $ESP and $ROOT_PART"
 mkfs.vfat -F32 -n GRINTIONESP "$ESP" >/dev/null
 mkfs.ext4 -F -L GRINTION_ROOT -m 0 "$ROOT_PART" >/dev/null
+
+SWAP_UUID=""
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    log "formatting swap partition $SWAP_PART"
+    mkswap -L GRINTION_SWAP "$SWAP_PART" >/dev/null
+    SWAP_UUID="$(blkid -s UUID -o value "$SWAP_PART")"
+    [ -n "$SWAP_UUID" ] || die "could not read the swap filesystem UUID"
+fi
 
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"
 ESP_UUID="$(blkid -s UUID -o value "$ESP")"
@@ -254,6 +285,9 @@ cat > "$TARGET/etc/fstab" <<EOF
 UUID=$ROOT_UUID  /          ext4  defaults,noatime  0 1
 UUID=$ESP_UUID   /boot/efi  vfat  umask=0077,noatime  0 2
 EOF
+if [ -n "$SWAP_UUID" ]; then
+    printf 'UUID=%s  none  swap  defaults  0 0\n' "$SWAP_UUID" >> "$TARGET/etc/fstab"
+fi
 
 log "creating the administrative account"
 
@@ -421,6 +455,9 @@ echo "=============================================================="
 echo "disk:      $DISK"
 echo "root UUID: $ROOT_UUID"
 echo "ESP UUID:  $ESP_UUID"
+if [ -n "$SWAP_UUID" ]; then
+    echo "swap UUID: $SWAP_UUID"
+fi
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
