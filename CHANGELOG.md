@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] - 2026-11-01
+
+Fixes for the field report in `ProblemsWhenInstalling.txt`: a live boot with no
+network address, `poweroff` hanging until the VM was forced off, and
+`grintion-desktop install` reporting success while the display manager never
+started.
+
+### Fixed
+
+- **`poweroff`, `reboot` and `halt` hung:** runit stage 3 force-stopped every service in `/var/service`, including the `agetty` that owned the console the command was typed on. `runsv` signals the whole process group, so the getty, the shell and the `poweroff` process died together and the machine stayed up with a dead console. Stage 3 now skips `agetty-*`, and the wrappers run the shutdown sequence in a detached session so a service stop cannot kill it. `-f` now skips the service shutdown instead of being ignored.
+- **No network on first boot:** the `network` service scanned `/sys/class/net` and passed kernel pseudo interfaces to `dhcpcd` (`network: starting dhcpcd on eth0 sit0`). `sit0` has no carrier, so `dhcpcd` logged `sit0: unsupported interface type` and the real DHCP exchange on `eth0` was delayed past the first ping. The scan now lives in `network.lib.sh` (`network_wired_interfaces`) and keeps only `ARPHRD_ETHER` links that are not wireless.
+- **`sv start display-manager` timing out:** display managers need the D-Bus system bus and the `messagebus` account, neither of which exists without systemd. `grintion-desktop` now installs `dbus`, creates the account with `useradd`, and enables the new `/etc/sv/dbus` service before the display-manager service. The display-manager run script logs a missing bus instead of exiting silently.
+- **Misleading desktop install result:** `pacman` returns 0 even when package scriptlets fail, so a half-installed desktop still printed "installed successfully". `grintion-desktop` now counts the package manager's `error:` lines and explains them, verifies the display-manager and session binaries exist, and reports whether `display-manager` actually came up (with the tail of `/var/log/display-manager.log` when it did not).
+
+### Changed
+
+- `guide.md` documents the 0.8.0 `grintion-network` commands instead of the hand-written `wpa_passphrase`/`dhcpcd` recipe, and notes that the live shell appears before DHCP finishes.
+- `make test-boot` now runs a plain `poweroff` and fails if the VM does not exit, so the shutdown hang cannot regress silently.
+
+### Tests
+
+- Interface filtering, the network service wiring, stage 3 getty handling and `poweroff` argument handling are covered by new tests.
+
+---
+
 ## [0.8.0] - 2026-11-01
 
 This release adds the networking, desktop-profile and installer work planned

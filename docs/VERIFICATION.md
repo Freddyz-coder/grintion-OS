@@ -4,9 +4,10 @@ This document records what was actually executed for Grintion-OS 0.6.1 and the
 earlier pacman-backend work. It does not claim coverage of hardware or
 configurations that were not tested.
 
-**Status: 0.8.0 verified.** The 0.8.0 ISO was built and tested on 2026-11-01:
-both live boots and both install tests passed. The 0.6.1 results below are
-historical. The last published 0.6.1 baseline commit was `18c6695`.
+**Status: 0.8.1 verified.** The 0.8.0 ISO was built and tested on 2026-11-01:
+both live boots and both install tests passed. 0.8.1 repeats those tests with
+the field-report fixes. The 0.6.1 results below are historical. The last
+published 0.6.1 baseline commit was `18c6695`.
 
 ## Environment
 
@@ -33,6 +34,30 @@ The current ISO was built at 08:09. The untracked `etc/resolv.conf.head`
 (08:12) is **not** in it. `build/work/rootfs/etc/mtab` is also absent even
 though `build/make-rootfs.sh` now contains the symlink, so the rootfs/ISO are
 stale relative to the tree.
+
+## 0.8.1 results (2026-11-01)
+
+Field report: `ProblemsWhenInstalling.txt`. Three defects were reproduced on
+the 0.8.0 ISO before being fixed, then re-tested on 0.8.1.
+
+| Check | 0.8.0 (before) | 0.8.1 (after) |
+| --- | --- | --- |
+| Live boot, DHCP | `network: starting dhcpcd on eth0 sit0`, `sit0: unsupported interface type`, no IPv4 address at the prompt | `network: starting dhcpcd on eth0`, `eth0 inet 10.0.2.15/24`, `ping -c 2 8.8.8.8` exit 0 |
+| `poweroff` from the console | Hung; no `Power down` and QEMU never exited | `reboot: Power down`, QEMU exited cleanly |
+| `grintion-desktop install` guard | Printed "installed successfully" regardless of the result | Missing commands abort the install with `installation did not provide: ...` |
+| `dbus` service | Not present; no system bus | `dbus` account created, `/var/service/dbus` running, `/run/dbus/system_bus_socket` present |
+
+Notes from the field tests:
+
+- A `pacman -Sy` plus `grintion-desktop install` run that hit a mirror timeout
+  failed with `package installation failed (exit 1)` instead of a false success.
+- The seeded pacman database lists packages whose files were never copied
+  (`dbus` among them). `grintion-desktop` no longer passes `--needed`, so those
+  packages and their dependencies are installed for real.
+- A real LightDM session was **not** exercised: the full desktop stack is a
+  110 MiB download and the mirror dropped it mid-transaction inside QEMU user
+  networking. The D-Bus wiring, the account creation and the display-manager
+  status reporting were verified with a lightweight profile instead.
 
 ## 0.8.0 results (2026-11-01)
 

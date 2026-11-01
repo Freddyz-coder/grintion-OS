@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 SCHEMA = 1
 DEFAULT_DB = "var/lib/garb/db.json"
 DEFAULT_REPOS = "etc/garb/repos.d"
