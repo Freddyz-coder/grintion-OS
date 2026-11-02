@@ -1,0 +1,64 @@
+1. Start vm with intel MT desktop as the adapter type with 4096mb of ram, 32mb video memory, 25gb ssd
+
+2. ping -c 3 1.1.1.1
+
+which worked and got internet ( didnt had to do any config )
+
+3. grintion-install --disk /dev/sda --user grintion --desktop xfce
+
+I think im stuck at installing packges: mesa xf68-video-fbdev xorg-server xorg-xinit xorg-xrandr xterm ttf-dejavu util-linux xfce4 xfce4-goodies pavucontrol lightdm lightdm-gtk-greeter dbus
+
+and then got alot of warning with "could not get file information for usr/share/man/..." which after running the same command which is rintion-install --disk /dev/sda --user grintion --desktop xfce for 5 minutes
+
+so I can to press ctrl+c after 1minute of waiting
+
+4. grintion-install --disk /dev/sda
+
+I tried that but still waiting for a whole minute and still at the same part the one with  mesa xf68-video-fbdev xorg-server xorg-xinit xorg-xrandr xterm ttf-dejavu util-linux xfce4 xfce4-goodies pavucontrol lightdm lightdm-gtk-greeter dbus
+
+actually never mind, the grintion-install --disk /dev/sda worked after like 7 minutes after waiting
+
+5. poweroff
+
+also why did my wifi just got turned off?? and then came back, is it a coincidence or did the poweroff on the VM did that
+
+6. Removed the ISO
+
+7. I see the grintion Logo and then
+
+I see 
+
+"
+Grintion-OS 0.8.1 (installed)
+Minimalist - Independent - Secure - Stable
+grintion login: dbus[130]: Unknown username "polkitd" in message bus configuration file
+dbus[130]: Unknown username "polkitd" in message bus configuration file
+dbus[130]: Unknown username "colord" in message bus configuration file
+dbus[130]: Unknown username "avahi" in message bus configuration file
+dbus[130]: Unknown group "network" in message bus configuration file
+"
+
+and then waited for 3 minutes... and no changes, tried pressing ctrl+c and nothing happend, I think im stuck
+
+8. Pressed right ctrl + f2 to switch to tty2
+
+but I see
+
+"
+Services: sv status /var/service/*
+Package database: /var/lib/garb/db.json
+-bash: append_path: command not found
+-bash: append_path: command not found
+-bash: append_path: command not found
+[CRITICAL] command not found: append_path
+[CRITICAL] command not found: append_path
+[CRITICAL] command not found: append_path
+"
+
+and then the "freddyz@grintion:~$" prompt below those 
+
+9. sudo grintion-desktop install xfce
+
+I runned that and then now ive been waiting on the "installing packges: mesa xf68-video-fbdev xorg-server xorg-xinit xorg-xrandr xterm ttf-dejavu util-linux xfce4 xfce4-goodies pavucontrol lightdm lightdm-gtk-greeter dbus" which ask me, why is it so slow?? is it the OS problem or network or VM config
+
+it has been 10 minutes, im gonna end the progress and call this as still "unstable"

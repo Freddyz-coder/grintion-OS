@@ -111,6 +111,10 @@ Install pre-configured desktop environments and GPU drivers:
 ```bash
 # Install desktop (options: xfce, gnome, kde, lxqt, sway, i3)
 sudo grintion-desktop install xfce
+# The full XFCE download can take several minutes on a slow mirror; package
+# manager output is streamed to the screen and saved to
+# /var/log/grintion-desktop.log
+sudo tail -n 40 /var/log/grintion-desktop.log
 
 # grintion-desktop enables and starts the login manager for you; to redo it by hand:
 sudo ln -sfn /etc/sv/dbus /var/service/dbus
@@ -166,3 +170,7 @@ sudo garb install firefox nano vim git htop fastfetch
   service shutdown and powers off immediately. `poweroff` without root fails on
   purpose, exactly like it does without `sudo` on Arch.
 - **Change resolution:** Run `xrandr -s 1920x1080` or use Settings → Display in XFCE.
+- **D-Bus login messages:** `dbus-daemon` startup warnings are written to
+  `/var/log/dbus.log`, not the login prompt. A desktop install also creates the
+  service accounts (polkitd, colord, avahi) and groups the installed D-Bus
+  policies name.

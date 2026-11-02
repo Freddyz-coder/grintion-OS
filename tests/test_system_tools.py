@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 from pathlib import Path
@@ -8,6 +9,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SHUTDOWN = REPO_ROOT / "bin" / "shutdown"
 LIMINE = REPO_ROOT / "bin" / "limine-deploy"
 INSTALLER = REPO_ROOT / "bin" / "grintion-install"
+
+
+def load_seed_module():
+    path = REPO_ROOT / "build" / "seed-pacman-db.py"
+    spec = importlib.util.spec_from_file_location("seed_pacman_db", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run(script: Path, *args: str) -> subprocess.CompletedProcess:
@@ -99,6 +109,83 @@ def test_limine_deploy_installs_referenced_files(tmp_path: Path) -> None:
     conf = (esp / "limine.conf").read_text()
     assert "root=UUID=abc-123" in conf
     assert "EFI/grintion/vmlinuz-grintion" in conf
+
+
+def test_seed_database_drops_packages_whose_libraries_are_absent(tmp_path: Path) -> None:
+    # pacman never reinstalls a seeded dependency. glib2 was seeded without
+    # libglib-2.0.so.0, so desktop scriptlets failed while pacman exited 0.
+    seed = load_seed_module()
+    root = tmp_path / "root"
+    (root / "usr/lib").mkdir(parents=True)
+    (root / "usr/lib/libpresent.so.1").write_bytes(b"lib")
+    (root / "usr/bin").mkdir()
+    (root / "usr/bin/binaryok").write_bytes(b"bin")
+
+    def entry(name: str, files: list[str]) -> Path:
+        path = tmp_path / "db" / f"{name}-1-1"
+        path.mkdir(parents=True)
+        (path / "desc").write_text(f"%NAME%\n{name}\n")
+        (path / "files").write_text("%FILES%\n" + "\n".join(files) + "\n")
+        return path
+
+    present = entry("present", ["usr/", "usr/lib/", "usr/lib/libpresent.so.1"])
+    ghost = entry("ghost", ["usr/", "usr/lib/", "usr/lib/libghost.so.1"])
+    binary_ok = entry(
+        "binaryok", ["usr/bin/binaryok", "usr/lib/libabsent.so.1"]
+    )
+    chosen, dropped = seed.installed_packages(
+        {"present": present, "ghost": ghost, "binaryok": binary_ok}, root
+    )
+    assert set(chosen) == {"present", "binaryok"}
+    assert dropped == ["ghost"]
+
+
+def test_rootfs_seeds_pacman_after_library_resolution() -> None:
+    # The seed checks that a package's libraries exist in the image. Running it
+    # before resolve-libs.py marked every dependency library package absent.
+    script = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert script.index("resolve-libs.py") < script.index("seed-pacman-db.py")
+
+
+def test_profile_defines_append_path_for_package_snippets(tmp_path: Path) -> None:
+    # Packages install /etc/profile.d snippets (perl, jre, flatpak) that call
+    # Arch's append_path helper. Without it, every login shell after a desktop
+    # install reported "append_path: command not found".
+    profile = (REPO_ROOT / "etc" / "profile").read_text()
+    snippets = tmp_path / "profile.d"
+    snippets.mkdir()
+    (snippets / "perlbin.sh").write_text("append_path /opt/test/bin\n")
+    rendered = profile.replace("/etc/profile.d", str(snippets))
+    rendered = rendered.replace("/etc/grintion/live", str(tmp_path / "not-live"))
+    path = tmp_path / "profile"
+    path.write_text(rendered)
+
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", '. "$1"; printf "%s" "$PATH"',
+         "bash", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "append_path: command not found" not in result.stderr
+    assert "/opt/test/bin" in result.stdout
+
+
+def test_dbus_service_logs_off_the_console() -> None:
+    # The service used to write console spam straight onto the login prompt.
+    script = (REPO_ROOT / "etc" / "sv" / "dbus" / "run").read_text()
+    assert "/var/log/dbus.log" in script
+    assert script.index("/var/log/dbus.log") < script.index("dbus-daemon --system")
+
+
+def test_desktop_install_streams_output_and_provisions_accounts() -> None:
+    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    # Streaming output replaced an all-at-once $(...) capture that hid a
+    # 7-10 minute download behind a blank screen.
+    assert "tee -a" in script
+    assert "provision_dbus_accounts" in script
+    assert 'getent group "$group"' in script
 
 
 def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:

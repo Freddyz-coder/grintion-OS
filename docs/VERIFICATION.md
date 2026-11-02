@@ -1,13 +1,13 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.6.1 and the
+This document records what was actually executed for Grintion-OS 0.8.2 and the
 earlier pacman-backend work. It does not claim coverage of hardware or
 configurations that were not tested.
 
-**Status: 0.8.1 verified.** The 0.8.0 ISO was built and tested on 2026-11-01:
-both live boots and both install tests passed. 0.8.1 repeats those tests with
-the field-report fixes. The 0.6.1 results below are historical. The last
-published 0.6.1 baseline commit was `18c6695`.
+**Status: 0.8.2 verified.** The 0.8.2 ISO was built and tested on 2026-11-02:
+`make check`, the BIOS and UEFI live boot tests, the BIOS install test and a
+desktop regression probe passed. The 0.8.0 and 0.8.1 results below are
+historical. The last published 0.6.1 baseline commit was `18c6695`.
 
 ## Environment
 
@@ -34,6 +34,52 @@ The current ISO was built at 08:09. The untracked `etc/resolv.conf.head`
 (08:12) is **not** in it. `build/work/rootfs/etc/mtab` is also absent even
 though `build/make-rootfs.sh` now contains the symlink, so the rootfs/ISO are
 stale relative to the tree.
+
+## 0.8.2 results (2026-11-02)
+
+Second pass over the field report in `ProblemsWhenInstalling.txt`.
+
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 132,081,664 bytes (126 MiB) |
+| SHA-256 | `5d2613d39a3e80c6fff7468c98ef9526e2ee5e7b4cb132669ee1756a1d5629c4` |
+| Kernel | `6.12.114-grintion` |
+| Host | Arch Linux x86_64, KVM |
+| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
+| Guest RAM / vCPU | 2 GiB / 2 |
+| Network | QEMU user networking, `e1000` |
+| shellcheck | Not installed; static lint was skipped |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `make check` | Pass | 42 pytest cases plus shell syntax, executable bits, host inputs, documentation links and the home-path scan |
+| Live boot, BIOS | Pass | Plain `poweroff` exits QEMU |
+| Live boot, UEFI | Pass | Same assertion under OVMF |
+| `./build/test-install.sh` (BIOS) | Pass | Install, reboot from disk, login, ext4 root, UUID `/etc/fstab`, `sudo`, DHCP; system reports 0.8.2 |
+| Desktop regression probe | Pass | Installed disk: package-style `/etc/profile.d` snippet, streamed `grintion-desktop -y install i3`, D-Bus accounts/socket/log/service, display-manager link, `i3` binary; 147 packages / 152 MiB |
+
+Findings re-tested on the installed disk:
+
+| Symptom | Before | 0.8.2 |
+| --- | --- | --- |
+| Login shell | `append_path: command not found` for package profile snippets | A synthetic snippet added `/opt/test/bin` to `PATH`; `perlbin.sh` was present after the i3 install and a real re-login printed no errors |
+| D-Bus | `Unknown username`/`Unknown group` on the login prompt, accounts absent | `avahi`, `polkitd`, `colord` and group `network` present; `/var/log/dbus.log` exists; system bus socket present; `dbus` reports `run:` and survives a restart |
+| Seeded packages | `glib2` listed installed without `libglib-2.0.so.0`; scriptlets failed | 156 packages seeded; `glib2` absent and pulled into the i3 transaction; no `libglib-2.0.so.0` loader error in the probe |
+| Desktop install | Blank screen during the 152 MiB transaction | pacman output streamed line by line; `DESKTOP_RC=0` |
+
+Notes:
+
+- The full XFCE profile was not downloaded; the probe used the smaller i3
+  profile, which exercises the same `grintion-desktop` and pacman path
+  (including `perl`, `dbus`, LightDM and the Xorg stack).
+- Some upstream `.INSTALL` scriptlets still print arithmetic/systemd errors.
+  pacman returned 0, the desktop binaries and services were verified
+  separately, and `grintion-desktop` reports the scriptlet error count.
+- The install harness now waits for QEMU to power down during cleanup. Before
+  that, a successful install could fail teardown with
+  `Could not terminate the child`.
+- Wi-Fi association was not tested.
 
 ## 0.8.1 results (2026-11-01)
 

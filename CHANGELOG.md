@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.2] - 2026-11-02
+
+Follow-up fixes for the field report in `ProblemsWhenInstalling.txt`. The
+second pass reproduces the login-shell errors and the D-Bus warnings from the
+report, keeps the console clean, and makes desktop package installation show
+progress instead of appearing to hang.
+
+### Fixed
+
+- **`append_path: command not found` on every login:** a desktop installation pulls in packages whose `/etc/profile.d` snippets (for example `perlbin.sh`) call Arch's `append_path` helper. Grintion's `/etc/profile` never defined it, so a login shell printed one `-bash:` error and one `[CRITICAL]` line per call (ProblemsWhenInstalling.txt #8). `/etc/profile` now provides `append_path` while sourcing `/etc/profile.d`, then unloads it, matching Arch.
+- **D-Bus warnings on the installed console:** `dbus-daemon` writes an `Unknown username`/`Unknown group` warning to standard error for every D-Bus policy that names an account created by `systemd-sysusers`, which does not exist here. The `dbus` service now logs to `/var/log/dbus.log`, so the warnings no longer interleave with the login prompt (ProblemsWhenInstalling.txt #7).
+- **Missing D-Bus service accounts:** `grintion-desktop install` now creates the users named in `<policy user="...">` (polkitd, colord, avahi, ...) and the groups named in `<policy group="...">` (network) after the packages are installed. Previously those accounts were missing, so the daemons could not drop privileges even when they started.
+- **The seeded pacman database claimed packages that were not in the image:** `build/seed-pacman-db.py` recorded the command-owning packages and their whole dependency closure, but only the command-owning packages' files were copied. Dependencies such as `glib2` were listed as installed while `libglib-2.0.so.0` was absent, so pacman skipped them and desktop scriptlets failed (`update-desktop-database: error while loading shared libraries`) while pacman still exited 0. Removing `--needed` in 0.8.1 fixed explicitly requested packages only, not their already-seeded dependencies. The seed step now omits any package whose declared shared libraries and binaries are all missing from the rootfs, so pacman installs those libraries as real dependencies.
+- **Desktop installation looked hung:** `grintion-desktop` captured the entire `pacman` run in `$(...)` and printed it only at the end. A working 7-10 minute XFCE transaction showed a blank screen, which is why the report described Ctrl+C and a second install attempt (ProblemsWhenInstalling.txt #3, #4 and #9). The package manager output now streams to the console and to `/var/log/grintion-desktop.log`, and the command warns up front that it can take several minutes.
+
+### Tests
+
+- A login-shell test renders `etc/profile` against a temporary `/etc/profile.d` containing a `perlbin.sh` snippet and asserts `append_path` works without errors.
+- Tests assert the `dbus` service redirects to `/var/log/dbus.log`, that `grintion-desktop` streams package output and provisions D-Bus accounts, and that the pacman seed drops entries whose libraries and binaries are all missing.
+
+---
+
 ## [0.8.1] - 2026-11-01
 
 Fixes for the field report in `ProblemsWhenInstalling.txt`: a live boot with no

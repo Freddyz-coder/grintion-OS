@@ -4,7 +4,11 @@
 # Enable with: ln -sfn /etc/sv/dbus /var/service/dbus
 # `grintion-desktop install` enables it automatically. Without it, LightDM,
 # SDDM and GDM exit straight away and `sv start display-manager` times out.
-exec 2>&1
+# Keep the console clean. dbus-daemon prints a warning for every policy file
+# that names an account the package normally creates with systemd-sysusers;
+# those messages used to land on the login prompt
+# (ProblemsWhenInstalling.txt #7). The log is in /var/log/dbus.log.
+exec >> /var/log/dbus.log 2>&1
 
 if [ ! -x /usr/bin/dbus-daemon ]; then
     echo "dbus: dbus-daemon is not installed (install the 'dbus' package)"

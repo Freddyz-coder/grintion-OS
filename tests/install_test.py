@@ -47,11 +47,20 @@ class VM:
         self.child.logfile = sys.stdout
 
     def close(self) -> None:
+        # This is cleanup, not a shutdown assertion (build/test-boot.sh checks
+        # that a plain poweroff exits QEMU). Give the guest time to go down;
+        # force-closing immediately raced the ACPI poweroff and reported
+        # "Could not terminate the child" after a successful install.
         try:
-            self.child.sendline("poweroff -f")
+            if self.child.isalive():
+                self.child.sendline("poweroff -f")
+                self.child.expect(pexpect.EOF, timeout=30)
         except Exception:
             pass
-        self.child.close(force=True)
+        try:
+            self.child.close(force=True)
+        except Exception:
+            pass
 
 
 def install(iso: str, disk: str, uefi: bool) -> None:

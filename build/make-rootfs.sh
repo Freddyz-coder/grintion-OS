@@ -258,7 +258,6 @@ for keyfile in archlinux.gpg archlinux-trusted archlinux-revoked; do
     install -m 0644 "/usr/share/pacman/keyrings/$keyfile" \
         "$ROOTFS/usr/share/pacman/keyrings/$keyfile"
 done
-python3 "$GRINTION_REPO_ROOT/build/seed-pacman-db.py" "$ROOTFS"
 
 printf '%s\n' "$GRINTION_VERSION" > "$ROOTFS/etc/grintion/version"
 sed "s/@VERSION@/$GRINTION_VERSION/g" "$ROOTFS/etc/issue.in" > "$ROOTFS/etc/issue"
@@ -315,6 +314,12 @@ done < "$CONFIG/rootfs.setuid"
 # ---------------------------------------------------------------- library closure
 log "resolving the complete shared-library closure"
 python3 "$GRINTION_REPO_ROOT/build/resolve-libs.py" "$ROOTFS"
+
+# Seed pacman's local database only after the full file tree exists. The seed
+# checks that a package's shared libraries and binaries are really in the image;
+# dependency libraries are copied by resolve-libs.py above, so seeding earlier
+# would mark present packages (zlib, libarchive, systemd-libs) as absent.
+python3 "$GRINTION_REPO_ROOT/build/seed-pacman-db.py" "$ROOTFS"
 
 # Recreate standard symlinks that the resolver may have skipped.
 for alias in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libutil.so.1; do

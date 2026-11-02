@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.8.1
+- **Version:** 0.8.2
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -16,7 +16,7 @@ indexes.
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup, with full support for installing modern graphical desktops (XFCE, GNOME, KDE Plasma, Sway, etc.) and GPU drivers via `grintion-desktop` or `garb`
 
-Grintion-OS 0.8.1 is built from this tree. There is no hosted binary
+Grintion-OS 0.8.2 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -175,7 +175,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.8.1 |
+| Feature | 0.8.2 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
@@ -213,7 +213,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.8.1 has no Secure
+sensitive. The short version: the design is defensive, but 0.8.2 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 

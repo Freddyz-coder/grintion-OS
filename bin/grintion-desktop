@@ -154,16 +154,22 @@ pkg_install() {
         die "Neither pacman nor garb package manager found"
     fi
 
+    # Stream the package manager output instead of capturing it. The old
+    # $(...) capture showed nothing for the entire download+install, so a
+    # working 7-10 minute XFCE install looked like a hang and users pressed
+    # Ctrl+C (ProblemsWhenInstalling.txt #3, #4 and #9).
+    local logfile="$TARGET_ROOT/var/log/grintion-desktop.log"
+    mkdir -p "$(dirname "$logfile")"
+    : > "$logfile"
+
     log "Installing packages: ${pkgs[*]}"
-    local out="" rc=0
+    log "This downloads from Arch mirrors and can take several minutes. Package manager output follows (also saved to $logfile)."
+    local rc=0
     set +e
-    out="$("${manager[@]}" 2>&1)"
-    rc=$?
+    "${manager[@]}" 2>&1 | tee -a "$logfile"
+    rc=${PIPESTATUS[0]}
     set -e
-    if [ -n "$out" ]; then
-        printf '%s\n' "$out"
-    fi
-    [ "$rc" -eq 0 ] || die "package installation failed (exit $rc)"
+    [ "$rc" -eq 0 ] || die "package installation failed (exit $rc); full log: $logfile"
 
     # pacman returns 0 even when a package's .INSTALL script fails, so a
     # desktop environment can look "installed" while its binaries are missing.
@@ -171,7 +177,7 @@ pkg_install() {
     # here; say so instead of leaving unexplained 'error:' lines behind
     # (ProblemsWhenInstalling.txt #9).
     local errors=0
-    errors=$(printf '%s\n' "$out" | grep -c '^error:' 2>/dev/null) || errors=0
+    errors=$(grep -c '^error:' "$logfile" 2>/dev/null) || errors=0
     if [ "${errors:-0}" -gt 0 ]; then
         warn "the package manager printed $errors error line(s) above"
         warn "package scriptlets assume systemd and a full desktop library stack; the commands below are verified separately"
@@ -211,6 +217,31 @@ dbus_service_user() {
         name="$(sed -n 's:.*<user>\(.*\)</user>.*:\1:p' "$conf" | head -n 1)"
     fi
     printf '%s\n' "${name:-dbus}"
+}
+
+# D-Bus policy files name service accounts (polkitd, colord, avahi) and groups
+# (network). Upstream creates them with systemd-sysusers, which does not exist
+# here, so dbus-daemon printed "Unknown username ..." on every boot and the
+# services could not drop privileges (ProblemsWhenInstalling.txt #7).
+provision_dbus_accounts() {
+    local conf user group
+    [ "$TARGET_ROOT" = "/" ] || return 0
+    for conf in /usr/share/dbus-1/system.d/*.conf /etc/dbus-1/system.d/*.conf; do
+        [ -r "$conf" ] || continue
+        # Plain pipelines, not <(...): the installed image has no /dev/fd, so
+        # process substitution fails with "No such file or directory".
+        sed -n 's/.*<policy[^>]* user="\([^"]*\)".*/\1/p' "$conf" |
+        while IFS= read -r user; do
+            case "$user" in ""|root) continue ;; esac
+            ensure_service_account "$user" "/var/lib/$user"
+        done
+        sed -n 's/.*<policy[^>]* group="\([^"]*\)".*/\1/p' "$conf" |
+        while IFS= read -r group; do
+            case "$group" in ""|root) continue ;; esac
+            getent group "$group" >/dev/null 2>&1 && continue
+            groupadd -r "$group" 2>/dev/null || warn "could not create group: $group"
+        done
+    done
 }
 
 enable_dm_service() {
@@ -474,6 +505,11 @@ cmd_install() {
         fi
     fi
     verify_binaries "${expected[@]}"
+
+    # The packages just installed expect systemd-sysusers to have created their
+    # service accounts; without them dbus-daemon warns on the console and the
+    # daemons cannot start.
+    provision_dbus_accounts
 
     # Ensure mcookie exists for startx
     if [ ! -x "$TARGET_ROOT/usr/bin/mcookie" ]; then
