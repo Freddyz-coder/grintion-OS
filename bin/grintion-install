@@ -17,6 +17,7 @@ USER_NAME=""
 USER_PASSWORD=""
 ROOT_PASSWORD=""
 DESKTOP=""
+DESKTOP_READY=1
 UNATTENDED=0
 DRY_RUN=0
 NO_BOOTLOADER=0
@@ -382,10 +383,22 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
         cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
     fi
 
+    # A desktop failure must not be reported as a successful desktop install.
+    # A mirror timeout used to leave a console-only system while the summary
+    # said "ready on boot" and the installer exited 0.
     if [ -x "$TARGET/usr/bin/grintion-desktop" ]; then
-        chroot "$TARGET" /usr/bin/grintion-desktop -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings"
+        if ! chroot "$TARGET" /usr/bin/grintion-desktop -y install "$DESKTOP"; then
+            DESKTOP_READY=0
+            warn "pre-installation of $DESKTOP did not complete"
+        fi
     elif command -v grintion-desktop >/dev/null 2>&1; then
-        grintion-desktop --root "$TARGET" -y install "$DESKTOP" || warn "pre-installation of $DESKTOP encountered warnings"
+        if ! grintion-desktop --root "$TARGET" -y install "$DESKTOP"; then
+            DESKTOP_READY=0
+            warn "pre-installation of $DESKTOP did not complete"
+        fi
+    else
+        DESKTOP_READY=0
+        warn "grintion-desktop is missing from the target and the live image"
     fi
 
     for path in run dev/pts dev sys proc; do
@@ -461,7 +474,12 @@ fi
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
-    echo "desktop:   $DESKTOP (ready on boot)"
+    if [ "$DESKTOP_READY" -eq 1 ]; then
+        echo "desktop:   $DESKTOP (ready on boot)"
+    else
+        echo "desktop:   $DESKTOP (NOT installed; run 'grintion-desktop install $DESKTOP' after boot)"
+        warn "the base system is installed, but the requested desktop is not ready"
+    fi
 else
     echo "desktop:   console base (install graphical desktop anytime with 'grintion-desktop')"
 fi
@@ -469,3 +487,7 @@ echo "boot:      $([ "$NO_BOOTLOADER" -eq 1 ] && echo 'bootloader skipped' || ec
 echo
 echo "Remove the installation media and reboot."
 echo "=============================================================="
+
+if [ "$DESKTOP_READY" -ne 1 ]; then
+    exit 1
+fi

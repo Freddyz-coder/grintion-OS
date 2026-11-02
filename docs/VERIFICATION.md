@@ -43,7 +43,7 @@ Second pass over the field report in `ProblemsWhenInstalling.txt`.
 | --- | --- |
 | Artifact | `output/grintion-os-x86_64.iso` |
 | Size | 132,081,664 bytes (126 MiB) |
-| SHA-256 | `5d2613d39a3e80c6fff7468c98ef9526e2ee5e7b4cb132669ee1756a1d5629c4` |
+| SHA-256 | `5f6ce3ddc38b14d2d0857b36559be44dc978d4c2bffce06991a0aec1ab15a856` |
 | Kernel | `6.12.114-grintion` |
 | Host | Arch Linux x86_64, KVM |
 | Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
@@ -57,22 +57,34 @@ Second pass over the field report in `ProblemsWhenInstalling.txt`.
 | Live boot, BIOS | Pass | Plain `poweroff` exits QEMU |
 | Live boot, UEFI | Pass | Same assertion under OVMF |
 | `./build/test-install.sh` (BIOS) | Pass | Install, reboot from disk, login, ext4 root, UUID `/etc/fstab`, `sudo`, DHCP; system reports 0.8.2 |
-| Desktop regression probe | Pass | Installed disk: package-style `/etc/profile.d` snippet, streamed `grintion-desktop -y install i3`, D-Bus accounts/socket/log/service, display-manager link, `i3` binary; 147 packages / 152 MiB |
+| `./build/test-install.sh --uefi` | Pass | Same install and post-boot checks under OVMF |
+| Desktop regression probe (i3) | Pass | Installed disk: package-style `/etc/profile.d` snippet, streamed `grintion-desktop -y install i3`, D-Bus accounts/socket/log/service, display-manager link, `i3` binary; 147 packages / 152 MiB |
+| Full XFCE install via installer | Pass | `grintion-install --desktop xfce` in QEMU: 291 packages / 231 MiB downloaded; `xfce4`, `startxfce4`, `lightdm`, `glib2` and the display-manager service present; D-Bus accounts and `network` group created; no unknown-account warnings in `/var/log/dbus.log` |
+| Partial desktop failure probe | Pass | `--desktop bogus-profile` leaves a bootable base system, prints `desktop: bogus-profile (NOT installed; ...)`, warns, and exits 1 |
 
 Findings re-tested on the installed disk:
 
 | Symptom | Before | 0.8.2 |
 | --- | --- | --- |
 | Login shell | `append_path: command not found` for package profile snippets | A synthetic snippet added `/opt/test/bin` to `PATH`; `perlbin.sh` was present after the i3 install and a real re-login printed no errors |
-| D-Bus | `Unknown username`/`Unknown group` on the login prompt, accounts absent | `avahi`, `polkitd`, `colord` and group `network` present; `/var/log/dbus.log` exists; system bus socket present; `dbus` reports `run:` and survives a restart |
+| D-Bus | `Unknown username`/`Unknown group` on the login prompt, accounts absent | `avahi`, `polkitd`, `colord` and group `network` present after both the i3 and XFCE installs; `/var/log/dbus.log` exists with zero unknown-account warnings; system bus socket present; `dbus` reports `run:` and survives a restart |
 | Seeded packages | `glib2` listed installed without `libglib-2.0.so.0`; scriptlets failed | 156 packages seeded; `glib2` absent and pulled into the i3 transaction; no `libglib-2.0.so.0` loader error in the probe |
 | Desktop install | Blank screen during the 152 MiB transaction | pacman output streamed line by line; `DESKTOP_RC=0` |
 
 Notes:
 
-- The full XFCE profile was not downloaded; the probe used the smaller i3
-  profile, which exercises the same `grintion-desktop` and pacman path
-  (including `perl`, `dbus`, LightDM and the Xorg stack).
+- The full XFCE profile was installed through `grintion-install --desktop xfce`
+  and verified at the binary, service and account level. No graphical session
+  was rendered; the probes run headless over the serial console. The smaller
+  i3 probe covers the same path separately.
+- The XFCE probe's account check line was mangled by a pexpect echo race; a
+  separate boot confirmed the users, group, `run:` state, bus socket and a zero
+  `Unknown username`/`Unknown group` count in `/var/log/dbus.log`.
+- The XFCE transaction succeeded on its first attempt after the retry change;
+  the retry path itself was not triggered.
+- `output/BUILD-INFO` records `git_commit=a7f0343` because the tested ISO was
+  built from the working tree before the release commit. Rebuild after
+  committing if the recorded commit must match the release commit.
 - Some upstream `.INSTALL` scriptlets still print arithmetic/systemd errors.
   pacman returned 0, the desktop binaries and services were verified
   separately, and `grintion-desktop` reports the scriptlet error count.

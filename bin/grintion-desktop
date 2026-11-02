@@ -162,13 +162,26 @@ pkg_install() {
     mkdir -p "$(dirname "$logfile")"
     : > "$logfile"
 
-    log "Installing packages: ${pkgs[*]}"
     log "This downloads from Arch mirrors and can take several minutes. Package manager output follows (also saved to $logfile)."
-    local rc=0
-    set +e
-    "${manager[@]}" 2>&1 | tee -a "$logfile"
-    rc=${PIPESTATUS[0]}
-    set -e
+    # A single slow mirror used to abort the whole desktop install. Retry once:
+    # pacman keeps completed downloads in its cache and a failed transaction
+    # rolls back, so the second attempt only fetches what is missing.
+    local rc=0 attempt
+    for attempt in 1 2; do
+        : > "$logfile"
+        log "Installing packages (attempt $attempt/2): ${pkgs[*]}"
+        set +e
+        "${manager[@]}" 2>&1 | tee -a "$logfile"
+        rc=${PIPESTATUS[0]}
+        set -e
+        if [ "$rc" -eq 0 ]; then
+            break
+        fi
+        if [ "$attempt" -eq 1 ]; then
+            warn "package installation failed (exit $rc); retrying once with the packages already downloaded"
+            sleep 5
+        fi
+    done
     [ "$rc" -eq 0 ] || die "package installation failed (exit $rc); full log: $logfile"
 
     # pacman returns 0 even when a package's .INSTALL script fails, so a
