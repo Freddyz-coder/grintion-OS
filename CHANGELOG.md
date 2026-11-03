@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.3] - 2026-11-03
+
+Security and reliability pass over `SecurityProblems.txt`, plus the live-display
+failure in `ProblemsWhenInstalling.txt` that 0.8.2 did not address. This is a
+patch release: no on-disk format changes, and the only removed interface is the
+installer's password arguments, which were unsafe by design.
+
+### Fixed
+
+- **Black live screen after the KMS driver took over:** `bochs-drm` and
+  `simpledrm` deactivate `vgacon` when they initialize, but
+  `CONFIG_DRM_FBDEV_EMULATION` was off, so `fbcon` never bound and the active
+  VT was only the dummy console. The serial console kept working, which is why
+  the serial-only boot tests did not catch it. The kernel now provides fbdev
+  emulation, and `make test-display` boots the report's 4 GiB / 32 MiB VGA
+  profile and fails if the frame stays black. The BIOS and UEFI boot tests also
+  assert that a `frame buffer` vtconsole is bound.
+- **Passwords exposed in the process list and shell history:**
+  `grintion-install --password` passed the secret as an argument, and
+  `openssl passwd -6 "$USER_PASSWORD"` exposed it again while hashing. Both
+  options are gone. Passwords now come from the interactive prompt,
+  `--password-stdin`/`--root-password-stdin`, or
+  `GRINTION_USER_PASSWORD`/`GRINTION_ROOT_PASSWORD`, and hashing reads stdin.
+- **`pam_faillock` was documented but never active:** the module was not copied
+  into the image and `system-auth` did not reference it. The build now ships
+  `pam_faillock.so` and `pam_wheel.so`, the auth stack enforces the existing
+  `/etc/security/faillock.conf` policy, and runit stage 1 creates
+  `/run/faillock`.
+- **`su` was available to every account:** `pam_wheel.so use_uid trust` now
+  restricts `su` to `wheel`, while root still passes through `pam_rootok`.
+- **SHA-512 was the default new-password hash:** `login.defs` now uses
+  `ENCRYPT_METHOD YESCRYPT`. The installer creates the account entries first and
+  then sets passwords through the target's `chpasswd`, falling back to
+  `openssl passwd -6 -stdin` only if that fails.
+
+### Security
+
+- **pacman database signatures are mandatory:** `SigLevel = Required
+  DatabaseRequired` and `LocalFileSigLevel = Required`, replacing
+  `DatabaseOptional`. The Arch keyring copied into the image is pinned by
+  `config/pacman-keyring.sha256`, and the build fails if the host keyring does
+  not match.
+- **Signed indexes expire and cannot be replayed:** `garb repo-index` records a
+  monotonic `index_version` and an `expires` timestamp (30 days by default,
+  configurable with `--valid-days`). `garb update` refuses a missing, expired
+  or older-than-cached index, so a captured signed index cannot be used to
+  downgrade a client.
+- **Packages cannot install setuid or setgid files:** `garb` rejects
+  `S_ISUID`/`S_ISGID` modes when building and when installing, and masks the
+  bits when applying file modes. Privileged binaries remain part of the base
+  image's explicit `config/rootfs.setuid` list.
+- **Unsigned kernel modules are rejected:** `CONFIG_MODULE_SIG_ALL=y` signs every
+  module at build time and `CONFIG_MODULE_SIG_FORCE=y` refuses unsigned ones.
+- **Smaller kernel surface:** `binfmt_misc` is compiled out. io_uring remains
+  available but is disabled at runtime with `kernel.io_uring_disabled=2`:
+  compiling it out requires `CONFIG_EXPERT`, which selects `CONFIG_DEBUG_KERNEL`
+  and would weaken the existing no-debug contract.
+- **Temporary filesystems cannot execute files:** `/tmp`, `/var/tmp` and
+  `/dev/shm` are mounted `nosuid,nodev,noexec`. `GRINTION_PERSIST` is mounted
+  `nosuid,nodev`, so the overlay's upper layer cannot inject privileged
+  binaries or device nodes.
+
+### Changed
+
+- `grintion-install` usage, `docs/INSTALL.md`, `README.md` and `SECURITY.md`
+  document the stdin/environment password flow and the new signature, PAM and
+  mount settings.
+- `docs/PACKAGE-MANAGER.md` documents index expiry/replay protection, the
+  setuid policy and pacman's `DatabaseRequired` level.
+
+### Tests
+
+- 51 pytest cases, including new tests for expired and replayed indexes,
+  setuid package rejection (both build and install), installer argv rejection,
+  PAM/faillock wiring and the kernel/mount contracts.
+- `make test-display` covers the blank-framebuffer regression; the boot test
+  asserts fbcon binding under BIOS and UEFI, and the install test uses stdin
+  passwords end to end.
+
+### Release
+
+- The 0.8.3 ISO built from this tree is 132,163,584 bytes with SHA-256
+  `77ab06f41ba84c92f5f00f9fd1691ea98a6cd10d1dbb8cd9ba8878d462976e77`. It was
+  built before the release commit, so `output/BUILD-INFO` records
+  `git_commit=d0ee940`. It is not published as a release asset.
+
+---
+
 ## [0.8.2] - 2026-11-02
 
 Follow-up fixes for the field report in `ProblemsWhenInstalling.txt`. The

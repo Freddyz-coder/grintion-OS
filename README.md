@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.8.2
+- **Version:** 0.8.3
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -16,7 +16,7 @@ indexes.
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup, with full support for installing modern graphical desktops (XFCE, GNOME, KDE Plasma, Sway, etc.) and GPU drivers via `grintion-desktop` or `garb`
 
-Grintion-OS 0.8.2 is built from this tree. There is no hosted binary
+Grintion-OS 0.8.3 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -31,10 +31,10 @@ artifacts are not signed.
 | Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
 | Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
-| Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password` is given. |
+| Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment (BPF syscall, kexec and `/dev/mem` off), restricted `/proc` and `dmesg`, ASLR, Yama ptrace scope, io_uring disabled by sysctl, strict network sysctls, `nftables` firewall, PAM faillock. |
+| Hardening | Kernel configuration fragment (BPF syscall, kexec and `/dev/mem` off), restricted `/proc` and `dmesg`, ASLR, Yama ptrace scope, binfmt_misc compiled out, io_uring disabled at runtime, signed modules only, strict network sysctls, `nftables` firewall, PAM faillock. |
 
 Details: [architecture](docs/ARCHITECTURE.md), [installation](docs/INSTALL.md),
 [desktop & GUI](docs/DESKTOP-GUI.md), [package manager](docs/PACKAGE-MANAGER.md), [roadmap](docs/ROADMAP.md).
@@ -56,8 +56,8 @@ Limine, and writes `/etc/fstab`. Existing data on the disk is destroyed.
 Unattended example:
 
 ```sh
-grintion-install --unattended --disk /dev/vda \
-    --hostname box --user grintion --password 'change-me'
+printf '%s\n' 'change-me' | grintion-install --unattended --disk /dev/vda \
+    --hostname box --user grintion --password-stdin
 ```
 
 Add `--dry-run` to print the plan without touching the disk, or
@@ -175,7 +175,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.8.2 |
+| Feature | 0.8.3 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
@@ -213,7 +213,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.8.2 has no Secure
+sensitive. The short version: the design is defensive, but 0.8.3 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 

@@ -25,7 +25,7 @@ if ! mountpoint -q /dev; then
 fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
-mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec
 mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate 2>/dev/null || true
 
@@ -40,7 +40,9 @@ WORK=""
 PERSIST_DEV="$(blkid -L GRINTION_PERSIST 2>/dev/null || true)"
 if [ -n "$PERSIST_DEV" ]; then
     mkdir -p /run/persist
-    if mount -o rw,noatime "$PERSIST_DEV" /run/persist 2>/dev/null; then
+    # The persistence partition is an overlay upper layer. It must never be
+    # able to inject setuid binaries or device nodes into the booted system.
+    if mount -o rw,noatime,nosuid,nodev "$PERSIST_DEV" /run/persist 2>/dev/null; then
         mkdir -p /run/persist/upper /run/persist/work
         chmod 0700 /run/persist/upper /run/persist/work
         UPPER=/run/persist/upper

@@ -188,17 +188,18 @@ steps rather than a Python framework:
 5. mount the root and ESP, `rsync` the live root (excluding `/proc`, `/sys`,
    `/dev`, `/run`, `/tmp`, `/mnt`, `/media`, `/lost+found`);
 6. write `machine-id`, hostname, hosts and fstab;
-7. create the user directly in `passwd`/`group`/`shadow`/`gshadow` with an
-   `openssl passwd -6` hash. This avoids relying on `useradd` and PAM inside a
-   minimal chroot;
+7. create the user directly in `passwd`/`group`/`shadow`/`gshadow`, then set
+   the password through the target's `chpasswd` (yescrypt per
+   `/etc/login.defs`) with an `openssl passwd -6 -stdin` fallback. The secret
+   never appears in an argument list;
 8. copy the kernel, installed initramfs and Limine assets;
 9. `limine bios-install` for BIOS; `efibootmgr` when running under UEFI;
 10. `sync`, unmount everything, with a trap that unwinds on failure.
 
 Account creation is deliberately data-driven: the installer edits the target
-databases instead of running account tools in a chroot. The trade-off is that
-the installer must keep the shadow field format correct, which the end-to-end
-login test covers.
+databases instead of running useradd in a chroot. Passwords are applied
+separately with `chpasswd` inside the target, so the hash method follows
+`/etc/login.defs`; the end-to-end login test covers both paths.
 
 `--dry-run` stops after validation. `--force` allows running from an installed
 system, which is useful for testing but not a supported upgrade path.
@@ -237,8 +238,11 @@ installation works. See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
 
 An index is signed with Ed25519 over the exact `index.json` bytes. `garb update`
 fetches `index.json` and `index.json.sig`, verifies with `openssl pkeyutl
--verify`, and only then stores and parses the index. Package archives are
-verified against the index SHA-256 before extraction.
+-verify`, and only then stores and parses the index. The index carries a
+monotonic `index_version` and an `expires` timestamp; expired or older-than-
+cached indexes are refused, so a captured index cannot be replayed. Package
+archives are verified against the index SHA-256 before extraction, and
+setuid/setgid files are rejected.
 
 Installation is staged: extract into a temporary directory, verify every
 declared file hash, check for undeclared files, then move files into place while
@@ -257,11 +261,11 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 | Boundary | Implementation |
 | --- | --- |
 | Boot chain | Limine loads an unsigned kernel and initramfs. **No Secure Boot, no signature, no measured boot.** |
-| Kernel | BPF syscall, kexec, hibernation and `/dev/mem` are disabled at build time; io_uring is disabled at runtime by sysctl. |
+| Kernel | BPF syscall, kexec, hibernation, binfmt_misc and `/dev/mem` are disabled at build time; io_uring is disabled at runtime by sysctl; only build-signed modules load. |
 | Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. |
-| Users | PAM with `pam_faillock`, root locked on installed systems unless a root password is set, `wheel` for sudo. |
+| Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set. |
 | Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default. |
-| Packages | Native `garb` uses Ed25519-signed indexes. The bundled `pacman` backend trusts the Arch public keyring and official repositories with `/etc/mtab` tracking `/proc/self/mounts`. |
+| Packages | Native `garb` uses Ed25519-signed, expiring indexes and refuses setuid packages. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseRequired` and `/etc/mtab` tracking `/proc/self/mounts`. |
 | Storage | No encryption, no integrity measurement, no verified boot. The persistence partition is plain ext4. |
 
 The live image intentionally grants passwordless root on the console. That is a

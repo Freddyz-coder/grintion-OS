@@ -1,14 +1,22 @@
 #%PAM-1.0
 # Grintion-OS common authentication stack.
 # Only modules shipped in /usr/lib/security are referenced.
+#
+# pam_faillock enforces /etc/security/faillock.conf. /run/faillock is created by
+# /etc/runit/1 before any getty starts.
+# pam_unix has no method argument so /etc/login.defs ENCRYPT_METHOD (yescrypt)
+# decides the hash for passwd and chpasswd.
 
 auth       required   pam_env.so
-auth       required   pam_unix.so try_first_pass
+auth       required   pam_faillock.so preauth
+auth       [success=1 default=ignore] pam_unix.so try_first_pass
+auth       [default=die] pam_faillock.so authfail
+auth       optional   pam_faillock.so authsucc
 
 account    sufficient pam_succeed_if.so user = root
 account    required   pam_unix.so
 
-password   required   pam_unix.so sha512 shadow try_first_pass
+password   required   pam_unix.so shadow try_first_pass
 
 session    required   pam_unix.so
 session    optional   pam_limits.so

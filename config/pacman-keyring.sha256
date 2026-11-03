@@ -1,0 +1,15 @@
+# Pinned Arch Linux keyring for the pacman backend.
+# Generated from archlinux-keyring 20260909-1.
+#
+# build/make-rootfs.sh verifies these hashes before copying the keyring into the
+# image. When the host keyring is updated, verify the new keyring out of band
+# and refresh this file in the same commit; a silent keyring change fails the
+# build on purpose.
+aad631a2406c20361201a7eea14ac0b69dff1edd6447aa8cb9529e0bcaf880d6  /etc/pacman.d/gnupg/pubring.gpg
+1ff427a9e898e2ddc9e44dc8900e4ca7fcd1b842c5339670ba8cdb3660a63851  /etc/pacman.d/gnupg/trustdb.gpg
+7e1d176d7b01b7bbfcc56eb1824b4c6d99314f0da7e26dc5a1e93529fd031c45  /etc/pacman.d/gnupg/tofu.db
+588ce84f80e9b421fd01c4ea58d40adf5edafed0a26958a03b6115e3afcf1e4a  /etc/pacman.d/gnupg/gpg.conf
+9f40f010b8a1dfae92c4a865877de3be83945ced338b4182a11f0cf58a4b5d4b  /etc/pacman.d/gnupg/gpg-agent.conf
+6e5e9373e4684d646f2274e2df54d7fea5f79bc0df981ad8cd7851d1d2454ba3  /usr/share/pacman/keyrings/archlinux.gpg
+384c7daf07a89ec6610859142b009ca5c0b3062ed3ab2d3c50629fef9d002e8f  /usr/share/pacman/keyrings/archlinux-trusted
+aafbc33d6be7e200dd6226dbb467623a38a00db431826258bccfaf5cebfef6a1  /usr/share/pacman/keyrings/archlinux-revoked

@@ -82,6 +82,17 @@ def boot(iso: str, uefi: bool, timeout: int) -> None:
             detail = run("cat /tmp/doctor.log")
             raise AssertionError(f"runtime doctor failed:\n{detail}")
 
+        # The live screen used to go black once bochs-drm deactivated vgacon:
+        # fbdev emulation was compiled out, so fbcon never bound and only the
+        # dummy console remained (ProblemsWhenInstalling.txt #3).
+        output = run(
+            "grep -l 'frame buffer' /sys/class/vtconsole/vtcon*/name "
+            ">/dev/null 2>&1 && echo FBCON_OK || echo FBCON_MISSING"
+        )
+        if "FBCON_OK" not in output:
+            detail = run("cat /sys/class/vtconsole/vtcon*/name")
+            raise AssertionError(f"framebuffer console did not bind:\n{detail}")
+
         # A plain poweroff, not -f: the wrapper must run the runit stage 3
         # sequence and still power the machine off. The shutdown used to stop
         # the getty that owned this console, which killed poweroff itself and

@@ -1,5 +1,7 @@
 #%PAM-1.0
 auth       sufficient pam_rootok.so
+# Only members of wheel may use su; root passes because of pam_rootok above.
+auth       required   pam_wheel.so use_uid trust
 auth       include    system-auth
 
 account    include    system-auth

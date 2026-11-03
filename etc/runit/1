@@ -15,7 +15,7 @@ if ! mountpoint -q /dev; then
 fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
-mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec
 
 mkdir -p /sys/fs/cgroup
 mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate 2>/dev/null || true
@@ -33,9 +33,19 @@ if ! mountpoint -q /run; then
     mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 fi
 if ! mountpoint -q /tmp; then
-    mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+    mount -t tmpfs -o mode=1777,nosuid,nodev,noexec tmpfs /tmp
 fi
-chmod 1777 /tmp
+# /var/tmp is a separate noexec tmpfs so dropped files cannot be executed and
+# do not grow the root filesystem.
+mkdir -p /var/tmp
+if ! mountpoint -q /var/tmp; then
+    mount -t tmpfs -o mode=1777,nosuid,nodev,noexec tmpfs /var/tmp
+fi
+chmod 1777 /tmp /var/tmp
+
+# pam_faillock needs a writable root-owned directory before the gettys start.
+mkdir -p /run/faillock
+chmod 0700 /run/faillock
 
 if [ -s /etc/hostname ]; then
     cat /etc/hostname > /proc/sys/kernel/hostname 2>/dev/null || true

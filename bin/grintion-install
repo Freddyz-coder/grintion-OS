@@ -16,6 +16,8 @@ HOSTNAME="grintion"
 USER_NAME=""
 USER_PASSWORD=""
 ROOT_PASSWORD=""
+PASSWORD_STDIN=0
+ROOT_PASSWORD_STDIN=0
 DESKTOP=""
 DESKTOP_READY=1
 UNATTENDED=0
@@ -35,21 +37,29 @@ Options:
   --disk DEV            Target block device (e.g. /dev/vda, /dev/nvme0n1)
   --hostname NAME       Installed hostname (default: grintion)
   --user NAME           Create an administrative user in the wheel group
-  --password PASS       Password for --user (prefer the interactive prompt)
-  --root-password PASS  Set the root password (default: root stays locked)
+  --password-stdin      Read the user password from standard input
+  --root-password-stdin Read the root password from standard input
   --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, none)
   --swap-size MIB       Add a linux-swap partition at the end of the disk (default: 0)
-  --unattended          Never prompt; requires --disk, --user and --password
+  --unattended          Never prompt; requires --disk, --user and a password source
   --dry-run             Validate the plan and exit without changing anything
   --no-bootloader       Skip Limine installation
   --force               Allow running from an installed system
   -h, --help            Show this help
 
+Environment:
+  GRINTION_USER_PASSWORD  Password for --user on an unattended install
+  GRINTION_ROOT_PASSWORD  Root password; root stays locked when unset
+
+Passwords are never accepted as command-line arguments: they would be visible
+in the process list and in shell history. Use the interactive prompt,
+--password-stdin/--root-password-stdin, or the environment variables above.
+
 Examples:
   grintion-install --disk /dev/vda
   grintion-install --disk /dev/vda --user grintion --desktop xfce
-  grintion-install --unattended --disk /dev/vda --hostname box \
-      --user grintion --password secret
+  printf '%s\n' 'secret' | grintion-install --unattended --disk /dev/vda \
+      --hostname box --user grintion --password-stdin
 EOF
 }
 
@@ -62,8 +72,10 @@ while [ $# -gt 0 ]; do
         --disk)          DISK=${2:-}; shift 2 ;;
         --hostname)      HOSTNAME=${2:-}; shift 2 ;;
         --user)          USER_NAME=${2:-}; shift 2 ;;
-        --password)      USER_PASSWORD=${2:-}; shift 2 ;;
-        --root-password) ROOT_PASSWORD=${2:-}; shift 2 ;;
+        --password|--root-password)
+                         die "$1 was removed because the password is visible in 'ps' and shell history; use --password-stdin, --root-password-stdin or GRINTION_USER_PASSWORD/GRINTION_ROOT_PASSWORD" ;;
+        --password-stdin) PASSWORD_STDIN=1; shift ;;
+        --root-password-stdin) ROOT_PASSWORD_STDIN=1; shift ;;
         --desktop)       DESKTOP=${2:-}; shift 2 ;;
         --swap-size)     SWAP_SIZE_MIB=${2:-}; shift 2 ;;
         --unattended)    UNATTENDED=1; shift ;;
@@ -122,9 +134,15 @@ case "$USER_NAME" in
     root|""|*[!a-z0-9_-]*) die "invalid username: $USER_NAME" ;;
 esac
 
+if [ -n "${GRINTION_USER_PASSWORD-}" ] && [ -z "$USER_PASSWORD" ]; then
+    USER_PASSWORD=$GRINTION_USER_PASSWORD
+fi
+if [ "$PASSWORD_STDIN" -eq 1 ]; then
+    IFS= read -r USER_PASSWORD || die "no password was provided on standard input"
+fi
 if [ -z "$USER_PASSWORD" ]; then
     if [ "$UNATTENDED" -eq 1 ]; then
-        die "--password is required with --unattended"
+        die "--password-stdin or GRINTION_USER_PASSWORD is required with --unattended"
     fi
     printf "Password for %s: " "$USER_NAME"
     read -rs USER_PASSWORD
@@ -151,8 +169,14 @@ if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
     DESKTOP=${DESKTOP:-none}
 fi
 
-if [ -n "$ROOT_PASSWORD" ] && [ "$UNATTENDED" -ne 1 ] && [ -z "${ROOT_PASSWORD_SET-}" ]; then
-    :
+if [ "$ROOT_PASSWORD_STDIN" -eq 1 ]; then
+    IFS= read -r ROOT_PASSWORD || die "no root password was provided on standard input"
+elif [ -n "${GRINTION_ROOT_PASSWORD-}" ] && [ -z "$ROOT_PASSWORD" ]; then
+    ROOT_PASSWORD=$GRINTION_ROOT_PASSWORD
+fi
+ROOT_SET=0
+if [ -n "$ROOT_PASSWORD" ]; then
+    ROOT_SET=1
 fi
 
 if [ "$UNATTENDED" -ne 1 ]; then
@@ -255,6 +279,9 @@ rsync -aHAX --numeric-ids --one-file-system \
     / "$TARGET/"
 
 mkdir -p "$TARGET"/{proc,sys,dev,run,tmp,root,home,mnt,media,boot/efi}
+# chroot chpasswd needs /dev and /proc; cleanup() unmounts both on every path.
+mountpoint -q "$TARGET/dev"  || mount --bind /dev "$TARGET/dev"
+mountpoint -q "$TARGET/proc" || mount -t proc proc "$TARGET/proc"
 # rsync preserves the source root mode; the live overlay root is root-only.
 # An installed root must be traversable by ordinary users.
 chmod 0755 "$TARGET"
@@ -300,22 +327,13 @@ UID_NUM=$(( ${UID_NUM:-999} + 1 ))
 GID_NUM="$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3}' "$TARGET/etc/group" | sort -n | tail -1)"
 GID_NUM=$(( ${GID_NUM:-999} + 1 ))
 
-USER_HASH="$(openssl passwd -6 "$USER_PASSWORD")"
-unset USER_PASSWORD
-if [ -n "$ROOT_PASSWORD" ]; then
-    ROOT_HASH="$(openssl passwd -6 "$ROOT_PASSWORD")"
-else
-    ROOT_HASH='!'
-fi
-unset ROOT_PASSWORD
-
-python3 - "$TARGET" "$USER_NAME" "$UID_NUM" "$GID_NUM" "$USER_HASH" "$ROOT_HASH" <<'PY'
+python3 - "$TARGET" "$USER_NAME" "$UID_NUM" "$GID_NUM" <<'PY'
 import pathlib
 import sys
 import time
 
 root = pathlib.Path(sys.argv[1])
-user, uid, gid, user_hash, root_hash = sys.argv[2:7]
+user, uid, gid = sys.argv[2:5]
 home = f"/home/{user}"
 day = int(time.time() // 86400)
 
@@ -339,7 +357,7 @@ for rel in ("etc/passwd", "etc/group", "etc/shadow", "etc/gshadow"):
 append("etc/group", f"{user}:x:{gid}:")
 append("etc/gshadow", f"{user}:!::")
 append("etc/passwd", f"{user}:x:{uid}:{gid}::{home}:/bin/bash")
-append("etc/shadow", f"{user}:{user_hash}:{day}:0:99999:7:::")
+append("etc/shadow", f"{user}:!:{day}:0:99999:7:::")
 
 lines = []
 for line in read_lines("etc/group"):
@@ -353,14 +371,6 @@ for line in read_lines("etc/group"):
     lines.append(line)
 write_lines("etc/group", lines)
 
-lines = []
-for line in read_lines("etc/shadow"):
-    fields = line.split(":")
-    if fields[0] == "root":
-        fields[1] = root_hash
-        line = ":".join(fields)
-    lines.append(line)
-write_lines("etc/shadow", lines)
 PY
 
 install -d -m 0700 -o "$UID_NUM" -g "$GID_NUM" "$TARGET/home/$USER_NAME"
@@ -370,6 +380,44 @@ for skel in .bashrc .bash_profile .bash_logout; do
             "$TARGET/etc/skel/$skel" "$TARGET/home/$USER_NAME/$skel"
     fi
 done
+
+# Set the passwords after the account entries exist. chpasswd inside the
+# target applies /etc/login.defs (yescrypt); the fallback hashes through stdin
+# so the secret never appears in a child process's argument list.
+set_target_password() {
+    local account="$1" secret="$2" hash
+    if [ -x "$TARGET/usr/bin/chpasswd" ]; then
+        if printf '%s:%s\n' "$account" "$secret" | chroot "$TARGET" /usr/bin/chpasswd 2>/dev/null; then
+            return 0
+        fi
+        warn "chpasswd failed in the target; using a SHA-512 hash instead"
+    fi
+    hash="$(printf '%s\n' "$secret" | openssl passwd -6 -stdin)" || return 1
+    python3 - "$TARGET" "$account" "$hash" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+account, hashed = sys.argv[2], sys.argv[3]
+path = root / "etc/shadow"
+lines = path.read_text().splitlines()
+for index, line in enumerate(lines):
+    fields = line.split(":")
+    if fields[0] == account:
+        fields[1] = hashed
+        lines[index] = ":".join(fields)
+        break
+path.write_text("\n".join(lines) + "\n")
+PY
+}
+
+set_target_password "$USER_NAME" "$USER_PASSWORD" \
+    || die "could not set the password for $USER_NAME"
+if [ "$ROOT_SET" -eq 1 ]; then
+    set_target_password root "$ROOT_PASSWORD" \
+        || die "could not set the root password"
+fi
+unset USER_PASSWORD ROOT_PASSWORD
 
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
     log "pre-installing graphical desktop environment: $DESKTOP"

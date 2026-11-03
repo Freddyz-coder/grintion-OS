@@ -209,3 +209,70 @@ def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "kernel not found" in result.stderr
     assert not (esp / "limine.conf").exists()
+
+
+def test_pacman_requires_database_signatures() -> None:
+    conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
+    assert "SigLevel = Required DatabaseRequired" in conf
+    assert "LocalFileSigLevel = Required" in conf
+    assert "DatabaseOptional" not in conf
+
+
+def test_installer_never_accepts_password_argv() -> None:
+    result = subprocess.run(
+        [str(INSTALLER), "--password", "secret"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "visible in 'ps'" in result.stderr
+
+    help_text = subprocess.run(
+        [str(INSTALLER), "--help"], capture_output=True, text=True, check=False
+    ).stdout
+    assert "--password-stdin" in help_text
+    assert "--password PASS" not in help_text
+
+
+def test_pam_faillock_wheel_and_yescrypt_are_wired() -> None:
+    modules = (REPO_ROOT / "config" / "rootfs.pam-modules").read_text()
+    assert "pam_faillock.so" in modules
+    assert "pam_wheel.so" in modules
+
+    auth = (REPO_ROOT / "etc" / "pam.d" / "system-auth").read_text()
+    assert "pam_faillock.so preauth" in auth
+    assert "pam_faillock.so authfail" in auth
+    assert "sha512" not in auth
+
+    assert "pam_wheel.so" in (REPO_ROOT / "etc" / "pam.d" / "su").read_text()
+    assert "ENCRYPT_METHOD  YESCRYPT" in (REPO_ROOT / "etc" / "login.defs").read_text()
+
+    stage1 = (REPO_ROOT / "etc" / "runit" / "1").read_text()
+    assert "/run/faillock" in stage1
+
+
+def test_tmp_mounts_are_noexec_and_persistence_is_nosuid() -> None:
+    stage1 = (REPO_ROOT / "etc" / "runit" / "1").read_text()
+    assert "mode=1777,nosuid,nodev,noexec tmpfs /tmp" in stage1
+    assert "mode=1777,nosuid,nodev,noexec tmpfs /var/tmp" in stage1
+    live_init = (REPO_ROOT / "init" / "live-init").read_text()
+    assert "noatime,nosuid,nodev" in live_init
+    assert "noexec" in live_init
+
+
+def test_kernel_contract_covers_framebuffer_and_module_signing() -> None:
+    fragment = (REPO_ROOT / "config" / "kernel-hardened.config").read_text()
+    for line in (
+        "CONFIG_DRM_FBDEV_EMULATION=y",
+        "CONFIG_MODULE_SIG=y",
+        "CONFIG_MODULE_SIG_ALL=y",
+        "CONFIG_MODULE_SIG_FORCE=y",
+        "CONFIG_BINFMT_MISC=n",
+    ):
+        assert line in fragment
+
+    # io_uring cannot be compiled out without CONFIG_EXPERT, which selects
+    # CONFIG_DEBUG_KERNEL; it is disabled at runtime instead.
+    sysctl = (REPO_ROOT / "etc" / "sysctl.d" / "99-grintion.conf").read_text()
+    assert "kernel.io_uring_disabled = 2" in sysctl

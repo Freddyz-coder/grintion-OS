@@ -2,7 +2,7 @@
 
 Grintion-OS is a small console system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.8.2 release actually provides, what it does not, and how to report a problem.
+0.8.3 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 
@@ -42,8 +42,11 @@ bounty and no formal disclosure deadline.
   kernel.org's signed checksums.
 - `config/kernel-hardened.config` disables the BPF syscall, kexec, hibernation
   and `/dev/mem`, and enables Yama, hardened usercopy and strict devmem.
-  `build/check-kernel-config.sh` fails the build if a required symbol is
-  dropped.
+  `binfmt_misc` is compiled out and io_uring is disabled at runtime with
+  `kernel.io_uring_disabled=2`. `build/check-kernel-config.sh` fails the build
+  if a required symbol is dropped.
+- Every loadable module is signed by the build; `CONFIG_MODULE_SIG_FORCE=y`
+  rejects unsigned modules. Third-party out-of-tree modules will not load.
 - The ISO boots an unsigned kernel and initramfs through Limine. There is no
   signature check in the boot chain.
 
@@ -60,7 +63,8 @@ include:
 | `kernel.yama.ptrace_scope` | 2 |
 | `kernel.perf_event_paranoid` | 3 |
 | `kernel.unprivileged_bpf_disabled` | 1 |
-| `kernel.io_uring_disabled` | 2 |
+| io_uring | Disabled at runtime (`kernel.io_uring_disabled=2`) |
+| binfmt_misc | Compiled out (`CONFIG_BINFMT_MISC=n`) |
 | `fs.protected_symlinks`, `fs.protected_hardlinks` | 1 |
 | `fs.protected_fifos`, `fs.protected_regular` | 2 |
 | `fs.suid_dumpable` | 0 |
@@ -78,11 +82,14 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
   console bypass is deliberate for an installation medium and is not a property
   of installed systems.
 - The installer creates one administrative user in `wheel`. Root is locked
-  unless `--root-password` is supplied.
+  unless `--root-password-stdin` (or `GRINTION_ROOT_PASSWORD`) is supplied.
 - `sudo` is restricted to `wheel`; `/etc/sudoers` is mode `0440`.
 - PAM uses `pam_faillock`; the configuration is in `/etc/security/faillock.conf`
-  and `/etc/pam.d/system-auth`. Console logins go through `login(1)` on
-  installed systems.
+  and `/etc/pam.d/system-auth`, and `/run/faillock` is created by runit stage 1.
+  Console logins go through `login(1)` on installed systems.
+- `su` is restricted to `wheel` with `pam_wheel.so`; `sudo` is restricted to
+  `wheel` in `/etc/sudoers`. New password hashes use yescrypt
+  (`ENCRYPT_METHOD YESCRYPT`).
 
 ### Network
 
@@ -101,17 +108,22 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
 
 - `garb` verifies an Ed25519 signature over the exact `index.json` bytes before
   parsing it. Trust is rooted in `/etc/garb/keys/*.pub`.
+- A signed index carries an `index_version` and an `expires` timestamp. `garb
+  update` refuses missing, expired or replayed (older-version) indexes, so a
+  captured old index cannot be served to downgrade clients.
 - Package archives are verified against the index SHA-256. Every declared file
   is re-hashed during installation; undeclared files and path traversal are
-  rejected.
+  rejected. Packages may not install setuid or setgid files; the base image's
+  setuid list is applied separately by the build.
 - A failed transaction restores replaced files and removes files installed
   during the attempt; an incomplete restore keeps the backup and reports its
   path. Installs refuse files owned by another package, and removal refuses to
   break a reverse dependency, unless `--force` is used.
 - No repository key is trusted by default and no repository is configured.
 - The image also contains **pacman** as an external backend for `garb`. It
-  verifies Arch packages against the Arch public keyring with
-  `SigLevel = Required DatabaseOptional`. It does not use garb's signed
+  verifies Arch packages and repository databases against the Arch public
+  keyring with `SigLevel = Required DatabaseRequired`. The keyring is pinned by
+  `config/pacman-keyring.sha256`. It does not use garb's signed
   indexes, per-file checks or rollback guarantees. Package scripts and hooks run as root.
   Filesystem mount resolution is tracked via `/etc/mtab -> /proc/self/mounts`.
 
@@ -158,7 +170,7 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 | Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
 | Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
 | `garb` repositories | Ed25519 index signature and per-file SHA-256 |
-| Arch packages (pacman backend) | Arch public keyring with `SigLevel = Required DatabaseOptional` |
+| Arch packages (pacman backend) | Arch public keyring, pinned by `config/pacman-keyring.sha256`, with `SigLevel = Required DatabaseRequired` |
 
 `make check` verifies shell syntax, Python compilation, executable bits,
 required host commands, documentation links, absolute home paths, and the

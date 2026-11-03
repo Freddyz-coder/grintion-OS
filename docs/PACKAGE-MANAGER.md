@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.8 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.8.3 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution and transactional installs. It does **not** build
 from source, run maintainer scripts, or deliver delta updates.
 
@@ -31,7 +31,7 @@ from source, run maintainer scripts, or deliver delta updates.
 | `garb clean` | Remove cached repository indexes and downloads. Native backend only. Run `garb update` before the next install. |
 | `garb build GARBFILE [-o DIR]` | Build one package archive from a `Garbfile`. |
 | `garb repo-build SRCDIR OUTDIR` | Build every `SRCDIR/*/Garbfile` into `OUTDIR`. |
-| `garb repo-index DIR [--key KEY]` | Write `index.json` for the archives in `DIR`, optionally signing it. |
+| `garb repo-index DIR [--key KEY] [--valid-days DAYS] [--index-version N]` | Write `index.json` for the archives in `DIR`, optionally signing it. Indexes expire after 30 days by default. |
 | `garb keygen DIR` | Create an Ed25519 key pair (`private.pem`, `public.pem`). |
 | `garb sign-index INDEX --key KEY` | Sign an existing `index.json`. |
 | `garb version` | Print the tool version. |
@@ -97,8 +97,10 @@ Rules and limits:
   local package database seeded from the build host by
   `build/seed-pacman-db.py`. `apk` is not included.
 - pacman uses Arch official repositories with
-  `SigLevel = Required DatabaseOptional`. Package scripts and hooks may assume
-  systemd; no Grintion-specific hook setup is provided.
+  `SigLevel = Required DatabaseRequired`; package and database signatures are
+  mandatory. The Arch keyring is pinned by `config/pacman-keyring.sha256` at
+  image build time. Package scripts and hooks may assume systemd; no
+  Grintion-specific hook setup is provided.
 - Repository, package-building and signing commands (`build`, `repo-build`,
   `repo-index`, `keygen`, `sign-index`) always use the native implementation.
 
@@ -145,6 +147,8 @@ demo-lib-1.0.0-1.garb
 {
   "schema": 1,
   "generated": 1767225600,
+  "index_version": 1767225600,
+  "expires": 1769817600,
   "packages": {
     "demo-hello": {
       "version": "1.0.0",
@@ -169,6 +173,12 @@ it with `openssl pkeyutl -verify -rawin` before the index is parsed or trusted.
 A missing key, a malformed signature, or a key mismatch is fatal.
 `garb update --allow-unsigned` exists for local development only; it disables
 the trust check and must not be used for a production repository.
+
+Each index also carries a monotonic `index_version` and an `expires` Unix
+timestamp. `garb update` rejects an index whose expiry has passed, and rejects an
+index whose version is older than the cached one. That blocks replay of a
+captured, signed index that names a vulnerable package version. Regenerate and
+re-sign an expired index before publishing.
 
 ---
 
@@ -204,6 +214,9 @@ dependencies and one entry per file:
 
 Paths are relative to the filesystem root and must not escape it. Absolute
 paths, `..` components and undeclared files are rejected during installation.
+Setuid and setgid modes are rejected both when a package is built and when it is
+installed; privileged binaries are part of the base image's explicit
+`config/rootfs.setuid` list, not of repository packages.
 
 Archives are built deterministically: sorted entries, uid/gid 0, a fixed mtime
 derived from `SOURCE_DATE_EPOCH`, and gzip mtime 0.
@@ -279,8 +292,8 @@ resulting index is unsigned and useful only with `--allow-unsigned`.
 2. Download (or copy) the archive and verify its SHA-256 from the index.
 3. Extract into a staging directory under `/var/lib/garb/tmp`, rejecting
    absolute paths, `..` traversal and escaping symlinks.
-4. Verify every declared file hash and mode, and reject files that the package
-   does not declare.
+4. Verify every declared file hash and mode, reject setuid/setgid files, and
+   reject files that the package does not declare.
 5. Refuse the transaction when a declared path is already owned by another
    installed package, unless `--force` is given.
 6. Move files into place, backing up any file or directory that is replaced.
@@ -304,6 +317,8 @@ the transaction commits.
 - No sandbox: installation runs as root and writes directly to the target root.
 - No per-package signature. Trust is anchored in the repository index key.
 - No delta updates, version pinning, holds or downgrades.
+- Indexes expire (30 days by default) and are refused after replay. A repository
+  must be re-indexed and re-signed before the expiry window closes.
 - No automatic updates or background service.
 - No hosted repository. `make packages` creates a local unsigned demo
   repository; signing and hosting are operator responsibilities.

@@ -67,10 +67,12 @@ def install(iso: str, disk: str, uefi: bool) -> None:
     vm = VM(iso, disk, boot="d", uefi=uefi, timeout=600)
     try:
         vm.child.expect(LIVE_PROMPT, timeout=120)
+        # Passwords go through stdin: command-line arguments are visible in
+        # the process list and shell history.
         vm.child.sendline(
-            "grintion-install --unattended --disk /dev/vda "
-            "--hostname grintion-test --user grintion --password grintion "
-            "--root-password grintion"
+            "printf 'grintion\\ngrintion\\n' | grintion-install --unattended "
+            "--disk /dev/vda --hostname grintion-test --user grintion "
+            "--password-stdin --root-password-stdin"
         )
         vm.child.expect(r"Grintion-OS [0-9.]+ installed", timeout=600)
         vm.child.expect(LIVE_PROMPT, timeout=120)
@@ -106,6 +108,12 @@ def verify(disk: str, uefi: bool) -> None:
         output = run("echo grintion | sudo -S id 2>/dev/null")
         if "uid=0" not in output:
             raise AssertionError(f"sudo failed on the installed system:\n{output}")
+        # The installer sets passwords through the target's chpasswd so the hash
+        # follows /etc/login.defs. A $6$ prefix means it silently fell back to
+        # SHA-512 instead of the intended yescrypt $y$.
+        output = run("echo grintion | sudo -S grep '^grintion:' /etc/shadow 2>/dev/null")
+        if "$y$" not in output:
+            raise AssertionError(f"installed password is not yescrypt:\n{output}")
         # dhcpcd runs asynchronously; give the lease a moment to land.
         output = run(
             "for i in $(seq 1 30); do "

@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.8.2 installs from the live ISO to a single disk. The installer
+Grintion-OS 0.8.3 installs from the live ISO to a single disk. The installer
 repartitions the **entire** target disk: a 512 MiB EFI system partition and an
 ext4 root partition. There is no dual-boot or custom-partition mode in this
 release.
@@ -25,8 +25,8 @@ the Limine bootloader is not signed and there is no shim.
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.8.2 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.8.2 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.8.3 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.8.3 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -71,20 +71,23 @@ It will:
 ### Unattended
 
 ```sh
-grintion-install --unattended --disk /dev/vda \
-    --hostname box --user grintion --password 'change-me'
+printf '%s\n' 'change-me' | grintion-install --unattended --disk /dev/vda \
+    --hostname box --user grintion --password-stdin
 ```
 
-`--unattended` refuses to run without `--disk`, `--user` and `--password`.
-Passwords on the command line are visible in the process list; use the
-interactive prompt on a shared machine.
+`--unattended` refuses to run without `--disk`, `--user` and a password source:
+`--password-stdin` or `GRINTION_USER_PASSWORD`. Passwords are deliberately not
+accepted as command-line arguments because they are visible in the process list
+and shell history. Add `--root-password-stdin` (or `GRINTION_ROOT_PASSWORD`) to
+unlock root; otherwise root stays locked and administration goes through
+`sudo`.
 
 Useful flags:
 
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Validate arguments, tools and the disk, then exit. |
-| `--root-password PASS` | Set a root password. By default root is locked on the installed system; use `sudo` from the created user. |
+| `--root-password-stdin` | Read a root password from standard input. By default root is locked on the installed system; use `sudo` from the created user. |
 | `--no-bootloader` | Skip Limine, for an externally managed boot setup. |
 | `--swap-size MIB` | Add a linux-swap partition at the end of the disk (default: none). |
 | `--force` | Allow running from a system that is not the live image. |
@@ -179,7 +182,8 @@ Things to know:
 
 - The persistence partition stores the **entire** upper layer, including
   passwords, SSH keys and package state. It is not encrypted. Anyone who can
-  read the USB stick can read those files.
+  read the USB stick can read those files. The live init mounts it
+  `nosuid,nodev` so it cannot inject setuid binaries or device nodes.
 - A full partition makes the overlay fail; the live init falls back to RAM only
   if the mount itself fails, not when the filesystem fills later.
 - To reset persistence, reformat the partition or delete `upper/` and `work/`

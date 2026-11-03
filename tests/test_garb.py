@@ -350,3 +350,101 @@ def test_upgrade(environment: dict) -> None:
     assert (root / "usr/bin/app").read_text() == "app-v2\n"
     entry = json.loads((root / "var/lib/garb/db.json").read_text())["packages"]["app"]
     assert entry["version"] == "2.0.0"
+
+
+def sign_index(repo: Path, keys: Path) -> None:
+    subprocess.run(
+        [sys.executable, str(GARB), "sign-index", str(repo / "index.json"),
+         "--key", str(keys / "private.pem")],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_expired_index_is_rejected(environment: dict) -> None:
+    import time
+
+    repo = environment["repo"]
+    index = json.loads((repo / "index.json").read_text())
+    index["expires"] = int(time.time()) - 60
+    (repo / "index.json").write_text(json.dumps(index))
+    sign_index(repo, environment["keys"])
+
+    result = run(environment["root"], "update", check=False)
+    assert result.returncode != 0
+    assert "expired" in result.stderr.lower()
+
+
+def test_replayed_index_is_rejected(environment: dict) -> None:
+    import time
+
+    repo = environment["repo"]
+    index = json.loads((repo / "index.json").read_text())
+    index["index_version"] = 1
+    index["expires"] = int(time.time()) + 86400
+    (repo / "index.json").write_text(json.dumps(index))
+    sign_index(repo, environment["keys"])
+
+    result = run(environment["root"], "update", check=False)
+    assert result.returncode != 0
+    assert "replayed" in result.stderr.lower()
+
+
+def test_setuid_package_cannot_be_built(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "suid"
+    (package / "root/usr/bin").mkdir(parents=True)
+    binary = package / "root/usr/bin/suid-helper"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o4755)
+    (package / "Garbfile").write_text(
+        "[package]\n"
+        'name = "suid"\n'
+        'version = "1.0.0"\n'
+        "release = 1\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(GARB), "build", str(package / "Garbfile"),
+         "-o", str(tmp_path / "out")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "setuid" in result.stderr.lower()
+
+
+def test_setuid_archive_is_rejected_at_install(tmp_path: Path) -> None:
+    import hashlib
+    import io
+
+    root = tmp_path / "root"
+    root.mkdir()
+    archive = tmp_path / "suid.garb"
+    payload = b"#!/bin/sh\n"
+    metadata = {
+        "schema": 1,
+        "name": "suid",
+        "version": "1.0.0",
+        "release": 1,
+        "files": [{
+            "path": "usr/bin/suid-helper",
+            "type": "file",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "mode": "4755",
+        }],
+    }
+    with tarfile.open(archive, "w:gz") as tar:
+        payload_json = json.dumps(metadata).encode()
+        info = tarfile.TarInfo("GARB_METADATA.json")
+        info.size = len(payload_json)
+        tar.addfile(info, io.BytesIO(payload_json))
+        info = tarfile.TarInfo("usr/bin/suid-helper")
+        info.size = len(payload)
+        info.mode = 0o755
+        tar.addfile(info, io.BytesIO(payload))
+
+    result = run(root, "install", str(archive), check=False)
+    assert result.returncode != 0
+    assert "setuid" in result.stderr.lower()
+    assert not (root / "usr/bin/suid-helper").exists()

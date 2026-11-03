@@ -9,7 +9,7 @@ VERSION := $(shell cat VERSION)
 ISO := output/grintion-os-x86_64.iso
 
 .PHONY: all help tools kernel install-initramfs rootfs iso check test test-garb \
-        test-boot test-install test-install-uefi test-all packages clean distclean release
+        test-boot test-display test-install test-install-uefi test-all packages clean distclean release
 
 all: iso
 
@@ -24,8 +24,8 @@ help:
 	@echo "  make iso               build output/grintion-os-x86_64.iso (default)"
 	@echo "  make check             static checks, Python tests, package tests"
 	@echo "  make test              alias for check"
-	@echo "  make test-garb         package-manager integration tests"
-	@echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
+	@echo "  make test-garb         package-manager integration tests"        @echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
+	@echo "  make test-display      check the live ISO renders on the framebuffer"
 	@echo "  make test-install      install to a QEMU disk and reboot from it"
 	@echo "  make test-install-uefi install under UEFI/OVMF and reboot from it"
 	@echo "  make test-all          check + boot tests + install test"
@@ -59,6 +59,9 @@ test-garb: check
 
 test-boot: iso
 	@./build/test-boot.sh
+
+test-display: iso
+	@python3 tests/display_test.py --iso $(ISO)
 
 test-install: iso
 	@./build/test-install.sh

@@ -249,6 +249,11 @@ log "installing the pacman external backend"
 mkdir -p "$ROOTFS/etc/pacman.d/gnupg" "$ROOTFS/etc/pacman.d/hooks" \
          "$ROOTFS/usr/share/pacman/keyrings"
 chmod 0700 "$ROOTFS/etc/pacman.d/gnupg"
+# Delegate installs still trust the Arch keyring, so pin the exact keyring the
+# image was built with instead of copying whatever the host happens to have.
+log "verifying the pinned Arch keyring"
+( cd / && sha256sum -c --quiet "$CONFIG/pacman-keyring.sha256" ) \
+    || die "the host Arch keyring does not match config/pacman-keyring.sha256"
 for keyfile in pubring.gpg trustdb.gpg tofu.db gpg.conf gpg-agent.conf; do
     [ -f "/etc/pacman.d/gnupg/$keyfile" ] || die "pacman keyring file missing: $keyfile"
     install -m 0644 "/etc/pacman.d/gnupg/$keyfile" "$ROOTFS/etc/pacman.d/gnupg/$keyfile"
