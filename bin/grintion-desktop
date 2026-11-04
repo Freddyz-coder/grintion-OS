@@ -216,7 +216,16 @@ verify_binaries() {
 ensure_service_account() {
     local user="$1" home="$2" shell=/usr/bin/nologin
     [ "$TARGET_ROOT" = "/" ] || return 0
-    id -u "$user" >/dev/null 2>&1 && return 0
+    if id -u "$user" >/dev/null 2>&1; then
+        # The base image declares some service accounts in /etc/passwd without
+        # a /etc/shadow entry. useradd then refuses with "user already exists"
+        # and PAM has no credentials to establish for the account.
+        if ! getent shadow "$user" >/dev/null 2>&1; then
+            printf '%s:!:::::::\n' "$user" >> "$TARGET_ROOT/etc/shadow"
+            chmod 0600 "$TARGET_ROOT/etc/shadow"
+        fi
+        return 0
+    fi
     [ -x "$shell" ] || shell=/bin/false
     groupadd -r "$user" 2>/dev/null || true
     useradd -r -g "$user" -d "$home" -s "$shell" "$user" 2>/dev/null || true
@@ -266,10 +275,7 @@ enable_dm_service() {
     # package's own scriptlets own target-side account creation; creating the
     # user on the host would be wrong (F4 review note).
     if [ "$dm" = "/usr/bin/lightdm" ] && [ "$TARGET_ROOT" = "/" ]; then
-        if ! id -u lightdm >/dev/null 2>&1; then
-            groupadd -r lightdm 2>/dev/null || true
-            useradd -r -g lightdm -d /var/lib/lightdm -s /usr/bin/nologin lightdm 2>/dev/null || true
-        fi
+        ensure_service_account lightdm /var/lib/lightdm
         mkdir -p "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm"
         chown -R lightdm:lightdm "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm" 2>/dev/null || true
         if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then

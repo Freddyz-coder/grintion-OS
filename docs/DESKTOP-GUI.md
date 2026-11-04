@@ -2,7 +2,33 @@
 
 Grintion-OS is designed with a clean separation of concerns:
 - **Base Media:** Boots into a lightweight, fast, and secure console prompt for pre-installation, partitioning, system maintenance, and initial setup.
-- **GUI & Desktop Environments:** Fully supported! Users can pre-install their preferred graphical desktop during initial installation (`grintion-install --desktop <env>`), or install and configure desktop environments and GPU drivers anytime using `grintion-desktop`.
+- **GUI & Desktop Environments:** Supported for installation. Users can pre-install their preferred graphical desktop during initial installation (`grintion-install --desktop <env>`), or install and configure desktop environments and GPU drivers anytime using `grintion-desktop`.
+
+---
+
+## Verification status (0.8.3)
+
+What is verified: `grintion-desktop install <profile>` completes, the desktop
+packages and display manager are present, the D-Bus system bus and service
+accounts are created, and `/var/service/display-manager` is enabled. The
+console and framebuffer are covered by `make test-display` and the boot tests.
+
+What is **not** verified: a rendered graphical greeter or desktop session. The
+last full XFCE install reached LightDM, but the greeter exited before drawing
+with `Failed to establish PAM credentials: Critical error - immediate abort`
+in `/var/log/lightdm/seat0-greeter.log`. 0.8.3 fixes a missing `lightdm`
+shadow entry that can cause that abort, but no post-fix graphical screenshot
+has been captured. Treat the profiles below as installation recipes, not as
+proof of a working session.
+
+If the greeter does not appear:
+
+```sh
+getent shadow lightdm
+tail -n 40 /var/log/lightdm/lightdm.log
+tail -n 40 /var/log/lightdm/seat0-greeter.log
+tail -n 40 /var/log/display-manager.log
+```
 
 ---
 

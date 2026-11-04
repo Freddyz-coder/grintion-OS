@@ -41,14 +41,24 @@ installer's password arguments, which were unsafe by design.
   `ENCRYPT_METHOD YESCRYPT`. The installer creates the account entries first and
   then sets passwords through the target's `chpasswd`, falling back to
   `openssl passwd -6 -stdin` only if that fails.
+- **LightDM's service account had no shadow entry:** the base image lists
+  `lightdm` in `/etc/passwd` but not in `/etc/shadow`, so `useradd` refused with
+  "user already exists" and the entry was never repaired. LightDM's session
+  child then failed in `pam_setcred` and the greeter exited with `Failed to
+  establish PAM credentials: Critical error - immediate abort`. The image now
+  ships a locked `lightdm` entry, and `grintion-desktop` adds a locked shadow
+  entry for any existing service account that lacks one.
 
 ### Security
 
-- **pacman database signatures are mandatory:** `SigLevel = Required
-  DatabaseRequired` and `LocalFileSigLevel = Required`, replacing
-  `DatabaseOptional`. The Arch keyring copied into the image is pinned by
-  `config/pacman-keyring.sha256`, and the build fails if the host keyring does
-  not match.
+- **pacman package signatures are enforced and the keyring is pinned:**
+  `SigLevel = Required DatabaseOptional` (Arch's own default) and
+  `LocalFileSigLevel = Required`. `DatabaseRequired` was tested and reverted:
+  Arch's official mirrors return 404 for `core.db.sig`/`extra.db.sig`, so
+  requiring database signatures breaks `pacman -Sy` and every delegated
+  install. Package signatures remain mandatory, and the Arch keyring copied
+  into the image is pinned by `config/pacman-keyring.sha256`; the build fails
+  if the host keyring does not match.
 - **Signed indexes expire and cannot be replayed:** `garb repo-index` records a
   monotonic `index_version` and an `expires` timestamp (30 days by default,
   configurable with `--valid-days`). `garb update` refuses a missing, expired
@@ -75,23 +85,34 @@ installer's password arguments, which were unsafe by design.
   document the stdin/environment password flow and the new signature, PAM and
   mount settings.
 - `docs/PACKAGE-MANAGER.md` documents index expiry/replay protection, the
-  setuid policy and pacman's `DatabaseRequired` level.
+  setuid policy and why pacman stays on `DatabaseOptional` (no published
+  database signatures).
 
 ### Tests
 
-- 51 pytest cases, including new tests for expired and replayed indexes,
+- 53 pytest cases, including new tests for expired and replayed indexes,
   setuid package rejection (both build and install), installer argv rejection,
   PAM/faillock wiring and the kernel/mount contracts.
 - `make test-display` covers the blank-framebuffer regression; the boot test
   asserts fbcon binding under BIOS and UEFI, and the install test uses stdin
   passwords end to end.
 
+### Known limitation
+
+The console, framebuffer, package installation and display-manager wiring are
+verified. A rendered LightDM/XFCE session is **not** verified in this release:
+the last full XFCE install reached the greeter, but it aborted in PAM and no
+post-fix graphical screenshot was captured. The desktop profiles are
+installation recipes, not proof of a working session.
+
 ### Release
 
-- The 0.8.3 ISO built from this tree is 132,163,584 bytes with SHA-256
-  `77ab06f41ba84c92f5f00f9fd1691ea98a6cd10d1dbb8cd9ba8878d462976e77`. It was
-  built before the release commit, so `output/BUILD-INFO` records
-  `git_commit=d0ee940`. It is not published as a release asset.
+- The 0.8.3 ISO rebuilt from this tree is 132,163,584 bytes with SHA-256
+  `dc2d2b3b11241785146485171d49019cec309e1530ba547a54737b50df41d8b4`. It was
+  built from this tree before the release commit, so `output/BUILD-INFO`
+  records `git_commit=e92a69b`. The image exceeds the 100 MB git-file limit,
+  so it is distributed as a GitHub Release asset rather than committed to the
+  tree.
 
 ---
 

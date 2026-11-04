@@ -265,7 +265,7 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 | Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. |
 | Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set. |
 | Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default. |
-| Packages | Native `garb` uses Ed25519-signed, expiring indexes and refuses setuid packages. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseRequired` and `/etc/mtab` tracking `/proc/self/mounts`. |
+| Packages | Native `garb` uses Ed25519-signed, expiring indexes and refuses setuid packages. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseOptional` (Arch publishes no database signatures) and `/etc/mtab` tracking `/proc/self/mounts`. |
 | Storage | No encryption, no integrity measurement, no verified boot. The persistence partition is plain ext4. |
 
 The live image intentionally grants passwordless root on the console. That is a

@@ -4,10 +4,12 @@ This document records what was actually executed for Grintion-OS 0.8.3 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**Status: 0.8.3 verified.** The 0.8.3 ISO was built and tested on 2026-11-03:
-`make check`, the framebuffer regression test, the BIOS and UEFI live boot tests
-and the BIOS install test passed. The 0.8.2 and earlier results below are
-historical. The last published 0.6.1 baseline commit was `18c6695`.
+**Status: 0.8.3 console verified; graphical session unverified.** The 0.8.3 ISO
+was rebuilt on 2026-11-04 with the LightDM account fix and retested: `make
+check`, the framebuffer regression test, the BIOS and UEFI live boot tests and
+the BIOS install test passed. A rendered LightDM/XFCE session has not been
+captured yet; see the note below. The 0.8.2 and earlier results are historical.
+The last published 0.6.1 baseline commit was `18c6695`.
 
 ## Environment
 
@@ -23,19 +25,7 @@ historical. The last published 0.6.1 baseline commit was `18c6695`.
 | Kernel | `6.12.114-grintion` |
 | shellcheck | Not installed; static lint was skipped |
 
-## Artifacts
-
-| Artifact | Size | SHA-256 | Notes |
-| --- | --- | --- | --- |
-| Baseline ISO (commit `18c6695`) | 121 MiB | `b05e5c8db49c62d6b26b3ced9c253c5aced3d99db721220d91f89efff071e3fc` | Wrapper, sudo plugin and doctor fixes; no pacman |
-| Current ISO (uncommitted) | 129 MiB | `9f4f140b29c94dac2b2162b1dd1c70b2e99a3f58d2c8dee86667ffc7eabc62b4` | Includes pacman; lacks the `/etc/mtab` symlink |
-
-The current ISO was built at 08:09. The untracked `etc/resolv.conf.head`
-(08:12) is **not** in it. `build/work/rootfs/etc/mtab` is also absent even
-though `build/make-rootfs.sh` now contains the symlink, so the rootfs/ISO are
-stale relative to the tree.
-
-## 0.8.3 results (2026-11-03)
+## 0.8.3 results (rebuilt 2026-11-04)
 
 Security hardening pass and the blank-framebuffer fix. The report's VM profile
 (4 GiB RAM, 32 MiB VGA) is the display test configuration.
@@ -44,23 +34,24 @@ Security hardening pass and the blank-framebuffer fix. The report's VM profile
 | --- | --- |
 | Artifact | `output/grintion-os-x86_64.iso` |
 | Size | 132,163,584 bytes (126 MiB) |
-| SHA-256 | `77ab06f41ba84c92f5f00f9fd1691ea98a6cd10d1dbb8cd9ba8878d462976e77` |
+| SHA-256 | `dc2d2b3b11241785146485171d49019cec309e1530ba547a54737b50df41d8b4` |
 | Kernel | `6.12.114-grintion` |
 | Host | Arch Linux x86_64, KVM |
 | Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | Guest RAM / vCPU | 4 GiB / 2 for the display test; 2 GiB / 2 for boot and install |
 | Network | QEMU user networking, `e1000` |
-| `BUILD-INFO` commit | `d0ee940` (ISO built before the release commit) |
+| `BUILD-INFO` commit | `e92a69b` (ISO built before the release commit) |
 | shellcheck | Not installed; static lint was skipped |
 
 | Check | Result | Notes |
 | --- | --- | --- |
-| `make check` | Pass | 51 pytest cases plus shell syntax, Python compilation, executable bits, host inputs, documentation links and the home-path scan |
-| `tests/display_test.py` | Pass | fbcon bound; 1280x800 with 41,921 non-black pixels after writing to `/dev/tty1`; no black screen at 4 GiB / 32 MiB VGA |
+| `make check` | Pass | 53 pytest cases plus shell syntax, Python compilation, executable bits, host inputs, documentation links and the home-path scan |
+| `tests/display_test.py` | Pass | fbcon bound; 1280x800 with 41,920 non-black pixels after writing to `/dev/tty1`; no black screen at 4 GiB / 32 MiB VGA |
 | Live boot, BIOS | Pass | `FBCON_OK`; plain `poweroff` exits QEMU |
 | Live boot, UEFI | Pass | `FBCON_OK` under OVMF |
 | Install test (BIOS) | Pass | stdin passwords, login, ext4 root, UUID `/etc/fstab`, `sudo` from `wheel`, DHCP, `INSTALLED` marker |
 | Password hash | Pass | `/etc/shadow` contains `$y$j9T$...` (yescrypt), so the target `chpasswd` path is active |
+| LightDM account entry | Pass | `lightdm` is present in both `/etc/passwd` and `/etc/shadow` (locked); `grintion-desktop` repairs passwd accounts that lack a shadow entry |
 
 Artifact checks:
 
@@ -72,11 +63,27 @@ Artifact checks:
 - io_uring is disabled at runtime (`kernel.io_uring_disabled=2`), not compiled
   out: `CONFIG_IO_URING` is only selectable with `CONFIG_EXPERT`, which selects
   `CONFIG_DEBUG_KERNEL` and would break the existing no-debug contract.
+- pacman uses `SigLevel = Required DatabaseOptional`. `DatabaseRequired` was
+  tried and reverted: both configured mirrors return 404 for `core.db.sig` and
+  `extra.db.sig`, so `pacman -Sy` (and therefore every delegated install)
+  fails. Package signatures and local-file signatures remain `Required`.
+
+### Graphical desktop status
+
+`grintion-desktop install xfce` completes and leaves LightDM, Xorg and XFCE
+installed, with the D-Bus accounts and the supervised `display-manager`
+service. The greeter then aborted with `Failed to establish PAM credentials:
+Critical error - immediate abort`. The base image's `lightdm` account had no
+`/etc/shadow` entry; 0.8.3 now ships a locked entry and `grintion-desktop`
+repairs that class of account. No post-fix graphical screenshot was captured,
+so this document does **not** claim a working graphical session.
 
 Not repeated for this pass:
 
 - UEFI install test. UEFI boot is covered above; the install path is identical.
-- Wi-Fi association and a rendered graphical desktop session.
+- Wi-Fi association.
+- A rendered graphical desktop session: installation and display-manager wiring
+  were exercised, but the greeter did not draw (see above).
 - Secure Boot, LUKS, clean-room builds and release signing remain absent
   (see `docs/ROADMAP.md`).
 

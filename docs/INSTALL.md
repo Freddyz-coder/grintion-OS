@@ -134,7 +134,7 @@ and cache; use `pacman -Q` / `pacman -Sc` for pacman-installed packages.
 
 ## Graphical Desktop Environments
 
-Grintion-OS boots into a lightweight console prompt for administrative efficiency, with complete support for installing graphical desktop environments:
+Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console; a rendered graphical session is not yet verified in 0.8.3 (see [VERIFICATION.md](VERIFICATION.md)).
 
 ### Pre-installing during disk installation
 

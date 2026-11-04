@@ -188,6 +188,29 @@ def test_desktop_install_streams_output_and_provisions_accounts() -> None:
     assert 'getent group "$group"' in script
 
 
+def test_lightdm_account_has_a_shadow_entry() -> None:
+    # lightdm is declared in /etc/passwd but was missing from /etc/shadow, so
+    # useradd refused with "user already exists" and PAM could not establish
+    # credentials for the greeter (Failed to establish PAM credentials).
+    passwd = {
+        line.split(":", 1)[0]
+        for line in (REPO_ROOT / "etc" / "passwd").read_text().splitlines()
+        if line
+    }
+    shadow = {
+        line.split(":", 1)[0]
+        for line in (REPO_ROOT / "etc" / "shadow").read_text().splitlines()
+        if line
+    }
+    assert passwd <= shadow, f"accounts without shadow entries: {sorted(passwd - shadow)}"
+
+
+def test_desktop_repairs_accounts_without_shadow_entries() -> None:
+    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert 'getent shadow "$user"' in script
+    assert 'printf \'%s:!:::::::\\n\' "$user" >> "$TARGET_ROOT/etc/shadow"' in script
+
+
 def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
@@ -211,11 +234,13 @@ def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
     assert not (esp / "limine.conf").exists()
 
 
-def test_pacman_requires_database_signatures() -> None:
+def test_pacman_requires_package_signatures_without_missing_db_sigs() -> None:
+    # Arch mirrors do not publish .db.sig; DatabaseRequired makes pacman -Sy
+    # fail with 404 and breaks every delegated install.
     conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
-    assert "SigLevel = Required DatabaseRequired" in conf
+    assert "SigLevel = Required DatabaseOptional" in conf
     assert "LocalFileSigLevel = Required" in conf
-    assert "DatabaseOptional" not in conf
+    assert "SigLevel = Required DatabaseRequired" not in conf
 
 
 def test_installer_never_accepts_password_argv() -> None:

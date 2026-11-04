@@ -14,7 +14,7 @@ indexes.
   configuration fragment
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
-- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup, with full support for installing modern graphical desktops (XFCE, GNOME, KDE Plasma, Sway, etc.) and GPU drivers via `grintion-desktop` or `garb`
+- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers install with `grintion-desktop` or `garb`; a rendered graphical session is not yet verified in 0.8.3
 
 Grintion-OS 0.8.3 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
@@ -29,7 +29,7 @@ artifacts are not signed.
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
 | Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
-| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. |
+| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. Package installation and display-manager wiring are verified; a rendered graphical session is not yet verified. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
@@ -108,7 +108,11 @@ Signing, the on-disk format, the threat model and delegation details are in
 
 ## Desktop & GUI Support
 
-Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Full graphical desktop support is available and easily configured:
+Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Desktop environments and GPU drivers can be installed and configured:
+
+> **Verification status:** package transactions, D-Bus accounts and the
+> display-manager service are verified. A rendered graphical greeter or desktop
+> is **not** verified in 0.8.3; see [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ### Pre-installing with the installer
 
@@ -181,7 +185,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
 | Secure Boot | No; Limine is unsigned and there is no shim |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | Supported; pre-install with `grintion-install --desktop` or install with `grintion-desktop` (XFCE, GNOME, KDE Plasma, Sway, LXQt) |
+| Graphical desktop | Packages and display-manager wiring supported; a rendered graphical session is not yet verified in 0.8.3 |
 | Wi-Fi | `grintion-network` writes the `[wifi]` config and enables the supervised `wpa_supplicant` service |
 | Disk encryption | Not provided by the installer |
 | Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |

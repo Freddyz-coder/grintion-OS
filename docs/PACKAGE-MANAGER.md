@@ -97,10 +97,12 @@ Rules and limits:
   local package database seeded from the build host by
   `build/seed-pacman-db.py`. `apk` is not included.
 - pacman uses Arch official repositories with
-  `SigLevel = Required DatabaseRequired`; package and database signatures are
-  mandatory. The Arch keyring is pinned by `config/pacman-keyring.sha256` at
-  image build time. Package scripts and hooks may assume systemd; no
-  Grintion-specific hook setup is provided.
+  `SigLevel = Required DatabaseOptional`, matching Arch's own default: package
+  signatures are mandatory, but the official mirrors do not publish detached
+  database signatures (`core.db.sig`/`extra.db.sig` return 404). Requiring
+  `DatabaseRequired` makes `pacman -Sy` fail. The Arch keyring is pinned by
+  `config/pacman-keyring.sha256` at image build time. Package scripts and hooks
+  may assume systemd; no Grintion-specific hook setup is provided.
 - Repository, package-building and signing commands (`build`, `repo-build`,
   `repo-index`, `keygen`, `sign-index`) always use the native implementation.
 

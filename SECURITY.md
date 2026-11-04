@@ -1,6 +1,6 @@
 # Security policy
 
-Grintion-OS is a small console system with defensive defaults. It is not a
+Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 0.8.3 release actually provides, what it does not, and how to report a problem.
 
@@ -121,8 +121,11 @@ applies `/etc/mdev.conf`. The setuid list is explicit in
   break a reverse dependency, unless `--force` is used.
 - No repository key is trusted by default and no repository is configured.
 - The image also contains **pacman** as an external backend for `garb`. It
-  verifies Arch packages and repository databases against the Arch public
-  keyring with `SigLevel = Required DatabaseRequired`. The keyring is pinned by
+  verifies Arch packages against the Arch public keyring with
+  `SigLevel = Required DatabaseOptional`, matching Arch's own default. Database
+  signatures cannot be required because the official mirrors do not publish
+  `core.db.sig`/`extra.db.sig` (both return 404); `DatabaseRequired` breaks
+  `pacman -Sy`. The keyring is pinned by
   `config/pacman-keyring.sha256`. It does not use garb's signed
   indexes, per-file checks or rollback guarantees. Package scripts and hooks run as root.
   Filesystem mount resolution is tracked via `/etc/mtab -> /proc/self/mounts`.
@@ -170,7 +173,7 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 | Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
 | Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
 | `garb` repositories | Ed25519 index signature and per-file SHA-256 |
-| Arch packages (pacman backend) | Arch public keyring, pinned by `config/pacman-keyring.sha256`, with `SigLevel = Required DatabaseRequired` |
+| Arch packages (pacman backend) | Arch public keyring, pinned by `config/pacman-keyring.sha256`, with `SigLevel = Required DatabaseOptional` (Arch publishes no `.db.sig`) |
 
 `make check` verifies shell syntax, Python compilation, executable bits,
 required host commands, documentation links, absolute home paths, and the
