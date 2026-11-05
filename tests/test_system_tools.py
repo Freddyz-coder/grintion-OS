@@ -172,6 +172,63 @@ def test_profile_defines_append_path_for_package_snippets(tmp_path: Path) -> Non
     assert "/opt/test/bin" in result.stdout
 
 
+def test_graphical_sessions_start_a_dbus_session_bus() -> None:
+    # There is no logind/systemd user manager in this image. Without an
+    # explicit session bus, XFCE starts but its settings server cannot connect
+    # ("Unable to contact settings server: No such file or directory") and the
+    # window manager and panel never appear.
+    hook = REPO_ROOT / "etc" / "X11" / "xinit" / "xinitrc.d" / "10-grintion-dbus.sh"
+    assert hook.is_file()
+    text = hook.read_text()
+    assert "DBUS_SESSION_BUS_ADDRESS" in text
+    assert "dbus-launch --sh-syntax --exit-with-session" in text
+
+    # The explicit LightDM wrapper is the path that actually runs; it must
+    # start the bus before XFCE, not after the desktop has already failed.
+    wrapper = REPO_ROOT / "etc" / "lightdm" / "Xsession-grintion"
+    assert wrapper.is_file()
+    assert "exec dbus-run-session -- /etc/lightdm/Xsession" in wrapper.read_text()
+    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert "session-wrapper=/etc/lightdm/Xsession-grintion" in desktop
+    # lightdm.conf is loaded after lightdm.conf.d/ and Arch ships an
+    # uncommented upstream session-wrapper, so the installer must rewrite the
+    # main file as well; a drop-in alone is silently overridden.
+    assert (
+        "s|^#\\?session-wrapper=.*|session-wrapper=/etc/lightdm/Xsession-grintion|"
+        in desktop
+    )
+    # logind-check-graphical belongs to [LightDM], not [Seat:*].
+    assert "[LightDM]" in desktop
+
+    required = (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
+    assert "dbus-daemon" in required
+    assert "dbus-launch" in required
+    assert "dbus-run-session" in required
+
+
+def test_xorg_uses_evdev_explicitly_without_udev() -> None:
+    # The image runs mdev, not udev. libinput enumerates devices through
+    # libudev, so Xorg started with only the XTEST pointer and the real mouse
+    # and keyboard were dead even though the desktop rendered.
+    generator = REPO_ROOT / "bin" / "grintion-xorg-input"
+    assert generator.is_file()
+    text = generator.read_text()
+    assert "/proc/bus/input/devices" in text
+    assert 'Driver \\"evdev\\"' in text
+    assert 'AutoServerLayout' in text
+    assert "/dev/input/" in text
+
+    service = (REPO_ROOT / "etc" / "sv" / "display-manager" / "run").read_text()
+    assert "grintion-xorg-input" in service
+    assert service.index("grintion-xorg-input") < service.index('exec "$configured"')
+
+    for name in ("xfce", "kde", "lxqt", "i3"):
+        profile = (
+            REPO_ROOT / "etc" / "grintion" / "desktops.d" / f"{name}.conf"
+        ).read_text()
+        assert "xf86-input-evdev" in profile
+
+
 def test_dbus_service_logs_off_the_console() -> None:
     # The service used to write console spam straight onto the login prompt.
     script = (REPO_ROOT / "etc" / "sv" / "dbus" / "run").read_text()
@@ -186,6 +243,35 @@ def test_desktop_install_streams_output_and_provisions_accounts() -> None:
     assert "tee -a" in script
     assert "provision_dbus_accounts" in script
     assert 'getent group "$group"' in script
+
+
+def test_lightdm_greeter_pam_supports_unauthenticated_setcred() -> None:
+    # LightDM calls pam_setcred on the greeter session without calling
+    # pam_authenticate. pam_env and pam_limits have no usable setcred handler
+    # on that path and make the call fail with PAM_ABORT, so the greeter never
+    # draws. Only setcred-capable modules may appear in this stack.
+    greeter = (REPO_ROOT / "etc" / "pam.d" / "lightdm-greeter").read_text()
+    assert "pam_permit.so" in greeter
+    assert "pam_env.so" not in greeter
+    assert "pam_limits.so" not in greeter
+    assert "pam_unix.so" not in greeter
+
+    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    start = script.index("fix_lightdm_greeter_pam()")
+    end = script.index("# dbus-daemon drops privileges", start)
+    stack = script[start:end]
+    assert "pam_permit.so" in stack
+    assert "pam_env.so" not in stack
+    assert "pam_limits.so" not in stack
+
+
+def test_desktop_writes_an_explicit_lightdm_greeter_session() -> None:
+    # LightDM's compiled default is "default", but Arch ships
+    # lightdm-gtk-greeter.desktop. Relying on the commented package default
+    # leaves LightDM with no greeter and it exits instead of drawing.
+    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert "50-grintion.conf" in script
+    assert "greeter-session=lightdm-gtk-greeter" in script
 
 
 def test_lightdm_account_has_a_shadow_entry() -> None:
@@ -208,7 +294,43 @@ def test_lightdm_account_has_a_shadow_entry() -> None:
 def test_desktop_repairs_accounts_without_shadow_entries() -> None:
     script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
     assert 'getent shadow "$user"' in script
-    assert 'printf \'%s:!:::::::\\n\' "$user" >> "$TARGET_ROOT/etc/shadow"' in script
+    assert 'printf \'%s:!:19000:0:99999:7:::\\n\' "$user" >> "$TARGET_ROOT/etc/shadow"' in script
+
+
+def test_live_boot_brings_loopback_up() -> None:
+    # The live image used to boot with lo DOWN; D-Bus, X11 and local repositories
+    # then failed with connection errors even though DHCP worked.
+    stage1 = (REPO_ROOT / "etc" / "runit" / "1").read_text()
+    assert "ip link set lo up" in stage1
+    doctor = (REPO_ROOT / "bin" / "grintion-doctor").read_text()
+    assert "loopback interface is down" in doctor
+
+
+def test_secure_boot_is_detected_and_refused() -> None:
+    # There is no signed Grintion boot chain. The installer must fail before it
+    # partitions a disk that the firmware will not boot, and the doctor must
+    # report the state rather than implying verified boot support.
+    doctor = (REPO_ROOT / "bin" / "grintion-doctor").read_text()
+    assert "SecureBoot-*" in doctor
+    assert "does not support Secure Boot" in doctor
+
+    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    assert "secure_boot_enabled" in installer
+    assert "does not ship a signed boot chain" in installer
+
+
+def test_desktop_never_uses_a_blanket_overwrite() -> None:
+    # --overwrite '*' let any upstream package replace account, sudo and boot
+    # files. The desktop installer now retries only the exact reported paths and
+    # rejects the security-sensitive ones.
+    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert "--overwrite '*'" not in script
+    assert "reported conflict path" in script
+    assert "refusing to overwrite security-sensitive path" in script
+    # The minimal image has no /dev/fd, so a process substitution silently
+    # yielded an empty conflict list and skipped the retry.
+    assert "conflict_file=$(mktemp" in script
+    assert "< <(" not in script
 
 
 def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
@@ -264,6 +386,9 @@ def test_pam_faillock_wheel_and_yescrypt_are_wired() -> None:
     modules = (REPO_ROOT / "config" / "rootfs.pam-modules").read_text()
     assert "pam_faillock.so" in modules
     assert "pam_wheel.so" in modules
+    # lightdm-autologin requires pam_shells; without it LightDM reports
+    # "Module is unknown" and falls back to the greeter instead of logging in.
+    assert "pam_shells.so" in modules
 
     auth = (REPO_ROOT / "etc" / "pam.d" / "system-auth").read_text()
     assert "pam_faillock.so preauth" in auth

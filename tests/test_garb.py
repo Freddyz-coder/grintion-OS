@@ -152,14 +152,18 @@ def test_pacman_backend_translation(tmp_path: Path) -> None:
     root.mkdir()
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
-    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0 - libalpm v15.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$@" > "$GARB_FAKE_LOG"\n'
+    )
     fake.chmod(0o755)
     env = os.environ.copy()
     env["GARB_BACKEND_BIN"] = str(fake)
     env["GARB_FAKE_LOG"] = str(log)
     result = run(root, "install", "foo", backend="pacman", env=env)
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == ["--root", str(root), "-S", "--noconfirm", "--overwrite", "*", "foo"]
+    assert log.read_text().splitlines() == ["--root", str(root), "-S", "--noconfirm", "foo"]
 
 
 def test_apk_backend_translation(tmp_path: Path) -> None:
@@ -167,7 +171,11 @@ def test_apk_backend_translation(tmp_path: Path) -> None:
     root.mkdir()
     log = tmp_path / "apk.args"
     fake = tmp_path / "apk"
-    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "apk-tools 2.14.4"; exit 0; fi\n'
+        'printf \'%s\\n\' "$@" > "$GARB_FAKE_LOG"\n'
+    )
     fake.chmod(0o755)
     env = os.environ.copy()
     env["GARB_BACKEND_BIN"] = str(fake)
@@ -303,7 +311,11 @@ def test_pacman_backend_maps_installed_info(tmp_path: Path) -> None:
     root.mkdir()
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
-    fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GARB_FAKE_LOG\"\n")
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0 - libalpm v15.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$@" > "$GARB_FAKE_LOG"\n'
+    )
     fake.chmod(0o755)
     env = os.environ.copy()
     env["GARB_BACKEND_BIN"] = str(fake)
@@ -318,11 +330,122 @@ def test_pacman_backend_rejects_json_verify(tmp_path: Path) -> None:
     root.mkdir()
     env = os.environ.copy()
     env["GARB_BACKEND_BIN"] = str(tmp_path / "pacman")
-    (tmp_path / "pacman").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "pacman").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
+        "exit 0\n"
+    )
     (tmp_path / "pacman").chmod(0o755)
     result = run(root, "verify", "--format", "json", backend="pacman", env=env, check=False)
     assert result.returncode != 0
     assert "native-garb" in result.stderr
+
+
+def test_pacman_backend_rejects_unknown_major_version(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v99.0.0"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    result = run(root, "install", "foo", backend="pacman", env=env, check=False)
+    assert result.returncode != 0
+    assert "supported major versions" in result.stderr
+
+
+def test_pacman_backend_requires_parseable_version(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    fake = tmp_path / "pacman"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    result = run(root, "install", "foo", backend="pacman", env=env, check=False)
+    assert result.returncode != 0
+    assert "did not report a supported version" in result.stderr
+
+
+def test_pacman_backend_limits_overwrite_to_reported_conflicts(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$*" >> "$GARB_FAKE_LOG"\n'
+        'case " $* " in *" --overwrite "*) exit 0 ;; esac\n'
+        'echo "usr/lib/libfoo.so exists in filesystem"\n'
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "foo", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert len(calls) == 2
+    assert calls[0] == f"--root {root} -S --noconfirm foo"
+    assert "--overwrite /usr/lib/libfoo.so" in calls[1]
+    assert "--overwrite usr/lib/libfoo.so" in calls[1]
+    assert "--overwrite *" not in calls[0]
+    assert "--overwrite *" not in calls[1]
+
+
+def test_pacman_backend_parses_colon_conflict_format(tmp_path: Path) -> None:
+    # pacman 7 prints "path: exists in filesystem" while pacman 6 omits the
+    # colon. A parser that only accepts one form silently skips the retry.
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v6.1.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$*" >> "$GARB_FAKE_LOG"\n'
+        'case " $* " in *" --overwrite "*) exit 0 ;; esac\n'
+        'echo "libxdmcp: usr/lib/libfoo.so exists in filesystem"\n'
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "foo", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert len(calls) == 2
+    assert "--overwrite /usr/lib/libfoo.so" in calls[1]
+    assert "--overwrite usr/lib/libfoo.so" in calls[1]
+
+
+def test_pacman_backend_refuses_sensitive_conflict(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$*" >> "$GARB_FAKE_LOG"\n'
+        'echo "/etc/shadow exists in filesystem"\n'
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "foo", backend="pacman", env=env, check=False)
+    assert result.returncode != 0
+    assert "security-sensitive" in result.stderr
+    assert len(log.read_text().splitlines()) == 1
 
 
 def test_local_archive_rejects_external_backend(tmp_path: Path) -> None:

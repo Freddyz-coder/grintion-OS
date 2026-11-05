@@ -1,15 +1,16 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.8.3 and the
+This document records what was actually executed for Grintion-OS 0.8.4 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**Status: 0.8.3 console verified; graphical session unverified.** The 0.8.3 ISO
-was rebuilt on 2026-11-04 with the LightDM account fix and retested: `make
-check`, the framebuffer regression test, the BIOS and UEFI live boot tests and
-the BIOS install test passed. A rendered LightDM/XFCE session has not been
-captured yet; see the note below. The 0.8.2 and earlier results are historical.
-The last published 0.6.1 baseline commit was `18c6695`.
+**Status: 0.8.4 console and XFCE graphical session verified; KDE Plasma and the
+other graphical profiles unverified.** The 0.8.4 ISO was rebuilt on 2026-11-05
+and passed `./build/check.sh` (65 tests), the BIOS and UEFI live boot tests, the
+BIOS and UEFI install tests, and a graphical XFCE probe with keyboard and
+pointer input. KDE Plasma is Wayland-only in the current Arch package set and
+the image has no udev or logind; it was not rendered. The 0.8.3 and earlier
+results are historical. The last published 0.6.1 baseline commit was `18c6695`.
 
 ## Environment
 
@@ -24,6 +25,65 @@ The last published 0.6.1 baseline commit was `18c6695`.
 | Console | serial, `root@grintion-live` |
 | Kernel | `6.12.114-grintion` |
 | shellcheck | Not installed; static lint was skipped |
+
+## 0.8.4 results (2026-11-05)
+
+LightDM/Xorg desktop fixes, the first rendered graphical-session probe, and the
+final release rebuild.
+
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 132,268,032 bytes (127 MiB) |
+| SHA-256 | `f358b52596bd1b4aea144a281c341d23e3a76125b4027679652e569c62cbf127` |
+| Kernel | `6.12.114-grintion` |
+| Host | Arch Linux x86_64, 16 vCPU, 13 GiB RAM, KVM |
+| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
+| Guest RAM / vCPU | 2 GiB / 2 for boot and install |
+| Network | QEMU user networking, `e1000` |
+| `BUILD-INFO` commit | `6d041c8` (ISO built from the working tree before the release commit) |
+| shellcheck | Not installed; static lint was skipped |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `./build/check.sh` | Pass | 65 pytest cases plus shell syntax, Python compilation, executable bits, host inputs, documentation links and the home-path scan |
+| Live boot, BIOS | Pass | `FBCON_OK`, DHCP lease, supervised `network` service, firewall `ct state`, `sudo -n true`, `grintion-doctor` exit 0, and a plain `poweroff` exited QEMU |
+| Live boot, UEFI | Pass | Same assertions under OVMF |
+| Install test (BIOS) | Pass | ext4 root, UUID `/etc/fstab`, yescrypt password, `sudo` from `wheel`, DHCP, `INSTALLED` marker, reboot and login |
+| Install test (UEFI) | Pass | Same install and post-boot assertions under OVMF |
+| XFCE render | Pass | LightDM greeter and XFCE desktop at 1280x800; 106,737 and 1,023,950 non-black pixels respectively |
+| Keyboard and pointer | Pass | `xinput` showed `grintion-event1` (keyboard), `grintion-event2` and `grintion-event3` (pointers); an absolute QMP pointer event moved the cursor to 299,199 |
+| Session stress | Pass | CPU, RAM and file-descriptor stress; `garb install jq` and `garb remove jq`; a missing package returned 1 |
+| Kernel/PAM health | Pass | `TAINTED=0`, `OOM_COUNT=0`, `PANIC_COUNT=0`, `PAM_ERROR_COUNT=0` |
+| Xorg crash recovery | Partial | After `pkill -9 Xorg`, LightDM/Xorg restarted and the greeter returned; the autologin XFCE session did not resume by itself |
+| KDE Plasma | Not verified | The Arch Plasma 6.8 set is Wayland-only and the image has no udev or logind; no Plasma session was rendered |
+
+Desktop findings:
+
+- LightDM's packaged `/etc/lightdm/lightdm.conf` sets an uncommented
+  `session-wrapper` that overrode the Grintion drop-in, so the XFCE session
+  never received a D-Bus session bus. `grintion-desktop` now rewrites the main
+  file as well, and `Xsession-grintion` starts the session under
+  `dbus-run-session`.
+- The image has no udev, so Xorg started without input devices.
+  `grintion-xorg-input` now generates evdev `InputDevice` sections from
+  `/proc/bus/input/devices` with `AutoServerLayout`, and the display-manager
+  service runs it before starting Xorg. `xf86-input-evdev` is part of the X11
+  profiles.
+- Plasma 6.8 in the Arch package set no longer ships `startplasma-x11` or an
+  X11 session file. The KDE profile was corrected to a Wayland session under
+  SDDM; it is not claimed working.
+
+KDE is unverified because Plasma is Wayland-only while the image deliberately
+has no udev or logind, which Wayland input needs. GNOME, LXQt, Sway and i3 were
+not rendered in this pass.
+
+The XFCE probe and its screenshots are local test artifacts, not release
+assets. `output/BUILD-INFO` records the last source commit, not a commit that
+contains the uncommitted 0.8.4 tree; rebuilding after the release commit will
+change the ISO hash.
+
+---
 
 ## 0.8.3 results (rebuilt 2026-11-04)
 
@@ -251,6 +311,9 @@ The previous mount point failure was resolved by symlinking `/etc/mtab -> /proc/
 
 - Secure Boot, signature verification of the boot chain, or measured boot.
 - Disk encryption, LVM, or custom partitioning.
+- KDE Plasma, GNOME, LXQt, Sway and i3 rendered sessions; only XFCE was
+  rendered in 0.8.4.
+- udev-backed Wayland input; the image has no udev or logind.
 - Wi-Fi association and roaming.
 - ARM64 or non-x86_64 architectures.
 - Bare-metal hardware validation (tested in QEMU/KVM).

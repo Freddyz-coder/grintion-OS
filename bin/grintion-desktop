@@ -147,7 +147,7 @@ pkg_install() {
         # --needed pacman skipped those packages, their dependencies stayed
         # missing, and the package scriptlets failed while the desktop still
         # looked installed (ProblemsWhenInstalling.txt #9).
-        manager=(pacman "${root_flag[@]}" -Sy "${noconfirm[@]}" --overwrite '*' "${pkgs[@]}")
+        manager=(pacman "${root_flag[@]}" -Sy "${noconfirm[@]}")
     elif command -v garb >/dev/null 2>&1; then
         manager=(garb "${root_flag[@]}" install "${pkgs[@]}")
     else
@@ -167,20 +167,61 @@ pkg_install() {
     # pacman keeps completed downloads in its cache and a failed transaction
     # rolls back, so the second attempt only fetches what is missing.
     local rc=0 attempt
+    local overwrite=()
     for attempt in 1 2; do
         : > "$logfile"
         log "Installing packages (attempt $attempt/2): ${pkgs[*]}"
         set +e
-        "${manager[@]}" 2>&1 | tee -a "$logfile"
+        "${manager[@]}" "${overwrite[@]}" "${pkgs[@]}" 2>&1 | tee -a "$logfile"
         rc=${PIPESTATUS[0]}
         set -e
         if [ "$rc" -eq 0 ]; then
             break
         fi
-        if [ "$attempt" -eq 1 ]; then
-            warn "package installation failed (exit $rc); retrying once with the packages already downloaded"
-            sleep 5
+        if [ "$attempt" -ne 1 ]; then
+            break
         fi
+
+        # Never retry with a blanket overwrite. It would let an upstream
+        # package replace /etc/shadow, sudoers, SSH host keys or boot files.
+        # Retry only the exact paths pacman reported, and refuse the
+        # security-sensitive ones outright.
+        # /dev/fd is not present in the minimal live image, so do not use a
+        # process substitution here. pacman 7 prefixes each line with the
+        # package name ("libxdmcp: /usr/lib/..."), pacman 6 does not; take the
+        # token immediately before "exists in filesystem" in both forms.
+        local conflicts=() path normalized sensitive=""
+        local conflict_file
+        conflict_file=$(mktemp /tmp/grintion-conflicts.XXXXXX)
+        awk '/exists in filesystem/ {
+                 for (i = 1; i <= NF; i++) {
+                     if ($i == "exists" && $(i + 1) == "in") {
+                         p = $(i - 1); sub(/:$/, "", p); print p; break
+                     }
+                 }
+             }' "$logfile" | sort -u > "$conflict_file"
+        while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            normalized="/${path#/}"
+            case "$normalized" in
+                /etc/passwd|/etc/passwd-|/etc/shadow|/etc/shadow-|/etc/group|/etc/group-|/etc/gshadow|/etc/gshadow-|/etc/sudoers|/etc/sudoers.d/*|/etc/ssh/ssh_host_*|/boot/*|/usr/lib/modules/*)
+                    sensitive="$normalized"; break ;;
+            esac
+            conflicts+=("--overwrite" "$path")
+        done < "$conflict_file"
+        rm -f "$conflict_file"
+        [ -z "$sensitive" ] || die "refusing to overwrite security-sensitive path: $sensitive"
+
+        if [ ${#conflicts[@]} -gt 0 ]; then
+            if [ ${#conflicts[@]} -gt 2048 ]; then
+                die "package installation reported more than 1024 file conflicts; refusing a blanket overwrite"
+            fi
+            overwrite=("${conflicts[@]}")
+            warn "package installation failed (exit $rc); retrying with overwrite limited to $(( ${#conflicts[@]} / 2 )) reported conflict path(s)"
+            continue
+        fi
+        warn "package installation failed (exit $rc); retrying once with the packages already downloaded"
+        sleep 5
     done
     [ "$rc" -eq 0 ] || die "package installation failed (exit $rc); full log: $logfile"
 
@@ -221,7 +262,7 @@ ensure_service_account() {
         # a /etc/shadow entry. useradd then refuses with "user already exists"
         # and PAM has no credentials to establish for the account.
         if ! getent shadow "$user" >/dev/null 2>&1; then
-            printf '%s:!:::::::\n' "$user" >> "$TARGET_ROOT/etc/shadow"
+            printf '%s:!:19000:0:99999:7:::\n' "$user" >> "$TARGET_ROOT/etc/shadow"
             chmod 0600 "$TARGET_ROOT/etc/shadow"
         fi
         return 0
@@ -229,6 +270,46 @@ ensure_service_account() {
     [ -x "$shell" ] || shell=/bin/false
     groupadd -r "$user" 2>/dev/null || true
     useradd -r -g "$user" -d "$home" -s "$shell" "$user" 2>/dev/null || true
+}
+
+# LightDM's packaged greeter PAM stack uses pam_unix for session credentials.
+# The greeter runs as the locked lightdm service account, so pam_setcred aborts
+# before the greeter can draw ("Failed to establish PAM credentials"). The
+# greeter is intentionally unauthenticated; replace only its session stack.
+fix_lightdm_greeter_pam() {
+    local pam="$TARGET_ROOT/etc/pam.d/lightdm-greeter"
+    local conf_dir="$TARGET_ROOT/etc/lightdm/lightdm.conf.d"
+    [ -d "$TARGET_ROOT/etc/pam.d" ] || return 0
+    cat > "$pam" <<'EOF'
+#%PAM-1.0
+# Grintion-OS greeter stack: the greeter runs as the locked lightdm service
+# account and is intentionally unauthenticated. pam_unix session credential
+# setup aborts for that account, so use pam_permit for the greeter session.
+auth required pam_permit.so
+account required pam_permit.so
+password required pam_deny.so
+session required pam_permit.so
+EOF
+    chmod 0644 "$pam"
+
+    # LightDM's compiled default greeter session is "default", but Arch's
+    # lightdm-gtk-greeter package installs "lightdm-gtk-greeter.desktop".
+    # Without this explicit drop-in LightDM exits before drawing anything.
+    # logind is absent here, so do not make the seat depend on its graphical
+    # seat list either; logind-check-graphical is a [LightDM] option.
+    mkdir -p "$conf_dir"
+    cat > "$conf_dir/50-grintion.conf" <<'EOF'
+[LightDM]
+logind-check-graphical=false
+
+[Seat:*]
+greeter-session=lightdm-gtk-greeter
+session-wrapper=/etc/lightdm/Xsession-grintion
+EOF
+    chmod 0644 "$conf_dir/50-grintion.conf"
+    if [ ! -x "$TARGET_ROOT/etc/lightdm/Xsession-grintion" ]; then
+        warn "missing session wrapper: $TARGET_ROOT/etc/lightdm/Xsession-grintion"
+    fi
 }
 
 # dbus-daemon drops privileges to the <user> in system.conf. Arch names it
@@ -276,10 +357,17 @@ enable_dm_service() {
     # user on the host would be wrong (F4 review note).
     if [ "$dm" = "/usr/bin/lightdm" ] && [ "$TARGET_ROOT" = "/" ]; then
         ensure_service_account lightdm /var/lib/lightdm
+        fix_lightdm_greeter_pam
         mkdir -p "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm"
         chown -R lightdm:lightdm "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm" 2>/dev/null || true
         if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then
             sed -i 's/^#\?greeter-session=.*/greeter-session=lightdm-gtk-greeter/' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+            # Arch ships session-wrapper=/etc/lightdm/Xsession uncommented, and
+            # lightdm.conf is loaded after lightdm.conf.d/, so the package value
+            # overrides the drop-in. Without this rewrite the D-Bus session
+            # wrapper never runs and XFCE shows "Unable to contact settings
+            # server" with no window manager or panel.
+            sed -i 's|^#\?session-wrapper=.*|session-wrapper=/etc/lightdm/Xsession-grintion|' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
         fi
     fi
 

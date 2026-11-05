@@ -6,20 +6,25 @@ Grintion-OS is designed with a clean separation of concerns:
 
 ---
 
-## Verification status (0.8.3)
+## Verification status (0.8.4)
 
-What is verified: `grintion-desktop install <profile>` completes, the desktop
-packages and display manager are present, the D-Bus system bus and service
-accounts are created, and `/var/service/display-manager` is enabled. The
-console and framebuffer are covered by `make test-display` and the boot tests.
+Verified: `grintion-desktop install xfce` completes, LightDM starts, and an XFCE
+session renders under Xorg in QEMU/KVM. The probe captured a non-black greeter
+and desktop at 1280x800 (106,737 and 1,023,950 non-black pixels), `xinput`
+listed the `grintion-event*` keyboard and pointer devices, and an injected
+absolute pointer event moved the cursor. CPU/RAM/file-descriptor stress,
+`garb install jq`/`remove jq` and the missing-package error path also passed;
+there were no kernel taints, OOM kills, panics or PAM failures. After Xorg was
+killed, LightDM and Xorg restarted and the greeter returned. The autologin
+session did not resume by itself.
 
-What is **not** verified: a rendered graphical greeter or desktop session. The
-last full XFCE install reached LightDM, but the greeter exited before drawing
-with `Failed to establish PAM credentials: Critical error - immediate abort`
-in `/var/log/lightdm/seat0-greeter.log`. 0.8.3 fixes a missing `lightdm`
-shadow entry that can cause that abort, but no post-fix graphical screenshot
-has been captured. Treat the profiles below as installation recipes, not as
-proof of a working session.
+KDE Plasma is **not verified**. The Arch Plasma 6.8 package set is Wayland-only
+(`plasma-workspace` ships `startplasma-wayland` and `plasma.desktop`; there is
+no `startplasma-x11` or X11 session file), and the image has no udev or logind,
+which Wayland input needs. The KDE profile installs packages and points SDDM at
+the Wayland session, but no Plasma session or input was rendered or tested.
+GNOME, LXQt, Sway and i3 are also unverified. Treat those profiles as
+installation recipes, not as proof of a working session.
 
 If the greeter does not appear:
 
@@ -104,8 +109,9 @@ provisioning tools. `uninstall <name>` removes the profile's packages, the
 `/var/service/display-manager` link and `/etc/grintion/display-manager`;
 `--root <path>` operates on a mounted target instead of the running system.
 
-Wayland-only profiles (Sway) leave `DM` and `XINITRC` empty and are started with
-`sway`; `grintion-desktop` never writes `exec sway` into `.xinitrc`.
+Wayland-only profiles leave `XINITRC` empty. Sway also leaves `DM` empty and is
+started with `sway`; KDE keeps SDDM, which starts the Wayland session.
+`grintion-desktop` never writes `exec sway` into `.xinitrc`.
 
 ### GPU driver matrix
 
@@ -136,10 +142,11 @@ default	xf86-video-vesa xf86-video-fbdev
 - **Packages:** `gnome`, `gnome-terminal`, `nautilus`, `gdm`
 
 ### KDE Plasma (`kde` / `plasma`)
-- **Display Server:** Wayland / X11
+- **Display Server:** Wayland (the 6.8 Arch package set no longer ships an X11 session)
 - **Default Display Manager:** SDDM
 - **Characteristics:** Highly customizable, modern Qt design, widget system, powerful settings.
 - **Packages:** `plasma-meta`, `konsole`, `dolphin`, `sddm`
+- **Verification:** not verified in 0.8.4; see the status above.
 
 ### LXQt (`lxqt`)
 - **Display Server:** X11

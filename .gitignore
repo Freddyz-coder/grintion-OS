@@ -19,6 +19,7 @@ tools/bin/bc
 # Internal planning documents (not part of the public source tree)
 featureAdding.md
 handoff.md
+NEXT-AI-PROMPT.md
 
 ProblemsWhenInstalling.txt
 SecurityProblems.txt

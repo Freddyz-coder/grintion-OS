@@ -7,16 +7,16 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.8.3
+- **Version:** 0.8.4
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
   configuration fragment
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
-- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers install with `grintion-desktop` or `garb`; a rendered graphical session is not yet verified in 0.8.3
+- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers install with `grintion-desktop` or `garb`; XFCE is verified in QEMU/KVM with keyboard and mouse input, while KDE Plasma and the other profiles remain unverified
 
-Grintion-OS 0.8.3 is built from this tree. There is no hosted binary
+Grintion-OS 0.8.4 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -29,7 +29,7 @@ artifacts are not signed.
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
 | Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
-| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. Package installation and display-manager wiring are verified; a rendered graphical session is not yet verified. |
+| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. Package installation and display-manager wiring are verified. XFCE (LightDM + Xorg) was rendered with working keyboard and pointer input in QEMU/KVM; KDE Plasma and the other profiles remain unverified. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
@@ -111,8 +111,9 @@ Signing, the on-disk format, the threat model and delegation details are in
 Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Desktop environments and GPU drivers can be installed and configured:
 
 > **Verification status:** package transactions, D-Bus accounts and the
-> display-manager service are verified. A rendered graphical greeter or desktop
-> is **not** verified in 0.8.3; see [docs/VERIFICATION.md](docs/VERIFICATION.md).
+> display-manager service are verified. XFCE (LightDM + Xorg) was rendered in
+> QEMU/KVM with working keyboard and mouse input. KDE Plasma and the other
+> profiles remain unverified; see [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ### Pre-installing with the installer
 
@@ -179,13 +180,13 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.8.3 |
+| Feature | 0.8.4 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
 | Secure Boot | No; Limine is unsigned and there is no shim |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | Packages and display-manager wiring supported; a rendered graphical session is not yet verified in 0.8.3 |
+| Graphical desktop | XFCE verified in QEMU/KVM (LightDM/Xorg, keyboard and mouse); KDE Plasma and other profiles unverified |
 | Wi-Fi | `grintion-network` writes the `[wifi]` config and enables the supervised `wpa_supplicant` service |
 | Disk encryption | Not provided by the installer |
 | Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |
@@ -217,7 +218,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.8.3 has no Secure
+sensitive. The short version: the design is defensive, but 0.8.4 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 

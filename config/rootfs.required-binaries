@@ -231,6 +231,11 @@ gpg-agent
 gpgconf
 dirmngr
 
+# Graphical session bus (no logind/systemd user manager in this image)
+dbus-daemon
+dbus-launch
+dbus-run-session
+
 # Live tooling
 python3
 fastfetch

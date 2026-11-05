@@ -2,7 +2,7 @@
 
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.8.3 release actually provides, what it does not, and how to report a problem.
+0.8.4 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 

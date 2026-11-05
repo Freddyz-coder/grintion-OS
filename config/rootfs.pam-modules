@@ -9,6 +9,7 @@ pam_securetty.so
 pam_deny.so
 pam_permit.so
 pam_nologin.so
+pam_shells.so
 pam_mail.so
 pam_faillock.so
 pam_wheel.so

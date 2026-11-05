@@ -30,8 +30,12 @@ def test_every_profile_has_required_fields() -> None:
         assert values["PACKAGES"], path
         assert values["DISPLAY_SERVER"] in {"x11", "wayland", "wayland/x11"}, path
         if values["DISPLAY_SERVER"] == "wayland":
-            assert values["DM_BIN"] == "", path
+            # KDE keeps SDDM but has no X11 session to start; Sway has no DM.
             assert values["XINITRC"] == "", path
+        if values["NAME"] == "sway":
+            assert values["DM_BIN"] == "", path
+        if values["NAME"] == "kde":
+            assert "startplasma-x11" not in values["XINITRC"]
 
 
 def test_list_json_reports_profiles() -> None:
@@ -53,3 +57,5 @@ def test_list_json_reports_profiles() -> None:
     assert by_name["xfce"]["display_manager"] == "lightdm lightdm-gtk-greeter"
     assert by_name["sway"]["display_server"] == "wayland"
     assert by_name["sway"]["xinitrc"] == ""
+    assert by_name["kde"]["display_server"] == "wayland"
+    assert by_name["kde"]["xinitrc"] == ""

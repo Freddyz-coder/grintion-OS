@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.8.3 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.8.4 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution and transactional installs. It does **not** build
 from source, run maintainer scripts, or deliver delta updates.
 
@@ -324,5 +324,10 @@ the transaction commits.
 - No automatic updates or background service.
 - No hosted repository. `make packages` creates a local unsigned demo
   repository; signing and hosting are operator responsibilities.
+- Delegated pacman transactions inherit pacman's own prompts. `garb` passes
+  `--noconfirm`, but a provider replacement or file-conflict question can still
+  abort a desktop install when Arch changes package relationships. This was
+  observed during the 0.8.4 desktop probe and recovered by re-running the
+  transaction; `garb` did not change pacman's resolution behaviour.
 - Repository metadata is trusted for package names and dependencies; a
   compromised signing key compromises every client that trusts it.

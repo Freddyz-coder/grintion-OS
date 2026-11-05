@@ -15,11 +15,53 @@ report() {
     FAILED=1
 }
 
+secure_boot_state() {
+    if [ ! -d /sys/firmware/efi ]; then
+        printf 'not-applicable\n'
+        return 0
+    fi
+    local var value
+    for var in /sys/firmware/efi/efivars/SecureBoot-*; do
+        [ -f "$var" ] || continue
+        value=$(od -An -t u1 -j 4 -N 1 "$var" 2>/dev/null | tr -d ' \n')
+        case "$value" in
+            1) printf 'enabled\n' ;;
+            0) printf 'disabled\n' ;;
+            *) printf 'unknown\n' ;;
+        esac
+        return 0
+    done
+    printf 'unknown\n'
+}
+
 if [ ! -f /etc/grintion/version ]; then
     report "/etc/grintion/version is missing"
 else
     printf '[ ok ] Grintion-OS %s\n' "$(cat /etc/grintion/version)"
 fi
+
+# The live image used to boot with lo DOWN, which broke D-Bus, X11 and local
+# package repositories. Keep the check visible so a regression is explicit.
+if command -v ip >/dev/null 2>&1; then
+    if ! ip -o link show lo 2>/dev/null | grep -q 'LOOPBACK,UP'; then
+        report "loopback interface is down"
+    fi
+fi
+
+# There is no signed Grintion boot chain. Report the firmware state instead of
+# implying verified boot support that the image does not provide.
+SB_STATE=$(secure_boot_state)
+case "$SB_STATE" in
+    enabled)
+        printf '[WARN] Secure Boot is enabled; Grintion-OS has no signed boot chain and does not support Secure Boot\n' >&2
+        ;;
+    disabled|not-applicable)
+        printf '[ ok ] Secure Boot: %s\n' "$SB_STATE"
+        ;;
+    *)
+        printf '[WARN] Secure Boot state is unknown; the image does not provide a signed boot chain\n' >&2
+        ;;
+esac
 
 # sudo loads its policy plugin with dlopen; a missing plugin is fatal even
 # though the sudo binary and its shared libraries are present.

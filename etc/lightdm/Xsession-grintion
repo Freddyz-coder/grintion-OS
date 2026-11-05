@@ -1,0 +1,9 @@
+#!/bin/sh
+# Grintion-OS session wrapper.
+#
+# LightDM normally relies on logind/systemd to provide a per-user session bus.
+# This image has neither, so start one explicitly and then run the normal
+# LightDM Xsession wrapper. Without this, XFCE starts but xfconfd cannot connect
+# and the desktop shows "Unable to contact settings server".
+set -e
+exec dbus-run-session -- /etc/lightdm/Xsession "$@"

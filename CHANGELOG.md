@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.4] - 2026-11-05
+
+Desktop verification pass. XFCE now renders with working keyboard and pointer
+input in QEMU/KVM; KDE Plasma is explicitly unverified.
+
+### Fixed
+
+- **LightDM ignored its session wrapper:** Arch's uncommented `session-wrapper`
+  in `/etc/lightdm/lightdm.conf` overrode the Grintion drop-in, so the XFCE
+  session never received a D-Bus session bus. `grintion-desktop` now rewrites
+  the main file as well, moves `logind-check-graphical` to `[LightDM]`, and
+  `Xsession-grintion` starts the session under `dbus-run-session`.
+- **Xorg started without input devices:** the image has no udev, so Xorg did
+  not discover the keyboard or pointer. `grintion-xorg-input` now generates
+  evdev `InputDevice` sections from `/proc/bus/input/devices` with
+  `AutoServerLayout`; the display-manager service runs it before Xorg and
+  `xf86-input-evdev` is part of the X11 profiles.
+- **The LightDM greeter used `pam_unix` session credentials for a locked
+  service account:** the greeter now has a permit-only PAM stack, matching its
+  unauthenticated role.
+- **The KDE profile referenced a removed binary:** Plasma 6.8 is Wayland-only
+  and no longer ships `startplasma-x11`. The profile leaves `XINITRC` empty and
+  points SDDM at the Wayland session instead of writing an X11 `.xinitrc`.
+
+### Changed
+
+- `README.md`, `docs/DESKTOP-GUI.md`, `docs/INSTALL.md` and
+  `docs/VERIFICATION.md` now state that XFCE is verified and that KDE Plasma,
+  GNOME, LXQt, Sway and i3 are not. `docs/PACKAGE-MANAGER.md` documents the
+  remaining pacman provider/replacement prompt fragility.
+
+### Tests
+
+- 65 pytest cases (up from 64), including the KDE Wayland profile contract.
+- A QEMU XFCE probe rendered the LightDM greeter and desktop, verified the
+  `grintion-event*` keyboard and pointer devices, moved the cursor with an
+  absolute QMP event, stressed CPU/RAM/file descriptors, and exercised
+  `garb install jq`/`remove jq`. It recorded no kernel taints, OOM kills,
+  panics or PAM failures. Killing Xorg returned to the LightDM greeter; the
+  autologin session did not resume.
+- BIOS and UEFI live boot and BIOS and UEFI install tests passed on the final
+  ISO.
+
+### Known limitations
+
+- KDE Plasma is **not verified**. The current Arch Plasma set is Wayland-only
+  and the image has no udev or logind, which Wayland input needs. GNOME, LXQt,
+  Sway and i3 are also unverified.
+- Xorg crash recovery returns to the greeter, not to the running user session.
+- Secure Boot, LUKS, signature verification of the boot chain and bare-metal
+  validation remain absent.
+
+### Release
+
+- The 0.8.4 ISO is 132,268,032 bytes (127 MiB) with SHA-256
+  `f358b52596bd1b4aea144a281c341d23e3a76125b4027679652e569c62cbf127`. It was
+  built from the working tree before the release commit, so `output/BUILD-INFO`
+  records `git_commit=6d041c8`. The image exceeds the 100 MB git-file limit and
+  is not committed; publish it as a Release asset if needed.
+
+---
+
 ## [0.8.3] - 2026-11-03
 
 Security and reliability pass over `SecurityProblems.txt`, plus the live-display

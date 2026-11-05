@@ -1,0 +1,10 @@
+#%PAM-1.0
+# Grintion-OS greeter stack: the greeter runs as the locked lightdm service
+# account and is intentionally unauthenticated. LightDM calls pam_setcred
+# without pam_authenticate for this service, so every module here must handle
+# setcred. pam_env and pam_limits do not, and make the call abort with
+# PAM_ABORT ("Critical error - immediate abort").
+auth required pam_permit.so
+account required pam_permit.so
+password required pam_deny.so
+session required pam_permit.so

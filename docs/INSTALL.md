@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.8.3 installs from the live ISO to a single disk. The installer
+Grintion-OS 0.8.4 installs from the live ISO to a single disk. The installer
 repartitions the **entire** target disk: a 512 MiB EFI system partition and an
 ext4 root partition. There is no dual-boot or custom-partition mode in this
 release.
@@ -25,8 +25,8 @@ the Limine bootloader is not signed and there is no shim.
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.8.3 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.8.3 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.8.4 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.8.4 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -134,7 +134,7 @@ and cache; use `pacman -Q` / `pacman -Sc` for pacman-installed packages.
 
 ## Graphical Desktop Environments
 
-Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console; a rendered graphical session is not yet verified in 0.8.3 (see [VERIFICATION.md](VERIFICATION.md)).
+Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console. XFCE is verified in QEMU/KVM with keyboard and mouse input; KDE Plasma and the other profiles remain unverified in 0.8.4 (see [VERIFICATION.md](VERIFICATION.md)).
 
 ### Pre-installing during disk installation
 

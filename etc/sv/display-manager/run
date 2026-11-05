@@ -22,6 +22,13 @@ if [ ! -S /run/dbus/system_bus_socket ]; then
     echo "display-manager: no D-Bus system bus; enable it with 'ln -sfn /etc/sv/dbus /var/service/dbus'"
 fi
 
+# This image has no udev, so libinput cannot enumerate input devices and Xorg
+# starts with only the virtual XTEST pointer. Describe the kernel's event
+# devices explicitly so the real keyboard and mouse work.
+if [ -x /usr/bin/grintion-xorg-input ]; then
+    /usr/bin/grintion-xorg-input
+fi
+
 # grintion-desktop records the chosen display manager here.
 if [ -r /etc/grintion/display-manager ]; then
     configured="/usr/bin/$(cat /etc/grintion/display-manager)"
