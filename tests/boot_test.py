@@ -20,17 +20,23 @@ OVMF_VARS = "/usr/share/edk2/x64/OVMF_VARS.4m.fd"
 VARS_COPY = "/tmp/grintion-boot-ovmf-vars.fd"
 
 
-def boot(iso: str, uefi: bool, timeout: int) -> None:
+def boot(
+    iso: str,
+    uefi: bool,
+    timeout: int,
+    nic: str = "e1000",
+    machine: str = "pc",
+) -> None:
     args = [
         "-accel", "kvm", "-cpu", "host",
         "-m", "2048", "-smp", "2",
         "-display", "none", "-serial", "stdio", "-monitor", "none",
         "-no-reboot", "-cdrom", iso, "-boot", "d",
-        "-nic", "user,model=e1000",
+        "-machine", "q35" if uefi else machine,
+        "-nic", f"user,model={nic}",
     ]
     if uefi:
         args += [
-            "-machine", "q35",
             "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
             "-drive", f"if=pflash,format=raw,file={VARS_COPY}",
         ]
@@ -108,6 +114,8 @@ def main() -> int:
     parser.add_argument("--iso", default="output/grintion-os-x86_64.iso")
     parser.add_argument("--uefi", action="store_true", help="boot with OVMF instead of SeaBIOS")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--nic", default="e1000", help="QEMU NIC model, e.g. e1000, virtio-net-pci, rtl8139, pcnet")
+    parser.add_argument("--machine", default="pc", help="QEMU machine type (use q35 for e1000e)")
     args = parser.parse_args()
 
     if not os.path.exists(args.iso):
@@ -120,8 +128,8 @@ def main() -> int:
                 return 2
         shutil.copyfile(OVMF_VARS, VARS_COPY)
 
-    boot(args.iso, args.uefi, args.timeout)
-    print(f"[+] {'UEFI' if args.uefi else 'BIOS'} live boot passed")
+    boot(args.iso, args.uefi, args.timeout, args.nic, args.machine)
+    print(f"[+] {'UEFI' if args.uefi else 'BIOS'} live boot passed with {args.nic} ({args.machine})")
     return 0
 
 

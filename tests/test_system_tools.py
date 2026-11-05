@@ -333,6 +333,24 @@ def test_desktop_never_uses_a_blanket_overwrite() -> None:
     assert "< <(" not in script
 
 
+def test_desktop_profiles_install_and_start_pipewire() -> None:
+    hook = REPO_ROOT / "etc" / "X11" / "xinit" / "xinitrc.d" / "20-grintion-audio.sh"
+    assert hook.is_file()
+    assert os.access(hook, os.X_OK)
+    text = hook.read_text()
+    for daemon in ("pipewire", "wireplumber", "pipewire-pulse"):
+        assert daemon in text
+    assert "XDG_RUNTIME_DIR" in text
+
+    wrapper = (REPO_ROOT / "etc" / "lightdm" / "Xsession-grintion").read_text()
+    assert "XDG_RUNTIME_DIR" in wrapper
+
+    for profile in (REPO_ROOT / "etc" / "grintion" / "desktops.d").glob("*.conf"):
+        values = profile.read_text()
+        for package in ("pipewire", "wireplumber", "alsa-ucm-conf"):
+            assert package in values, f"{profile.name} is missing {package}"
+
+
 def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
@@ -419,6 +437,11 @@ def test_kernel_contract_covers_framebuffer_and_module_signing() -> None:
         "CONFIG_MODULE_SIG_ALL=y",
         "CONFIG_MODULE_SIG_FORCE=y",
         "CONFIG_BINFMT_MISC=n",
+        "CONFIG_SND_HDA_INTEL=y",
+        "CONFIG_SND_HDA_CODEC_REALTEK=y",
+        "CONFIG_SND_USB_AUDIO=y",
+        "CONFIG_8139TOO=y",
+        "CONFIG_PCNET32=y",
     ):
         assert line in fragment
 

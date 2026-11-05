@@ -6,4 +6,14 @@
 # LightDM Xsession wrapper. Without this, XFCE starts but xfconfd cannot connect
 # and the desktop shows "Unable to contact settings server".
 set -e
+
+# No logind/systemd user manager creates a runtime directory for the session.
+# PipeWire, WirePlumber and dbus-launch all expect a private XDG_RUNTIME_DIR.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    XDG_RUNTIME_DIR="/tmp/grintion-runtime-$(id -u)"
+    export XDG_RUNTIME_DIR
+fi
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
 exec dbus-run-session -- /etc/lightdm/Xsession "$@"
