@@ -1,30 +1,81 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.8.4 and the
+This document records what was actually executed for Grintion-OS 0.9.0 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**Status: 0.8.4 console and XFCE graphical session verified; KDE Plasma and the
-other graphical profiles unverified.** The 0.8.4 ISO was rebuilt on 2026-11-05
-and passed `./build/check.sh` (65 tests), the BIOS and UEFI live boot tests, the
-BIOS and UEFI install tests, and a graphical XFCE probe with keyboard and
-pointer input. KDE Plasma is Wayland-only in the current Arch package set and
-the image has no udev or logind; it was not rendered. The 0.8.3 and earlier
-results are historical. The last published 0.6.1 baseline commit was `18c6695`.
+**Status: 0.9.0 console, XFCE, i3, desktop audio and five virtual NIC models
+verified; KDE Plasma and the other Wayland profiles unverified.** The 0.9.0 ISO
+was built on 2026-11-06 and passed `./build/check.sh` (66 tests), i3 and XFCE
+probes with rendered sessions and end-to-end PipeWire audio, and the five-NIC
+matrix. KDE Plasma is Wayland-only in the current Arch package set and the
+image has no udev or logind; it was not rendered. UEFI boot, the installer,
+GNOME, LXQt, Sway and physical hardware were not rerun for this release. The
+0.8.4 and earlier results are historical. The last published 0.6.1 baseline
+commit was `18c6695`.
 
 ## Environment
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-10-31 |
+| Date | 2026-11-06 |
 | Host | Arch Linux x86_64, 16 vCPU, 13 GiB RAM |
 | Virtualisation | QEMU with `-accel kvm -cpu host` |
-| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
-| Guest RAM / vCPU | 2 GiB / 2 |
-| Network | QEMU user networking, `e1000` |
+| Firmware | SeaBIOS; OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` is available but UEFI was not rerun for 0.9.0 |
+| Guest RAM / vCPU | 4 GiB / 4 for the desktop probes; 2 GiB / 2 for the boot and network tests |
+| Network | QEMU user networking; `e1000` for the desktop probes, plus the five-NIC matrix |
 | Console | serial, `root@grintion-live` |
 | Kernel | `6.12.114-grintion` |
 | shellcheck | Not installed; static lint was skipped |
+
+## 0.9.0 results (2026-11-06)
+
+Audio support, a verified i3 session and the five-NIC matrix, on the release
+rebuild.
+
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 133,113,856 bytes (127 MiB) |
+| SHA-256 | `b46f6851a56cf866da0780417053c47ab9b5b2f59b7d70cab93a4bb85bca737d` |
+| Kernel | `6.12.114-grintion` |
+| Host | Arch Linux x86_64, 16 vCPU, 13 GiB RAM, KVM |
+| Firmware | SeaBIOS. UEFI was not rerun for this release. |
+| Guest RAM / vCPU | 4 GiB / 4 for the desktop probes; 2 GiB / 2 for the network matrix |
+| Network | QEMU user networking |
+| `BUILD-INFO` commit | `4910c66` (ISO built from the working tree before the release commit) |
+| shellcheck | Not installed; static lint was skipped |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `./build/check.sh` | Pass | 66 pytest cases plus shell syntax, Python compilation, executable bits, host inputs, documentation links and the home-path scan |
+| i3 probe | Pass | Xorg, `i3` and `i3bar` running after LightDM autologin; 1280x800 frame with 999,348 non-black pixels |
+| XFCE probe | Pass | `xfce4-session`, `xfwm4` and `xfce4-panel` running; 1280x800 frame with 1,023,950 non-black pixels |
+| HDA sound card | Pass | `/proc/asound/cards` shows `HDA Intel`; `aplay -l` shows `Generic Analog`; PipeWire 1.6.10 with `pipewire-alsa`, `pipewire-pulse` and WirePlumber 0.5.18 |
+| Default sink | Pass | `wpctl status` and `pactl` show `HDA Intel Analog` (`alsa_output.hw0`) selected |
+| Native PipeWire playback | Pass | `pw-play` of a stereo 48 kHz 440 Hz tone returned 0 on both sessions |
+| Direct ALSA playback | Pass | `aplay -D plughw:0,0` returned 0 on both sessions |
+| QEMU audio capture | Pass | WAV peak 11999 (the generated amplitude) on i3 (87,055 frames) and XFCE (87,106 frames) |
+| Kernel health | Pass | `TAINTED=0`, `OOM_COUNT=0`, `PANIC_COUNT=0` on both probes |
+| Network matrix | Pass | e1000/pc, e1000e/q35, virtio-net-pci/pc, rtl8139/pc and pcnet/pc; all bound a driver, acquired DHCP `10.0.2.15` and passed the live-session, firewall and `grintion-doctor` checks (`NETWORK_RC=0`) |
+| KDE Plasma, GNOME, LXQt, Sway | Not verified | No udev/logind; Plasma is Wayland-only |
+| UEFI boot and installer | Not repeated | The 0.9.0 source changes are desktop audio, i3, NIC configuration and the version bump; BIOS live boot is covered by the matrix |
+
+Findings:
+
+- The QEMU probe originally used `hda-duplex` with `-audiodev wav`; the WAV
+  backend is playback-only, so QEMU logged `Can not open 'adc'` and the guest's
+  playback path was unusable. The probe and `docs/VM-GUEST.md` now use
+  `hda-output` for capture.
+- The static sink moved from `hw:0,0` to `plughw:0,0`. Raw `hw` access left
+  PipeWire playback and `aplay` hung; the plug layer delivers samples and
+  completes direct ALSA playback.
+- `aplay -D pipewire` still does not return on PipeWire 1.6.10 after the file
+  has played. This is the upstream ALSA-plugin drain lockup fixed in 1.6.11
+  ("Avoid going into XRUN when draining", issue #5544); 1.6.10 is the current
+  Arch stable version and 1.6.11 was in `extra-testing` at release time. The
+  release probe therefore uses `pw-play` for PipeWire playback and
+  `aplay -D plughw:0,0` for direct ALSA.
 
 ## 0.8.4 results (2026-11-05)
 
@@ -311,9 +362,11 @@ The previous mount point failure was resolved by symlinking `/etc/mtab -> /proc/
 
 - Secure Boot, signature verification of the boot chain, or measured boot.
 - Disk encryption, LVM, or custom partitioning.
-- KDE Plasma, GNOME, LXQt, Sway and i3 rendered sessions; only XFCE was
-  rendered in 0.8.4.
+- KDE Plasma, GNOME, LXQt and Sway rendered sessions; XFCE and i3 were
+  rendered in 0.9.0.
 - udev-backed Wayland input; the image has no udev or logind.
+- UEFI boot and the installer on the 0.9.0 ISO; both were last exercised on
+  the 0.8.4 ISO in this document.
 - Wi-Fi association and roaming.
 - ARM64 or non-x86_64 architectures.
 - Bare-metal hardware validation (tested in QEMU/KVM).

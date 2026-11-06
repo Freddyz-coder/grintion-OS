@@ -6,25 +6,36 @@ Grintion-OS is designed with a clean separation of concerns:
 
 ---
 
-## Verification status (0.8.4)
+## Verification status (0.9.0)
 
-Verified: `grintion-desktop install xfce` completes, LightDM starts, and an XFCE
-session renders under Xorg in QEMU/KVM. The probe captured a non-black greeter
-and desktop at 1280x800 (106,737 and 1,023,950 non-black pixels), `xinput`
-listed the `grintion-event*` keyboard and pointer devices, and an injected
-absolute pointer event moved the cursor. CPU/RAM/file-descriptor stress,
-`garb install jq`/`remove jq` and the missing-package error path also passed;
-there were no kernel taints, OOM kills, panics or PAM failures. After Xorg was
-killed, LightDM and Xorg restarted and the greeter returned. The autologin
-session did not resume by itself.
+Verified: `grintion-desktop install xfce` and `... install i3` complete,
+LightDM starts, and both sessions render under Xorg in QEMU/KVM. The probes
+captured non-black desktops at 1280x800 (1,023,950 non-black pixels for XFCE,
+999,348 for i3), with `xfce4-session`/`xfwm4`/`xfce4-panel` and
+`i3`/`i3bar` running. i3 no longer shows its first-run configuration wizard.
+
+Audio is verified end-to-end on both sessions. The kernel provides HDA, the
+HDA codec parsers and USB audio built in; the profile installs PipeWire,
+WirePlumber, `pipewire-pulse` and ALSA tools; the session hook starts them and
+unmutes card 0. Because the image has no udev, a static `plughw:0,0` sink is
+declared in `/etc/pipewire/pipewire.conf.d/50-grintion-alsa.conf`. A stereo
+48 kHz 440 Hz tone played with `pw-play` (native PipeWire) and with
+`aplay -D plughw:0,0` (direct ALSA), and QEMU's WAV backend captured the tone
+(peak 11999 on both probes) with no kernel taints, OOM kills or panics.
+
+Known upstream issue: PipeWire 1.6.10 (the Arch stable version at release) has
+a drain lockup in its ALSA plugin, fixed in 1.6.11. `aplay -D pipewire` can
+therefore play the file and then fail to exit on 1.6.10; use `pw-play` or
+direct `plughw` playback, or upgrade to PipeWire 1.6.11 when it reaches the
+stable repositories.
 
 KDE Plasma is **not verified**. The Arch Plasma 6.8 package set is Wayland-only
 (`plasma-workspace` ships `startplasma-wayland` and `plasma.desktop`; there is
 no `startplasma-x11` or X11 session file), and the image has no udev or logind,
 which Wayland input needs. The KDE profile installs packages and points SDDM at
 the Wayland session, but no Plasma session or input was rendered or tested.
-GNOME, LXQt, Sway and i3 are also unverified. Treat those profiles as
-installation recipes, not as proof of a working session.
+GNOME, LXQt and Sway are also unverified. Treat those profiles as installation
+recipes, not as proof of a working session.
 
 If the greeter does not appear:
 
@@ -134,6 +145,7 @@ default	xf86-video-vesa xf86-video-fbdev
 - **Default Display Manager:** LightDM
 - **Characteristics:** Fast, lightweight, mature, low memory footprint.
 - **Packages:** `xfce4`, `xfce4-goodies`, `pavucontrol`, `lightdm`, `lightdm-gtk-greeter`
+- **Verification:** rendered with working audio in 0.9.0; see the status above.
 
 ### GNOME (`gnome`)
 - **Display Server:** Wayland (with X11 fallback)
@@ -146,7 +158,7 @@ default	xf86-video-vesa xf86-video-fbdev
 - **Default Display Manager:** SDDM
 - **Characteristics:** Highly customizable, modern Qt design, widget system, powerful settings.
 - **Packages:** `plasma-meta`, `konsole`, `dolphin`, `sddm`
-- **Verification:** not verified in 0.8.4; see the status above.
+- **Verification:** not verified in 0.9.0; see the status above.
 
 ### LXQt (`lxqt`)
 - **Display Server:** X11
@@ -164,7 +176,8 @@ default	xf86-video-vesa xf86-video-fbdev
 - **Display Server:** X11
 - **Default Display Manager:** LightDM
 - **Characteristics:** Classic, rock-solid keyboard-driven tiling window manager.
-- **Packages:** `i3-wm`, `i3status`, `i3lock`, `dmenu`, `rxvt-unicode`
+- **Packages:** `i3-wm`, `i3status`, `i3lock`, `dmenu`, `rxvt-unicode`, `pavucontrol`
+- **Verification:** rendered with i3bar and working audio in 0.9.0; see the status above.
 
 ---
 

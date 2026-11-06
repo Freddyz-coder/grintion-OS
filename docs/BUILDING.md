@@ -1,6 +1,6 @@
 # Building Grintion-OS
 
-This document covers building the 0.8.4 ISO from source. Installation is in
+This document covers building the 0.9.0 ISO from source. Installation is in
 [INSTALL.md](INSTALL.md); the boot flow is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The build is **offline after the first fetch**. `make tools` and `make kernel`

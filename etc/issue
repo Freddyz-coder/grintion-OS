@@ -9,7 +9,7 @@
  |  \____________/  |
   \________________/
 
-Grintion-OS 0.8.5 (x86_64)
+Grintion-OS 0.9.0 (x86_64)
 Minimal - Independent - Secure - Stable
 
 Live environment: the root filesystem is an overlay in RAM.

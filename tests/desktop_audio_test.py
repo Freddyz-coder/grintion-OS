@@ -248,6 +248,7 @@ def main() -> int:
         cards = run(
             "echo == cards; cat /proc/asound/cards 2>&1; "
             "echo == devices; aplay -l 2>&1 | head -30; "
+            "echo == versions; pacman -Q pipewire pipewire-alsa pipewire-pulse wireplumber 2>&1; "
             "echo == pipewire; pgrep -a -x pipewire || true; "
             "pgrep -a -x wireplumber || true; pgrep -a -x pipewire-pulse || true; "
             "echo == wpctl; su - tester -c '"
@@ -272,19 +273,24 @@ def main() -> int:
             "int(12000*math.sin(2*math.pi*440*i/48000))) "
             "for i in range(48000))); w.close()'; "
             "rm -f /tmp/aplay-pipewire.rc /tmp/aplay-pipewire.log; "
+            "rm -f /tmp/pwplay.rc /tmp/pwplay.log /tmp/alsa-aplay.log; "
             "su - tester -c 'XDG_RUNTIME_DIR=/tmp/grintion-runtime-$(id -u) "
-            "aplay -D pipewire /tmp/tone.wav >/tmp/aplay-pipewire.log 2>&1; "
-            "echo $? >/tmp/aplay-pipewire.rc' & "
+            "pw-play /tmp/tone.wav >/tmp/pwplay.log 2>&1; "
+            "echo $? >/tmp/pwplay.rc' & "
             "for i in $(seq 1 40); do "
-            "[ -f /tmp/aplay-pipewire.rc ] && break; sleep 0.5; done; "
-            "if [ -f /tmp/aplay-pipewire.rc ]; then "
-            "echo PIPEWIRE_APLAY_RC=$(cat /tmp/aplay-pipewire.rc); "
-            "else echo PIPEWIRE_APLAY_TIMEOUT; pkill -9 -x aplay 2>/dev/null; fi; "
-            "cat /tmp/aplay-pipewire.log 2>/dev/null",
-            timeout=60,
-            label="play a 440 Hz tone through PipeWire",
+            "[ -f /tmp/pwplay.rc ] && break; sleep 0.5; done; "
+            "if [ -f /tmp/pwplay.rc ]; then "
+            "echo PIPEWIRE_PWPLAY_RC=$(cat /tmp/pwplay.rc); "
+            "else echo PIPEWIRE_PWPLAY_TIMEOUT; pkill -9 -x pw-play 2>/dev/null; fi; "
+            "cat /tmp/pwplay.log 2>/dev/null; "
+            "su - tester -c 'XDG_RUNTIME_DIR=/tmp/grintion-runtime-$(id -u) "
+            "timeout 30 aplay -D plughw:0,0 /tmp/tone.wav >/tmp/alsa-aplay.log 2>&1'; "
+            "echo ALSA_APLAY_RC=$?; cat /tmp/alsa-aplay.log",
+            timeout=120,
+            label="play a 440 Hz tone through PipeWire and ALSA",
         )
-        require("PipeWire playback finished", "PIPEWIRE_APLAY_RC=0", tone)
+        require("native PipeWire playback", "PIPEWIRE_PWPLAY_RC=0", tone)
+        require("direct ALSA playback", "ALSA_APLAY_RC=0", tone)
 
         stability = run(
             "printf 'TAINTED=%s\\n' \"$(cat /proc/sys/kernel/tainted)\"; "

@@ -40,17 +40,17 @@ provide the pointer integration and display resize support.
 
 ## Audio
 
-The 0.8.5 kernel has the HDA controller, HDA codec parsers and USB audio built
+The 0.9.0 kernel has the HDA controller, HDA codec parsers and USB audio built
 in. The desktop profiles install `pipewire`, `pipewire-pulse`, `pipewire-alsa`,
 `wireplumber`, `alsa-ucm-conf`, `sof-firmware` and `alsa-utils`. The X11 session
 hook starts PipeWire, WirePlumber and the PulseAudio compatibility daemon
 because this image has no systemd user manager to activate their sockets.
 
-If an older 0.8.4 installation has no sound, reinstall the desktop profile to
-pull the audio packages and session hook from 0.8.5:
+If an older 0.8.x installation has no sound, reinstall the desktop profile to
+pull the audio packages and session hook from 0.9.0:
 
 ```sh
-sudo grintion-desktop install xfce   # or gnome, kde, lxqt, i3, sway
+sudo grintion-desktop install xfce   # or i3, gnome, kde, lxqt, sway
 ```
 
 Diagnose inside the guest:
@@ -64,7 +64,20 @@ pgrep -a -x pipewire-pulse
 wpctl status                 # sinks and default device
 ```
 
-On QEMU, the guest only has a sound card if the host creates one. For example:
+On QEMU, the guest only has a sound card if the host creates one. For playback
+capture to a WAV file, use an output-only HDA codec:
+
+```sh
+qemu-system-x86_64 ... \
+    -audiodev wav,id=snd0,path=guest-audio.wav \
+    -device intel-hda \
+    -device hda-output,audiodev=snd0
+```
+
+`hda-duplex` opens a capture stream as well. QEMU's WAV backend is
+playback-only and logs `audio: Can not open 'adc' (no host audio driver)`, so
+use `hda-output` for WAV capture. For interactive host audio, a duplex codec
+with a real backend works:
 
 ```sh
 qemu-system-x86_64 ... \
@@ -73,10 +86,13 @@ qemu-system-x86_64 ... \
     -device hda-duplex,audiodev=snd0
 ```
 
-Use `-audiodev none` for a silent but functional guest, or `-audiodev wav` to
-capture the guest output to a file. A VM created without an audio device will
-show no card in `/proc/asound/cards`, regardless of PipeWire.
+Use `-audiodev none` for a silent but functional guest. A VM created without
+an audio device shows no card in `/proc/asound/cards`, regardless of PipeWire.
 
-The release probe uses QEMU's `wav` audio backend and verifies that a 440 Hz
-tone played through PipeWire produces non-silent samples. It does not test a
-physical host speaker.
+The release probe uses QEMU's `wav` backend and verifies that a 440 Hz tone
+played through the native PipeWire client (`pw-play`) and through direct ALSA
+(`aplay -D plughw:0,0`) produces non-silent samples. It does not test a
+physical host speaker. PipeWire 1.6.10 has an upstream drain lockup in its
+`pipewire-alsa` client, fixed in 1.6.11: `aplay -D pipewire` may play the file
+and then fail to exit on 1.6.10. Use `pw-play`, direct `plughw` playback, or
+upgrade to PipeWire 1.6.11 when it reaches the stable repositories.

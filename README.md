@@ -7,16 +7,17 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.8.4
+- **Version:** 0.9.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
   configuration fragment
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
-- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers install with `grintion-desktop` or `garb`; XFCE is verified in QEMU/KVM with keyboard and mouse input, while KDE Plasma and the other profiles remain unverified
+- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers install with `grintion-desktop` or `garb`; XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input, while KDE Plasma, GNOME, LXQt and Sway remain unverified
+- **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber and the PulseAudio compatibility daemon, started by the X11 session hook. Playback is verified end-to-end on XFCE and i3 with QEMU audio capture
 
-Grintion-OS 0.8.4 is built from this tree. There is no hosted binary
+Grintion-OS 0.9.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -29,7 +30,8 @@ artifacts are not signed.
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
 | Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
-| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. Package installation and display-manager wiring are verified. XFCE (LightDM + Xorg) was rendered with working keyboard and pointer input in QEMU/KVM; KDE Plasma and the other profiles remain unverified. |
+| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. XFCE and i3 (LightDM + Xorg) were rendered with working keyboard and pointer input in QEMU/KVM; KDE Plasma, GNOME, LXQt and Sway remain unverified. |
+| Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, `pipewire-pulse` and ALSA tools; the X11 session hook starts them and unmutes the card. A static `plughw:0,0` sink replaces udev enumeration. Playback through PipeWire and direct ALSA was verified on the i3 and XFCE probes. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
@@ -110,10 +112,12 @@ Signing, the on-disk format, the threat model and delegation details are in
 
 Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Desktop environments and GPU drivers can be installed and configured:
 
-> **Verification status:** package transactions, D-Bus accounts and the
-> display-manager service are verified. XFCE (LightDM + Xorg) was rendered in
-> QEMU/KVM with working keyboard and mouse input. KDE Plasma and the other
-> profiles remain unverified; see [docs/VERIFICATION.md](docs/VERIFICATION.md).
+> **Verification status:** package transactions, D-Bus accounts, the
+> display-manager service and desktop audio are verified. XFCE and i3
+> (LightDM + Xorg) were rendered in QEMU/KVM with working keyboard and pointer
+> input, and a 440 Hz tone played through PipeWire was captured from the
+> emulated HDA device. KDE Plasma, GNOME, LXQt and Sway remain unverified; see
+> [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ### Pre-installing with the installer
 
@@ -146,6 +150,7 @@ Supported display managers (LightDM, SDDM, GDM) are supervised by runit (`/var/s
 make check       # syntax, config contracts, Python unit tests, package tests
 make test-garb   # signed repository and transaction tests
 make test-boot   # boot the ISO under BIOS and UEFI in QEMU
+make test-network # boot five virtual NIC models under BIOS/QEMU
 make test-install # install to a disk, reboot, log in, check networking
 make test-install-uefi # install under UEFI/OVMF and reboot from it
 make test-all    # all of the above
@@ -180,13 +185,14 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.8.4 |
+| Feature | 0.9.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
 | Secure Boot | No; Limine is unsigned and there is no shim |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | XFCE verified in QEMU/KVM (LightDM/Xorg, keyboard and mouse); KDE Plasma and other profiles unverified |
+| Graphical desktop | XFCE and i3 verified in QEMU/KVM (LightDM/Xorg, keyboard and pointer, rendered frame); KDE Plasma, GNOME, LXQt and Sway unverified |
+| Audio | PipeWire playback verified end-to-end on XFCE and i3 (QEMU WAV capture), plus direct ALSA playback; PipeWire 1.6.10's `pipewire-alsa` client can hang on drain (fixed upstream in 1.6.11) |
 | Wi-Fi | `grintion-network` writes the `[wifi]` config and enables the supervised `wpa_supplicant` service |
 | Disk encryption | Not provided by the installer |
 | Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |
@@ -218,7 +224,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.8.4 has no Secure
+sensitive. The short version: the design is defensive, but 0.9.0 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 

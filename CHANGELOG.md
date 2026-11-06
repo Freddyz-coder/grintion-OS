@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-11-06
+
+Desktop audio, a verified i3 session and additional virtual network adapters.
+This is a minor release: it adds functionality without changing the on-disk
+format or any existing command-line interface.
+
+### Added
+
+- **Audio support:** the hardened kernel configuration now builds in the HDA
+  controller, the Realtek/Analog/HDMI/Cirrus/Conexant/Sigmatel/VIA/CA0110/
+  CA0132/CMEDIA/SI3054 codec parsers and USB audio. The image has no udev, so
+  these are built in rather than auto-loaded as modules.
+- **Desktop audio stack:** every desktop profile installs `pipewire`,
+  `pipewire-pulse`, `pipewire-alsa`, `wireplumber`, `alsa-ucm-conf`,
+  `sof-firmware` and `alsa-utils`; i3 and Sway add `pavucontrol`.
+- **Session audio startup:** `etc/X11/xinit/xinitrc.d/20-grintion-audio.sh`
+  creates a private `XDG_RUNTIME_DIR` if needed, unmutes card 0 `Master` and
+  `PCM`, and starts PipeWire, WirePlumber and `pipewire-pulse` in order.
+  LightDM's `Xsession-grintion` creates and exports the runtime directory
+  before `dbus-run-session`.
+- **Non-udev ALSA sink:** `etc/pipewire/pipewire.conf.d/50-grintion-alsa.conf`
+  declares an `api.alsa.pcm.sink` on `plughw:0,0` (S16LE, 48 kHz, stereo), so
+  PipeWire has a real default sink even though WirePlumber's ALSA monitor
+  requires udev.
+- **i3 session configuration:** `etc/i3/config` provides a terminal launcher,
+  dmenu, workspaces, layouts, i3bar and a background, so the first session does
+  not start the i3 configuration wizard.
+- **Additional virtual NICs:** the kernel builds `8139cp`, `8139too` and
+  `pcnet32`; `build/test-network.sh` and `make test-network` boot e1000,
+  e1000e (q35), virtio-net-pci, rtl8139 and pcnet; `tests/boot_test.py` gained
+  `--nic` and `--machine`.
+- **VM guest guide:** `docs/VM-GUEST.md` documents pointer alignment
+  (QEMU `usb-tablet`, VirtualBox USB Tablet, SPICE agent) and audio devices.
+
+### Changed
+
+- The version is now **0.9.0** in `VERSION`, `/etc/grintion/version`,
+  `/etc/issue`, `/etc/motd`, `garb` and the current-facing documentation.
+- `tests/desktop_audio_test.py` verifies a rendered session, the HDA card, the
+  default PipeWire sink, native PipeWire playback (`pw-play`), direct ALSA
+  playback (`aplay -D plughw:0,0`) and non-silent QEMU WAV capture.
+- `README.md`, `docs/DESKTOP-GUI.md`, `docs/INSTALL.md`,
+  `docs/VERIFICATION.md` and `docs/VM-GUEST.md` now state the 0.9.0 results.
+
+### Fixed
+
+- **QEMU audio capture used a duplex codec with a playback-only backend:**
+  `hda-duplex` opens a capture stream, but `-audiodev wav` has no capture
+  driver, so QEMU logged `Can not open 'adc'` and the guest had no usable
+  playback. The probe and `docs/VM-GUEST.md` use `hda-output` for WAV capture.
+- **The static PipeWire sink used raw `hw:0,0`:** raw hardware access left
+  playback hung even though the sink was created and selected. The sink now
+  uses `plughw:0,0`, and direct ALSA playback completes.
+- **The probe could not read QEMU's WAV file:** QEMU leaves the RIFF and data
+  sizes at zero until the VM exits, so Python's `wave` module rejected the
+  file. The probe parses the RIFF chunks itself and treats a zero-sized data
+  chunk as "everything to EOF".
+
+### Tests
+
+- 66 pytest cases (up from 65), including the kernel audio/NIC symbols, the
+  desktop audio packages and the session hook.
+- The i3 probe passed: Xorg, i3 and i3bar running; 999,348 non-black pixels;
+  `PIPEWIRE_PWPLAY_RC=0`, `ALSA_APLAY_RC=0`; QEMU captured 87,055 frames with
+  peak 11999; no taints, OOM kills or panics.
+- The XFCE probe passed: `xfce4-session`, `xfwm4` and `xfce4-panel` running;
+  1,023,950 non-black pixels; the same audio markers with 87,106 captured
+  frames and peak 11999.
+- The five-NIC matrix passed (`NETWORK_RC=0`): e1000, e1000e, virtio-net-pci,
+  rtl8139 and pcnet each bound a driver, acquired DHCP `10.0.2.15` and passed
+  the live-session, firewall and `grintion-doctor` checks.
+
+### Known limitations
+
+- KDE Plasma, GNOME, LXQt and Sway remain **unverified**. The image has no
+  udev or logind, which Wayland input needs, and the current Arch Plasma set is
+  Wayland-only.
+- PipeWire 1.6.10, the Arch stable version at release, has an upstream
+  `pipewire-alsa` drain lockup fixed in 1.6.11: `aplay -D pipewire` can play a
+  file and then fail to exit. Native `pw-play` and direct `plughw` playback are
+  verified. Upgrade to PipeWire 1.6.11 when it reaches the stable repositories.
+- UEFI live boot and the installer were not rerun for this release; the 0.9.0
+  source changes are desktop audio, i3, NIC configuration and the version bump,
+  and BIOS live boot is covered by the NIC matrix.
+- Secure Boot, LUKS, signature verification of the boot chain and bare-metal
+  validation remain absent.
+
+### Release
+
+- The 0.9.0 ISO is 133,113,856 bytes (127 MiB) with SHA-256
+  `b46f6851a56cf866da0780417053c47ab9b5b2f59b7d70cab93a4bb85bca737d`. It was
+  built from the working tree before the release commit, so `output/BUILD-INFO`
+  records `git_commit=4910c66`. The image exceeds the 100 MB git-file limit and
+  is not committed; publish it as a Release asset if needed.
+
+---
+
 ## [0.8.4] - 2026-11-05
 
 Desktop verification pass. XFCE now renders with working keyboard and pointer

@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.8.4 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.9.0 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution and transactional installs. It does **not** build
 from source, run maintainer scripts, or deliver delta updates.
 
