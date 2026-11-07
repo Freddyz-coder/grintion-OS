@@ -1,0 +1,38 @@
+# AppArmor profile for grintion-network
+# Restricts network configuration daemon and tooling
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/bin/grintion-network {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network netlink raw,
+
+  /bin/grintion-network mr,
+  /usr/bin/python3* ix,
+
+  /etc/grintion/** r,
+  /etc/grintion/network.conf rw,
+  /etc/grintion/profiles.d/** r,
+  /etc/resolv.conf rw,
+  /etc/wpa_supplicant/** rw,
+
+  /proc/sys/net/** r,
+  /sys/class/net/** r,
+  /sys/devices/** r,
+
+  /tmp/** rwmk,
+  /run/wpa_supplicant/** rw,
+  /run/grintion-network/** rw,
+
+  deny /home/** rw,
+  deny /root/** rw,
+  deny /etc/shadow* rwklx,
+}
+

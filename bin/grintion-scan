@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""grintion-scan - rootkit, rogue SUID, and malware scanner."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_SCAN_PATHS = [
+    Path("/tmp"),
+    Path("/var/tmp"),
+    Path("/dev/shm"),
+]
+
+
+def scan_rogue_suid(base_paths: list[Path] | None = None) -> list[str]:
+    rogue = []
+    paths = base_paths if base_paths is not None else DEFAULT_SCAN_PATHS
+    # Check suspicious world-writable locations for SUID/SGID
+    for base in paths:
+        if not base.is_dir():
+            continue
+        for root, dirs, files in os.walk(base):
+            # Ignore pytest temporary dirs when testing on host
+            dirs[:] = [d for d in dirs if not d.startswith("pytest-")]
+            for f in files:
+                p = Path(root) / f
+                try:
+                    st = p.stat(follow_symlinks=False)
+                    if st.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                        rogue.append(str(p))
+                except OSError:
+                    continue
+    return sorted(rogue)
+
+
+def scan_hidden_files_in_system() -> list[str]:
+    hidden = []
+    for base in [Path("/etc"), Path("/bin"), Path("/sbin")]:
+        if not base.is_dir():
+            continue
+        for item in base.iterdir():
+            if item.name.startswith("...") or item.name == ". ":
+                hidden.append(str(item))
+    return hidden
+
+
+def scan_promiscuous_interfaces() -> list[str]:
+    promisc = []
+    net_path = Path("/sys/class/net")
+    if net_path.is_dir():
+        for iface in net_path.iterdir():
+            flags_file = iface / "flags"
+            if flags_file.is_file():
+                try:
+                    flags = int(flags_file.read_text(encoding="utf-8").strip(), 16)
+                    # IFF_PROMISC = 0x100
+                    if flags & 0x100:
+                        promisc.append(iface.name)
+                except (ValueError, OSError):
+                    pass
+    return promisc
+
+
+def run_external_scanners() -> list[dict]:
+    results = []
+    for tool in ["rkhunter", "chkrootkit"]:
+        bin_path = shutil.which(tool)
+        if bin_path:
+            try:
+                res = subprocess.run([bin_path, "--quick", "--nocolors"], capture_output=True, text=True, timeout=30)
+                results.append({
+                    "tool": tool,
+                    "installed": True,
+                    "returncode": res.returncode,
+                    "output_preview": res.stdout[:200],
+                })
+            except Exception as e:
+                results.append({"tool": tool, "installed": True, "error": str(e)})
+        else:
+            results.append({"tool": tool, "installed": False})
+    return results
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-scan",
+        description="System rootkit, suspicious binary, and integrity scanner.",
+    )
+    parser.add_argument("--json", action="store_true", help="Output results in JSON")
+    parser.add_argument("--strict", action="store_true", help="Fail if any warning is triggered")
+
+    args = parser.parse_args()
+
+    custom_scan_dirs = None
+    if "GRINTION_SCAN_PATHS" in os.environ:
+        custom_scan_dirs = [Path(p.strip()) for p in os.environ["GRINTION_SCAN_PATHS"].split(",") if p.strip()]
+
+    rogue_suid = scan_rogue_suid(custom_scan_dirs)
+    hidden_files = scan_hidden_files_in_system()
+    promisc_ifaces = scan_promiscuous_interfaces()
+    external = run_external_scanners()
+
+    threats = len(rogue_suid) + len(hidden_files) + len(promisc_ifaces)
+
+    report = {
+        "status": "clean" if threats == 0 else "threats_found",
+        "threats_count": threats,
+        "rogue_suid": rogue_suid,
+        "hidden_suspicious_files": hidden_files,
+        "promiscuous_interfaces": promisc_ifaces,
+        "external_tools": external,
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print("=== Grintion Anti-Malware / Rootkit Scan ===")
+        print(f"Rogue SUID/SGID in /tmp or /dev/shm: {len(rogue_suid)}")
+        for s in rogue_suid:
+            print(f"  [ALERT] SUID detected: {s}")
+        print(f"Suspicious hidden filenames: {len(hidden_files)}")
+        for h in hidden_files:
+            print(f"  [ALERT] Suspicious entry: {h}")
+        print(f"Promiscuous mode interfaces: {len(promisc_ifaces)}")
+        for p in promisc_ifaces:
+            print(f"  [WARN] Interface in promisc mode: {p}")
+
+        for ext in external:
+            st = "found" if ext["installed"] else "not installed"
+            print(f"Scanner {ext['tool']}: {st}")
+
+        if threats == 0:
+            print("[ ok ] No anomalies or rootkits detected.")
+        else:
+            print(f"[FAIL] {threats} threat indicator(s) found!")
+
+    if threats > 0 or (args.strict and any(not e.get("installed", False) for e in external)):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,9 @@
+#!/bin/sh
+exec 2>&1
+mkdir -p /var/log/usbguard
+if ! command -v usbguard-daemon >/dev/null 2>&1; then
+    echo "usbguard-daemon not installed; idling"
+    pause
+fi
+exec usbguard-daemon -k -c /etc/usbguard/usbguard-daemon.conf
+

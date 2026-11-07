@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""grintion-privacy - privacy dashboard for listening sockets, outbound connections, and firewall rules."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def get_listening_sockets() -> list[dict]:
+    listeners = []
+    ss = shutil.which("ss")
+    if ss:
+        res = subprocess.run([ss, "-ltnuH"], capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5:
+                    proto = parts[0]
+                    local = parts[4]
+                    host, _, port = local.rpartition(":")
+                    listeners.append({
+                        "protocol": proto,
+                        "address": local,
+                        "host": host.strip("[]"),
+                        "port": port,
+                        "is_loopback": host in ("127.0.0.1", "::1", "127.0.0.53"),
+                    })
+            return listeners
+
+    # Fallback to /proc/net/tcp
+    for path, proto in [("/proc/net/tcp", "tcp"), ("/proc/net/udp", "udp")]:
+        p = Path(path)
+        if p.is_file():
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()[1:]
+                for line in lines:
+                    fields = line.split()
+                    if len(fields) > 3 and (fields[3] == "0A" or proto == "udp"):  # 0A = TCP_LISTEN
+                        local_addr = fields[1]
+                        ip_hex, port_hex = local_addr.split(":")
+                        port = int(port_hex, 16)
+                        ip_parts = [str(int(ip_hex[i:i+2], 16)) for i in (6, 4, 2, 0)]
+                        ip = ".".join(ip_parts)
+                        listeners.append({
+                            "protocol": proto,
+                            "address": f"{ip}:{port}",
+                            "host": ip,
+                            "port": str(port),
+                            "is_loopback": ip.startswith("127."),
+                        })
+            except Exception:
+                pass
+    return listeners
+
+
+def get_active_outbound() -> list[dict]:
+    conns = []
+    ss = shutil.which("ss")
+    if ss:
+        res = subprocess.run([ss, "-tnuH", "state", "established"], capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5:
+                    conns.append({
+                        "protocol": parts[0],
+                        "local": parts[3],
+                        "remote": parts[4],
+                    })
+    return conns
+
+
+def get_firewall_status() -> dict:
+    nft = shutil.which("nft")
+    ruleset = ""
+    status = "disabled"
+    explanations = []
+
+    if nft:
+        res = subprocess.run([nft, "list", "ruleset"], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and "table " in res.stdout:
+            status = "active"
+            ruleset = res.stdout
+            if "ct state established,related accept" in ruleset or "established" in ruleset:
+                explanations.append("Permits responses to established connections you initiated.")
+            if "iifname \"lo\" accept" in ruleset or "iif \"lo\"" in ruleset:
+                explanations.append("Permits local applications to communicate on loopback.")
+            if "hook input" in ruleset and ("drop" in ruleset or "reject" in ruleset):
+                explanations.append("Default DROP/REJECT: Blocks all unsolicited inbound network access.")
+    if not explanations:
+        explanations.append("Standard default network protection policy.")
+
+    return {
+        "status": status,
+        "backend": "nftables" if nft else "none",
+        "explanations": explanations,
+    }
+
+
+def get_hardware_privacy() -> dict:
+    # Camera / Mic detection in /dev/video* and /dev/snd
+    cameras = sorted(str(p) for p in Path("/dev").glob("video*"))
+    mics = sorted(str(p) for p in Path("/dev/snd").glob("pcm*c"))
+    return {
+        "cameras_detected": len(cameras),
+        "camera_devices": cameras,
+        "microphones_detected": len(mics),
+        "mic_devices": mics,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-privacy",
+        description="Grintion Privacy Dashboard: inspect listening ports, network activity, and firewall rules.",
+    )
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    args = parser.parse_args()
+
+    listeners = get_listening_sockets()
+    outbound = get_active_outbound()
+    fw = get_firewall_status()
+    hw = get_hardware_privacy()
+
+    exposed_listeners = [l for l in listeners if not l["is_loopback"]]
+
+    payload = {
+        "firewall": fw,
+        "hardware_privacy": hw,
+        "listening_sockets": {
+            "total": len(listeners),
+            "exposed_non_loopback": len(exposed_listeners),
+            "listeners": listeners,
+        },
+        "active_outbound": {
+            "count": len(outbound),
+            "connections": outbound,
+        },
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print("==================================================")
+    print("         GRINTION PRIVACY & NETWORK DASHBOARD      ")
+    print("==================================================")
+    print(f"Firewall Status      : {fw['status'].upper()} ({fw['backend']})")
+    print("Firewall Explanations:")
+    for exp in fw["explanations"]:
+        print(f"  • {exp}")
+
+    print("\nHardware Privacy:")
+    print(f"  Cameras Detected   : {hw['cameras_detected']}")
+    print(f"  Microphones Found  : {hw['microphones_detected']}")
+
+    print("\nListening Network Sockets:")
+    print(f"  Total Listeners    : {len(listeners)}")
+    print(f"  Exposed to Network : {len(exposed_listeners)}")
+    if exposed_listeners:
+        for ex in exposed_listeners:
+            print(f"    [EXPOSED] {ex['protocol']} {ex['address']}")
+    else:
+        print("    [ ok ] No non-loopback listening sockets detected.")
+
+    print(f"\nActive Outbound Connections : {len(outbound)}")
+    for conn in outbound[:10]:
+        print(f"  {conn['protocol']} {conn['local']} -> {conn['remote']}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

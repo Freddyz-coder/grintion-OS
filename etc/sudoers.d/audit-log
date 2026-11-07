@@ -1,0 +1,6 @@
+# Sudo I/O logging for Grintion-OS
+# Tamper-evident trail of root privilege escalations and executed commands
+Defaults log_input, log_output
+Defaults iolog_dir = "/var/log/sudo-io"
+Defaults logfile = "/var/log/sudo.log"
+

@@ -1,0 +1,30 @@
+# AppArmor profile for garb package manager
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/bin/garb {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network inet stream,
+  network inet6 stream,
+
+  /bin/garb mr,
+  /usr/bin/python3* ix,
+
+  /etc/garb/** r,
+  /etc/garb/pins.conf rw,
+  /etc/garb/preferences.conf rw,
+  /etc/garb/repos.d/** rw,
+
+  /var/lib/garb/** rwklm,
+  /var/cache/garb/** rwklm,
+  /var/log/garb/** rwklm,
+
+  /tmp/** rwmk,
+
+  deny /etc/shadow* rwklx,
+  deny /home/*/.ssh/** rwklx,
+}
+

@@ -1,0 +1,17 @@
+#!/bin/sh
+exec 2>&1
+mkdir -p /var/log/audit
+chmod 0750 /var/log/audit
+
+if ! command -v auditd >/dev/null 2>&1; then
+    echo "auditd not found; waiting"
+    pause
+fi
+
+# Load rules if auditctl exists
+if command -v auditctl >/dev/null 2>&1 && [ -f /etc/audit/audit.rules ]; then
+    auditctl -R /etc/audit/audit.rules || true
+fi
+
+exec auditd -f
+

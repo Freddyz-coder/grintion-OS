@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""grintion-shield - fail2ban-style brute-force SSH and login protection daemon."""
+from __future__ import annotations
+
+import argparse
+import collections
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+BAN_LIST_FILE = Path(os.environ.get("GRINTION_SHIELD_BANS", "/var/lib/grintion/shield-bans.json"))
+AUTH_LOG = Path(os.environ.get("GRINTION_AUTH_LOG", "/var/log/auth.log"))
+
+# Matches failed passwords or invalid users from sshd / pam
+FAIL_REGEX = re.compile(
+    r"(?:Failed password for (?:invalid user )?(\S+) from (\d+\.\d+\.\d+\.\d+)|"
+    r"authentication failure;.*rhost=(\d+\.\d+\.\d+\.\d+))"
+)
+
+
+def load_bans() -> dict[str, float]:
+    if not BAN_LIST_FILE.is_file():
+        return {}
+    try:
+        return json.loads(BAN_LIST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_bans(bans: dict[str, float]) -> None:
+    BAN_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BAN_LIST_FILE.write_text(json.dumps(bans, indent=2), encoding="utf-8")
+
+
+def ban_ip(ip: str, duration_sec: int = 3600) -> bool:
+    bans = load_bans()
+    bans[ip] = time.time() + duration_sec
+    save_bans(bans)
+
+    # Try applying to nftables if present
+    nft = shutil.which("nft")
+    if nft:
+        subprocess.run([nft, "add", "element", "inet", "filter", "blackhole", f"{{ {ip} }}"], check=False)
+
+    # Also record in /etc/hosts.deny as fallback
+    hosts_deny = Path("/etc/hosts.deny")
+    try:
+        current = hosts_deny.read_text(encoding="utf-8") if hosts_deny.is_file() else ""
+        if f"ALL: {ip}" not in current:
+            with hosts_deny.open("a", encoding="utf-8") as f:
+                f.write(f"ALL: {ip}\n")
+    except OSError:
+        pass
+    return True
+
+
+def unban_ip(ip: str) -> bool:
+    bans = load_bans()
+    if ip in bans:
+        del bans[ip]
+        save_bans(bans)
+
+    nft = shutil.which("nft")
+    if nft:
+        subprocess.run([nft, "delete", "element", "inet", "filter", "blackhole", f"{{ {ip} }}"], check=False)
+
+    hosts_deny = Path("/etc/hosts.deny")
+    if hosts_deny.is_file():
+        try:
+            lines = [line for line in hosts_deny.read_text(encoding="utf-8").splitlines() if line.strip() != f"ALL: {ip}"]
+            hosts_deny.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return True
+
+
+def process_log_content(content: str, max_attempts: int = 5) -> dict[str, int]:
+    failures: dict[str, int] = collections.defaultdict(int)
+    for line in content.splitlines():
+        match = FAIL_REGEX.search(line)
+        if match:
+            # Group 2 or 3 is the IP
+            ip = match.group(2) or match.group(3)
+            if ip and not ip.startswith("127."):
+                failures[ip] += 1
+    return dict(failures)
+
+
+def sweep_expired_bans() -> list[str]:
+    bans = load_bans()
+    now = time.time()
+    expired = [ip for ip, expiry in bans.items() if now >= expiry]
+    for ip in expired:
+        unban_ip(ip)
+    return expired
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="Output in JSON")
+
+    parser = argparse.ArgumentParser(
+        prog="grintion-shield",
+        parents=[common],
+        description="SSH and authentication brute-force defense shield.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="Show active IP bans and shield status")
+    p_ban = sub.add_parser("ban", parents=[common], help="Manually ban an IP address")
+    p_ban.add_argument("ip", help="IP address to ban")
+    p_ban.add_argument("--duration", type=int, default=3600, help="Ban duration in seconds")
+
+    p_unban = sub.add_parser("unban", parents=[common], help="Unban an IP address")
+    p_unban.add_argument("ip", help="IP address to unban")
+
+    p_scan = sub.add_parser("scan-log", parents=[common], help="Scan log file and trigger bans for repeat offenders")
+    p_scan.add_argument("--log", help="Path to auth log file")
+    p_scan.add_argument("--max-retry", type=int, default=5, help="Failures before ban")
+
+    args = parser.parse_args()
+
+    if args.command in (None, "status"):
+        sweep_expired_bans()
+        bans = load_bans()
+        if getattr(args, "json", False):
+            print(json.dumps(bans, indent=2))
+        else:
+            print(f"Grintion Shield Status: {len(bans)} active IP ban(s)")
+            for ip, expiry in sorted(bans.items()):
+                remaining = max(0, int(expiry - time.time()))
+                print(f"  [BANNED] {ip:16} (expires in {remaining}s)")
+        return 0
+
+    if args.command == "ban":
+        ban_ip(args.ip, args.duration)
+        print(f"Banned {args.ip} for {args.duration} seconds.")
+        return 0
+
+    if args.command == "unban":
+        unban_ip(args.ip)
+        print(f"Unbanned {args.ip}.")
+        return 0
+
+    if args.command == "scan-log":
+        log_path = Path(args.log) if args.log else AUTH_LOG
+        if not log_path.is_file():
+            print(f"Log file not found: {log_path}", file=sys.stderr)
+            return 1
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+        failures = process_log_content(content, args.max_retry)
+        banned_new = []
+        for ip, count in failures.items():
+            if count >= args.max_retry:
+                ban_ip(ip)
+                banned_new.append(ip)
+
+        print(f"Scan complete: {len(failures)} IPs with failures, {len(banned_new)} newly banned (threshold {args.max_retry}).")
+        for b in banned_new:
+            print(f"  [AUTO-BANNED] {b} ({failures[b]} failed attempts)")
+        return 0
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

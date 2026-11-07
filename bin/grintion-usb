@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""grintion-usb - manage USBGuard, Thunderbolt/USB4, and USB data-block policies."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SYS_USB = Path(os.environ.get("GRINTION_SYSFS_USB", "/sys/bus/usb/devices"))
+RULES_FILE = Path(os.environ.get("GRINTION_USBGUARD_RULES", "/etc/usbguard/rules.conf"))
+USB_CONF = Path(os.environ.get("GRINTION_USB_CONF", "/etc/grintion/usb.conf"))
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def list_devices() -> list[dict]:
+    devices = []
+    if not SYS_USB.is_dir():
+        return devices
+
+    for dev in sorted(SYS_USB.iterdir()):
+        id_vendor = read_text(dev / "idVendor")
+        id_product = read_text(dev / "idProduct")
+        if not (id_vendor and id_product):
+            continue
+        product_name = read_text(dev / "product") or "Unknown Device"
+        authorized = read_text(dev / "authorized") or "1"
+        dev_class = read_text(dev / "bDeviceClass") or "00"
+
+        devices.append({
+            "name": dev.name,
+            "vendor_id": id_vendor,
+            "product_id": id_product,
+            "product_name": product_name,
+            "authorized": authorized == "1",
+            "class": dev_class,
+        })
+    return devices
+
+
+def is_data_blocked() -> bool:
+    if USB_CONF.is_file():
+        content = read_text(USB_CONF)
+        if "data_block=1" in content or "data_block=true" in content:
+            return True
+    return False
+
+
+def set_data_block(enabled: bool) -> bool:
+    USB_CONF.parent.mkdir(parents=True, exist_ok=True)
+    val = "1" if enabled else "0"
+    USB_CONF.write_text(f"data_block={val}\n", encoding="utf-8")
+
+    # If sysfs authorized_default is writable, configure root hubs
+    if SYS_USB.is_dir():
+        for hub in SYS_USB.glob("usb*"):
+            auth_def = hub / "authorized_default"
+            if auth_def.is_file():
+                try:
+                    auth_def.write_text("0" if enabled else "1", encoding="utf-8")
+                except OSError:
+                    pass
+    return True
+
+
+def authorize_device(dev_name: str, allow: bool) -> bool:
+    target = SYS_USB / dev_name / "authorized"
+    if target.is_file():
+        try:
+            target.write_text("1" if allow else "0", encoding="utf-8")
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="Output in JSON")
+
+    parser = argparse.ArgumentParser(
+        prog="grintion-usb",
+        parents=[common],
+        description="USBGuard, Thunderbolt authorization, and USB data-block management.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("list", parents=[common], help="List connected USB/Thunderbolt devices")
+    sub.add_parser("status", parents=[common], help="Show USB security and data-block status")
+    sub.add_parser("block-data", parents=[common], help="Block USB mass storage and untrusted data devices")
+    sub.add_parser("allow-data", parents=[common], help="Allow standard USB data devices")
+
+    p_auth = sub.add_parser("authorize", parents=[common], help="Authorize a USB device by name")
+    p_auth.add_argument("device", help="Device name (e.g. 1-1, usb1)")
+
+    p_deauth = sub.add_parser("deauthorize", parents=[common], help="Deauthorize a USB device")
+    p_deauth.add_argument("device", help="Device name (e.g. 1-1, usb1)")
+
+    args = parser.parse_args()
+
+    if args.command in (None, "status"):
+        blocked = is_data_blocked()
+        devs = list_devices()
+        usbguard_installed = shutil.which("usbguard") is not None
+        st = {
+            "usbguard_installed": usbguard_installed,
+            "data_blocked": blocked,
+            "device_count": len(devs),
+            "authorized_count": sum(1 for d in devs if d["authorized"]),
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(st, indent=2))
+        else:
+            print(f"USB Data Block Mode : {'ENABLED (Storage/Untrusted Blocked)' if blocked else 'DISABLED (Permissive)'}")
+            print(f"USBGuard Daemon     : {'INSTALLED' if usbguard_installed else 'NOT INSTALLED'}")
+            print(f"Devices Connected   : {len(devs)} ({st['authorized_count']} authorized)")
+        return 0
+
+    if args.command == "list":
+        devs = list_devices()
+        if getattr(args, "json", False):
+            print(json.dumps(devs, indent=2))
+        else:
+            print(f"{'DEV':10} {'ID':10} {'AUTH':6} {'NAME'}")
+            print("-" * 50)
+            for d in devs:
+                auth_str = "YES" if d["authorized"] else "NO"
+                print(f"{d['name']:10} {d['vendor_id']}:{d['product_id']:5} {auth_str:6} {d['product_name']}")
+        return 0
+
+    if args.command == "block-data":
+        set_data_block(True)
+        print("USB data-block mode ENABLED. Unauthorized mass storage and data transfers are blocked.")
+        return 0
+
+    if args.command == "allow-data":
+        set_data_block(False)
+        print("USB data-block mode DISABLED. Standard USB devices permitted.")
+        return 0
+
+    if args.command == "authorize":
+        if authorize_device(args.device, True):
+            print(f"Device {args.device} authorized.")
+            return 0
+        print(f"Failed to authorize device {args.device} or device not found.", file=sys.stderr)
+        return 1
+
+    if args.command == "deauthorize":
+        if authorize_device(args.device, False):
+            print(f"Device {args.device} deauthorized.")
+            return 0
+        print(f"Failed to deauthorize device {args.device} or device not found.", file=sys.stderr)
+        return 1
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

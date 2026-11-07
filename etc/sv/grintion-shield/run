@@ -1,0 +1,10 @@
+#!/bin/sh
+exec 2>&1
+echo "Starting Grintion Shield service"
+while true; do
+    if [ -f /var/log/auth.log ]; then
+        /bin/grintion-shield scan-log --log /var/log/auth.log --max-retry 5 || true
+    fi
+    sleep 30
+done
+

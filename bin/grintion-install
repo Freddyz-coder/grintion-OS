@@ -24,24 +24,85 @@ UNATTENDED=0
 DRY_RUN=0
 NO_BOOTLOADER=0
 FORCE=0
+ENCRYPT=0
+PASSPHRASE_STDIN=0
+LUKS_PASSPHRASE=""
+FILESYSTEM="ext4"
+SECURITY_PROFILE="workstation"
+SEPARATE_HOME=0
+HOME_SIZE_MIB=0
+CONFIG_FILE=""
+DRY_RUN_JSON=0
+SKIP_SMART=0
+SKIP_SELF_TEST=0
+SERIAL_CONSOLE=0
+SELF_TEST_OK=1
+CRYPT_NAME="grintion"
+SWAP_CRYPT_NAME="grintion-swap"
+HOME_CRYPT_NAME="grintion-home"
+LUKS_UUID=""
+SWAP_CRYPT_UUID=""
+HOME_CRYPT_UUID=""
+SWAP_KEY_FILE=""
+HOME_KEY_FILE=""
+BTRFS_STAGE=""
 ESP_SIZE_MIB=512
 SWAP_SIZE_MIB=0
+SWAP_FILE_MIB=0
+CUSTOM_PARTITIONS=0
+ROOT_PART_SPEC=""
+ESP_PART_SPEC=""
+SWAP_PART_SPEC=""
+HOME_PART_SPEC=""
+HOME_PART=""
+ENCRYPT_HOME=0
+SECURE_ERASE=0
+KEEP_HOME=0
+REMOVABLE=0
+RECOVERY_PARTITION=0
+RECOVERY_SIZE_MIB=1024
+TUI_MODE=0
+DUAL_BOOT=1
 
 usage() {
     cat <<'EOF'
 Usage: grintion-install [OPTIONS]
 
-Install Grintion-OS onto a disk. The whole target disk is repartitioned.
+Install Grintion-OS onto a disk or pre-existing partitions.
 
 Options:
   --disk DEV            Target block device (e.g. /dev/vda, /dev/nvme0n1)
+  --custom              Manual / custom partition assignment mode
+  --root-part DEV       Target root partition (used with --custom)
+  --esp-part DEV        Target EFI system partition (used with --custom)
+  --swap-part DEV       Target swap partition (used with --custom)
+  --home-part DEV       Target home partition (used with --custom)
   --hostname NAME       Installed hostname (default: grintion)
   --user NAME           Create an administrative user in the wheel group
   --password-stdin      Read the user password from standard input
   --root-password-stdin Read the root password from standard input
-  --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, none)
+  --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, i3, none)
+  --security-profile PROF Security profile: workstation (default), server, kiosk, air-gapped
   --swap-size MIB       Add a linux-swap partition at the end of the disk (default: 0)
-  --unattended          Never prompt; requires --disk, --user and a password source
+  --swap-file MIB       Create a swapfile on root of the given size in MiB
+  --encrypt             Encrypt the root partition with LUKS2
+  --encrypt-home        Encrypt the /home partition/volume with LUKS2
+  --passphrase-stdin    Read the LUKS passphrase from standard input
+  --filesystem FS       Root filesystem: ext4 (default), btrfs, xfs, f2fs
+  --separate-home       Put /home on its own subvolume or partition
+  --home-size MIB       Separate /home partition size in MiB (for ext4/xfs/btrfs)
+  --keep-home           Preserve existing /home data across reinstallation
+  --secure-erase        Perform a secure wipe of the target disk before partitioning
+  --removable           Install for removable/USB drive (fallback EFI binary, no efibootmgr)
+  --recovery-partition  Create a dedicated recovery partition
+  --recovery-size MIB   Size of recovery partition in MiB (default: 1024)
+  --tui, --interactive  Launch guided installation wizard
+  --config FILE         JSON answer file; command-line flags override it
+  --json                With --dry-run, print a machine-readable plan
+  --skip-smart          Skip the SMART health preflight
+  --skip-self-test      Skip the post-install self-test
+  --serial              Put ttyS0 last so LUKS prompts appear on serial
+  --unattended          Never prompt; requires --disk/--custom, --user and password
   --dry-run             Validate the plan and exit without changing anything
   --no-bootloader       Skip Limine installation
   --force               Allow running from an installed system; also bypass the
@@ -49,8 +110,9 @@ Options:
   -h, --help            Show this help
 
 Environment:
-  GRINTION_USER_PASSWORD  Password for --user on an unattended install
-  GRINTION_ROOT_PASSWORD  Root password; root stays locked when unset
+  GRINTION_USER_PASSWORD    Password for --user on an unattended install
+  GRINTION_ROOT_PASSWORD    Root password; root stays locked when unset
+  GRINTION_LUKS_PASSPHRASE  LUKS passphrase; prefer --passphrase-stdin
 
 Passwords are never accepted as command-line arguments: they would be visible
 in the process list and in shell history. Use the interactive prompt,
@@ -68,6 +130,28 @@ log()  { printf '\033[1;32m[*]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[-]\033[0m %s\n' "$*" >&2; exit 1; }
 
+config_value() {
+    python3 - "$CONFIG_FILE" "$1" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(2)
+if not isinstance(data, dict):
+    raise SystemExit(2)
+value = data.get(sys.argv[2], "")
+if isinstance(value, bool):
+    print("1" if value else "0")
+elif value is None:
+    print("")
+else:
+    print(value)
+PY
+}
+
 secure_boot_enabled() {
     [ -d /sys/firmware/efi ] || return 1
     local var value
@@ -80,9 +164,68 @@ secure_boot_enabled() {
     return 1
 }
 
+# Read the answer file before the option loop so CLI flags always win.
+CONFIG_FILE=""
+_previous=""
+for _arg in "$@"; do
+    if [ "$_previous" = "--config" ]; then CONFIG_FILE=$_arg; fi
+    _previous=$_arg
+done
+unset _previous _arg
+if [ -n "$CONFIG_FILE" ]; then
+    [ -r "$CONFIG_FILE" ] || die "answer file is not readable: $CONFIG_FILE"
+    python3 - "$CONFIG_FILE" >/dev/null 2>&1 <<'PY' || die "invalid JSON answer file: $CONFIG_FILE"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+if not isinstance(data, dict):
+    raise SystemExit(2)
+PY
+    _value=$(config_value disk);            [ -n "$_value" ] && DISK=$_value
+    _value=$(config_value custom);          case "$_value" in 1|true|True|yes) CUSTOM_PARTITIONS=1 ;; esac
+    _value=$(config_value root_part);       [ -n "$_value" ] && ROOT_PART_SPEC=$_value
+    _value=$(config_value esp_part);        [ -n "$_value" ] && ESP_PART_SPEC=$_value
+    _value=$(config_value swap_part);       [ -n "$_value" ] && SWAP_PART_SPEC=$_value
+    _value=$(config_value home_part);       [ -n "$_value" ] && HOME_PART_SPEC=$_value; [ -n "$_value" ] && SEPARATE_HOME=1
+    _value=$(config_value encrypt_home);    case "$_value" in 1|true|True|yes) ENCRYPT_HOME=1 ;; esac
+    _value=$(config_value home_size);       [ -n "$_value" ] && HOME_SIZE_MIB=$_value; [ -n "$_value" ] && SEPARATE_HOME=1
+    _value=$(config_value swap_file);       [ -n "$_value" ] && SWAP_FILE_MIB=$_value
+    _value=$(config_value secure_erase);    case "$_value" in 1|true|True|yes) SECURE_ERASE=1 ;; esac
+    _value=$(config_value keep_home);       case "$_value" in 1|true|True|yes) KEEP_HOME=1 ;; esac
+    _value=$(config_value removable);       case "$_value" in 1|true|True|yes) REMOVABLE=1 ;; esac
+    _value=$(config_value recovery_partition); case "$_value" in 1|true|True|yes) RECOVERY_PARTITION=1 ;; esac
+    _value=$(config_value recovery_size);   [ -n "$_value" ] && RECOVERY_SIZE_MIB=$_value
+    _value=$(config_value hostname);        [ -n "$_value" ] && HOSTNAME=$_value
+    _value=$(config_value user);            [ -n "$_value" ] && USER_NAME=$_value
+    _value=$(config_value desktop);         [ -n "$_value" ] && DESKTOP=$_value
+    _value=$(config_value security_profile); [ -n "$_value" ] && SECURITY_PROFILE=$_value
+    _value=$(config_value filesystem);      [ -n "$_value" ] && FILESYSTEM=$_value
+    _value=$(config_value swap_size);       [ -n "$_value" ] && SWAP_SIZE_MIB=$_value
+    _value=$(config_value encrypt);          case "$_value" in 1|true|True|yes) ENCRYPT=1 ;; *) ENCRYPT=0 ;; esac
+    _value=$(config_value separate_home);    case "$_value" in 1|true|True|yes) SEPARATE_HOME=1 ;; esac
+    _value=$(config_value serial_console);   case "$_value" in 1|true|True|yes) SERIAL_CONSOLE=1 ;; *) SERIAL_CONSOLE=0 ;; esac
+    unset _value
+fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --disk)          DISK=${2:-}; shift 2 ;;
+        --custom|--custom-partitions) CUSTOM_PARTITIONS=1; shift ;;
+        --root-part)     ROOT_PART_SPEC=${2:-}; shift 2 ;;
+        --esp-part)      ESP_PART_SPEC=${2:-}; shift 2 ;;
+        --swap-part)     SWAP_PART_SPEC=${2:-}; shift 2 ;;
+        --home-part)     HOME_PART_SPEC=${2:-}; SEPARATE_HOME=1; shift 2 ;;
+        --home-size)     HOME_SIZE_MIB=${2:-}; SEPARATE_HOME=1; shift 2 ;;
+        --encrypt-home)  ENCRYPT_HOME=1; shift ;;
+        --swap-file)     SWAP_FILE_MIB=${2:-}; shift 2 ;;
+        --secure-erase)  SECURE_ERASE=1; shift ;;
+        --keep-home)     KEEP_HOME=1; shift ;;
+        --removable|--usb) REMOVABLE=1; shift ;;
+        --recovery-partition) RECOVERY_PARTITION=1; shift ;;
+        --recovery-size) RECOVERY_SIZE_MIB=${2:-}; RECOVERY_PARTITION=1; shift 2 ;;
+        --tui|--interactive) TUI_MODE=1; shift ;;
         --hostname)      HOSTNAME=${2:-}; shift 2 ;;
         --user)          USER_NAME=${2:-}; shift 2 ;;
         --password|--root-password)
@@ -90,7 +233,17 @@ while [ $# -gt 0 ]; do
         --password-stdin) PASSWORD_STDIN=1; shift ;;
         --root-password-stdin) ROOT_PASSWORD_STDIN=1; shift ;;
         --desktop)       DESKTOP=${2:-}; shift 2 ;;
+        --security-profile) SECURITY_PROFILE=${2:-}; shift 2 ;;
         --swap-size)     SWAP_SIZE_MIB=${2:-}; shift 2 ;;
+        --encrypt)       ENCRYPT=1; shift ;;
+        --passphrase-stdin) PASSPHRASE_STDIN=1; shift ;;
+        --filesystem)    FILESYSTEM=${2:-}; shift 2 ;;
+        --separate-home) SEPARATE_HOME=1; shift ;;
+        --config)        CONFIG_FILE=${2:-}; shift 2 ;;
+        --json)          DRY_RUN_JSON=1; shift ;;
+        --skip-smart)    SKIP_SMART=1; shift ;;
+        --skip-self-test) SKIP_SELF_TEST=1; shift ;;
+        --serial)        SERIAL_CONSOLE=1; shift ;;
         --unattended)    UNATTENDED=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --no-bootloader) NO_BOOTLOADER=1; shift ;;
@@ -100,42 +253,214 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ "$(id -u)" -eq 0 ] || die "grintion-install must run as root"
-if [ ! -f /etc/grintion/live ] && [ "$FORCE" -ne 1 ]; then
+run_guided_tui() {
+    echo "=============================================================="
+    echo "Grintion-OS $VERSION - Guided Installation Wizard"
+    echo "=============================================================="
+    echo "1. Partitioning Mode:"
+    echo "   [1] Entire disk (automatic layout)"
+    echo "   [2] Custom / manual partition assignment"
+    printf "Choose mode [1]: "
+    read -r mode_choice
+    mode_choice=${mode_choice:-1}
+    if [ "$mode_choice" = "2" ]; then
+        CUSTOM_PARTITIONS=1
+        echo "Available partitions:"
+        lsblk -lnpo NAME,SIZE,FSTYPE,MOUNTPOINT | grep -v 'loop' || true
+        printf "ESP partition (e.g. /dev/vda1): "
+        read -r ESP_PART_SPEC
+        printf "Root partition (e.g. /dev/vda2): "
+        read -r ROOT_PART_SPEC
+        printf "Swap partition (optional, e.g. /dev/vda3, or enter for none): "
+        read -r SWAP_PART_SPEC
+        printf "Home partition (optional, e.g. /dev/vda4, or enter for none): "
+        read -r HOME_PART_SPEC
+        [ -n "$HOME_PART_SPEC" ] && SEPARATE_HOME=1
+    else
+        echo "Available disks:"
+        lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
+        printf "Target disk (e.g. /dev/vda): "
+        read -r DISK
+    fi
+
+    echo
+    echo "2. Root Filesystem:"
+    echo "   [1] ext4 (Traditional, robust)"
+    echo "   [2] btrfs (Modern, snapshots, subvolumes)"
+    printf "Choose filesystem [1]: "
+    read -r fs_choice
+    case "${fs_choice:-1}" in
+        2|btrfs) FILESYSTEM="btrfs" ;;
+        *) FILESYSTEM="ext4" ;;
+    esac
+
+    echo
+    echo "3. Disk Encryption:"
+    echo "   [1] None"
+    echo "   [2] LUKS2 root encryption"
+    printf "Choose encryption [1]: "
+    read -r enc_choice
+    case "${enc_choice:-1}" in
+        2|yes|y) ENCRYPT=1 ;;
+        *) ENCRYPT=0 ;;
+    esac
+
+    echo
+    echo "4. Swap Configuration:"
+    echo "   [1] No swap"
+    echo "   [2] Swap partition (e.g. 2048 MiB)"
+    echo "   [3] Swap file on root (e.g. 2048 MiB)"
+    printf "Choose swap option [1]: "
+    read -r swap_choice
+    case "${swap_choice:-1}" in
+        2)
+            printf "Swap partition size in MiB [2048]: "
+            read -r sz
+            SWAP_SIZE_MIB=${sz:-2048}
+            ;;
+        3)
+            printf "Swap file size in MiB [2048]: "
+            read -r sz
+            SWAP_FILE_MIB=${sz:-2048}
+            ;;
+        *) SWAP_SIZE_MIB=0; SWAP_FILE_MIB=0 ;;
+    esac
+
+    echo
+    echo "5. Desktop Environment:"
+    echo "   [1] None (Console-only base system)"
+    echo "   [2] XFCE 4 (Lightweight X11 desktop)"
+    echo "   [3] i3 (Tiling window manager)"
+    echo "   [4] Sway (Wayland tiling compositor)"
+    echo "   [5] GNOME (Modern desktop)"
+    echo "   [6] KDE Plasma (Feature-rich desktop)"
+    printf "Choose desktop [1]: "
+    read -r dt_choice
+    case "${dt_choice:-1}" in
+        2) DESKTOP="xfce" ;;
+        3) DESKTOP="i3" ;;
+        4) DESKTOP="sway" ;;
+        5) DESKTOP="gnome" ;;
+        6) DESKTOP="kde" ;;
+        *) DESKTOP="none" ;;
+    esac
+
+    echo
+    printf "Hostname [grintion]: "
+    read -r HOSTNAME
+    HOSTNAME=${HOSTNAME:-grintion}
+
+    printf "Administrative username [grintion]: "
+    read -r USER_NAME
+    USER_NAME=${USER_NAME:-grintion}
+}
+
+if [ "$TUI_MODE" -eq 1 ] || { [ "$UNATTENDED" -ne 1 ] && [ -z "$DISK" ] && [ "$CUSTOM_PARTITIONS" -eq 0 ] && [ -t 0 ]; }; then
+    if [ "$TUI_MODE" -eq 1 ]; then
+        run_guided_tui
+    fi
+fi
+
+[ "$(id -u)" -eq 0 ] || [ "$DRY_RUN" -eq 1 ] || die "grintion-install must run as root"
+if [ ! -f /etc/grintion/live ] && [ "$FORCE" -ne 1 ] && [ "$DRY_RUN" -ne 1 ]; then
     die "this does not look like the live image; use --force to override"
 fi
 
-# The Limine boot chain is unsigned. Installing while Secure Boot is enabled
-# produces a disk that the firmware will refuse to boot, so fail before any
-# partition is touched. --force is only for operators supplying their own
-# signed bootloader.
 if secure_boot_enabled && [ "$FORCE" -ne 1 ]; then
     die "Secure Boot is enabled. Grintion-OS does not ship a signed boot chain, so the installed system would not boot. Disable Secure Boot in firmware, or rerun with --force only if you will provide your own signed bootloader."
 fi
 
-for tool in parted partprobe mkfs.vfat mkfs.ext4 blkid rsync openssl python3 od; do
-    command -v "$tool" >/dev/null 2>&1 || die "required installer tool is missing: $tool"
-done
-
-if [ -z "$DISK" ]; then
-    if [ "$UNATTENDED" -eq 1 ]; then
-        die "--disk is required with --unattended"
-    fi
-    echo "Available disks:"
-    lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
-    printf "Target disk (e.g. /dev/vda): "
-    read -r DISK
+case "$FILESYSTEM" in
+    ext4|btrfs|xfs|f2fs) ;;
+    *) die "unsupported --filesystem: $FILESYSTEM (use ext4, btrfs, xfs, or f2fs)" ;;
+esac
+if [ "$DRY_RUN_JSON" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
+    die "--json is only valid with --dry-run"
 fi
 
-[ -b "$DISK" ] || die "not a block device: $DISK"
-DISK_SIZE="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 0)"
-[ "$DISK_SIZE" -ge 4294967296 ] || die "target disk must be at least 4 GiB"
+for tool in parted partprobe mkfs.vfat blkid rsync openssl python3 od; do
+    command -v "$tool" >/dev/null 2>&1 || die "required installer tool is missing: $tool"
+done
+case "$FILESYSTEM" in
+    btrfs)
+        for tool in mkfs.btrfs btrfs; do
+            command -v "$tool" >/dev/null 2>&1 || die "required Btrfs tool is missing: $tool"
+        done
+        ;;
+    xfs)
+        command -v mkfs.xfs >/dev/null 2>&1 || die "required XFS tool is missing: mkfs.xfs"
+        ;;
+    f2fs)
+        command -v mkfs.f2fs >/dev/null 2>&1 || die "required F2FS tool is missing: mkfs.f2fs"
+        ;;
+    ext4)
+        command -v mkfs.ext4 >/dev/null 2>&1 || die "required installer tool is missing: mkfs.ext4"
+        ;;
+esac
+if [ "$ENCRYPT" -eq 1 ] || [ "$ENCRYPT_HOME" -eq 1 ]; then
+    command -v cryptsetup >/dev/null 2>&1 || die "encryption requires cryptsetup"
+fi
+
+if [ "$CUSTOM_PARTITIONS" -eq 1 ]; then
+    [ -n "$ROOT_PART_SPEC" ] || die "--root-part is required with --custom"
+    [ -n "$ESP_PART_SPEC" ]  || die "--esp-part is required with --custom"
+    if [ "$DRY_RUN" -ne 1 ]; then
+        [ -b "$ROOT_PART_SPEC" ] || die "not a block device: $ROOT_PART_SPEC"
+        [ -b "$ESP_PART_SPEC" ]  || die "not a block device: $ESP_PART_SPEC"
+    fi
+    if [ -z "$DISK" ]; then
+        DISK="$(lsblk -no PKNAME "$ROOT_PART_SPEC" 2>/dev/null | head -1 || true)"
+        if [ -n "$DISK" ] && [ -b "/dev/$DISK" ]; then
+            DISK="/dev/$DISK"
+        else
+            DISK="$ROOT_PART_SPEC"
+        fi
+    fi
+    DISK_SIZE="$(blockdev --getsize64 "$ROOT_PART_SPEC" 2>/dev/null || echo 10737418240)"
+else
+    if [ -z "$DISK" ]; then
+        if [ "$UNATTENDED" -eq 1 ]; then
+            die "--disk is required with --unattended"
+        fi
+        echo "Available disks:"
+        lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
+        printf "Target disk (e.g. /dev/vda): "
+        read -r DISK
+    fi
+    [ -b "$DISK" ] || [ "$DRY_RUN" -eq 1 ] || die "not a block device: $DISK"
+    DISK_SIZE="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 10737418240)"
+    [ "$DISK_SIZE" -ge 4294967296 ] || [ "$DRY_RUN" -eq 1 ] || die "target disk must be at least 4 GiB"
+fi
+
 case "$SWAP_SIZE_MIB" in
     ''|*[!0-9]*) die "invalid --swap-size: $SWAP_SIZE_MIB" ;;
+esac
+case "$SWAP_FILE_MIB" in
+    ''|*[!0-9]*) die "invalid --swap-file: $SWAP_FILE_MIB" ;;
+esac
+case "$HOME_SIZE_MIB" in
+    ''|*[!0-9]*) die "invalid --home-size: $HOME_SIZE_MIB" ;;
 esac
 DISK_MIB=$((DISK_SIZE / 1048576))
 if [ "$SWAP_SIZE_MIB" -gt 0 ] && [ "$SWAP_SIZE_MIB" -gt "$((DISK_MIB - 1024))" ]; then
     die "--swap-size must leave at least 1 GiB for the ESP and root"
+fi
+
+if [ "$SKIP_SMART" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && command -v smartctl >/dev/null 2>&1; then
+    SMART_LOG="/tmp/grintion-smart.$$"
+    if smartctl -H "$DISK" >"$SMART_LOG" 2>&1; then
+        if grep -q 'FAILED' "$SMART_LOG"; then
+            rm -f "$SMART_LOG"
+            die "SMART reports a failing disk: $DISK"
+        elif grep -q 'PASSED' "$SMART_LOG"; then
+            log "SMART health check passed"
+        else
+            warn "SMART health could not be interpreted; continuing"
+        fi
+    else
+        warn "SMART health could not be read (virtual or USB disk?); continuing"
+    fi
+    rm -f "$SMART_LOG"
 fi
 
 # Refuse to overwrite a mounted disk.
@@ -161,6 +486,9 @@ fi
 if [ "$PASSWORD_STDIN" -eq 1 ]; then
     IFS= read -r USER_PASSWORD || die "no password was provided on standard input"
 fi
+if [ "$DRY_RUN" -eq 1 ] && [ -z "$USER_PASSWORD" ]; then
+    USER_PASSWORD="dry-run-placeholder"
+fi
 if [ -z "$USER_PASSWORD" ]; then
     if [ "$UNATTENDED" -eq 1 ]; then
         die "--password-stdin or GRINTION_USER_PASSWORD is required with --unattended"
@@ -184,6 +512,11 @@ case "$HOSTNAME" in
     ""|*[!a-zA-Z0-9.-]*) die "invalid hostname: $HOSTNAME" ;;
 esac
 
+case "$SECURITY_PROFILE" in
+    workstation|server|kiosk|air-gapped) ;;
+    *) die "invalid security profile: $SECURITY_PROFILE (must be workstation, server, kiosk, or air-gapped)" ;;
+esac
+
 if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
     printf "Pre-install Desktop Environment (none/xfce/gnome/kde/lxqt/sway) [none]: "
     read -r DESKTOP
@@ -200,7 +533,29 @@ if [ -n "$ROOT_PASSWORD" ]; then
     ROOT_SET=1
 fi
 
-if [ "$UNATTENDED" -ne 1 ]; then
+if [ "$ENCRYPT" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
+    if [ -n "${GRINTION_LUKS_PASSPHRASE-}" ] && [ -z "$LUKS_PASSPHRASE" ]; then
+        LUKS_PASSPHRASE=$GRINTION_LUKS_PASSPHRASE
+    fi
+    if [ "$PASSPHRASE_STDIN" -eq 1 ]; then
+        IFS= read -r LUKS_PASSPHRASE || die "no LUKS passphrase was provided on standard input"
+    fi
+    if [ -z "$LUKS_PASSPHRASE" ]; then
+        if [ "$UNATTENDED" -eq 1 ]; then
+            die "--passphrase-stdin or GRINTION_LUKS_PASSPHRASE is required with --encrypt --unattended"
+        fi
+        printf "LUKS passphrase: "
+        read -rs LUKS_PASSPHRASE
+        echo
+        printf "Repeat LUKS passphrase: "
+        read -rs LUKS_PASSPHRASE2
+        echo
+        [ "$LUKS_PASSPHRASE" = "$LUKS_PASSPHRASE2" ] || die "LUKS passphrases do not match"
+    fi
+    [ -n "$LUKS_PASSPHRASE" ] || die "the LUKS passphrase cannot be empty"
+fi
+
+if [ "$UNATTENDED" -ne 1 ] && [ "$DRY_RUN" -ne 1 ]; then
     echo
     warn "ALL DATA ON $DISK WILL BE DESTROYED"
     printf "Type YES to install Grintion-OS %s: " "$VERSION"
@@ -209,18 +564,82 @@ if [ "$UNATTENDED" -ne 1 ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    cat <<EOF
+    if [ "$DRY_RUN_JSON" -eq 1 ]; then
+        python3 - "$DISK" "$DISK_SIZE" "$ESP_SIZE_MIB" "$SWAP_SIZE_MIB" \
+            "$FILESYSTEM" "$ENCRYPT" "$SEPARATE_HOME" "$HOSTNAME" \
+            "$USER_NAME" "$DESKTOP" "$NO_BOOTLOADER" "$SERIAL_CONSOLE" "$TARGET" \
+            "$CUSTOM_PARTITIONS" "${ROOT_PART_SPEC:-}" "${ESP_PART_SPEC:-}" "${SWAP_PART_SPEC:-}" \
+            "${HOME_PART_SPEC:-}" "$ENCRYPT_HOME" "$HOME_SIZE_MIB" "$SWAP_FILE_MIB" \
+            "$SECURE_ERASE" "$KEEP_HOME" "$REMOVABLE" "$RECOVERY_PARTITION" "$RECOVERY_SIZE_MIB" \
+            "$SECURITY_PROFILE" <<'PY'
+import json
+import sys
+
+(disk, size, esp, swap, filesystem, encrypt, separate_home, hostname,
+ user, desktop, no_bootloader, serial, target,
+ custom, root_part, esp_part, swap_part, home_part, encrypt_home,
+ home_size, swap_file, secure_erase, keep_home, removable,
+ recovery_partition, recovery_size, security_profile) = sys.argv[1:]
+
+plan = {
+    "schema": 2,
+    "disk": disk,
+    "disk_bytes": int(size) if size else 0,
+    "security_profile": security_profile,
+    "custom_partitions": custom == "1",
+    "esp_part": esp_part if custom == "1" else None,
+    "esp_mib": int(esp),
+    "root": {
+        "device": root_part if custom == "1" else None,
+        "filesystem": filesystem,
+        "encrypted": encrypt == "1",
+        "separate_home": separate_home == "1",
+        "home_part": home_part if custom == "1" else None,
+        "home_size_mib": int(home_size) if home_size else 0,
+        "home_encrypted": encrypt_home == "1",
+        "btrfs_subvolumes": (["@", "@snapshots"] + (["@home"] if separate_home == "1" else [])) if filesystem == "btrfs" else [],
+    },
+    "swap": {
+        "partition_mib": int(swap),
+        "partition_dev": swap_part if custom == "1" else None,
+        "partition_encrypted": encrypt == "1" and int(swap) > 0,
+        "file_mib": int(swap_file) if swap_file else 0,
+    },
+    "recovery": {
+        "enabled": recovery_partition == "1",
+        "size_mib": int(recovery_size) if recovery_partition == "1" else 0,
+    },
+    "removable": removable == "1",
+    "secure_erase": secure_erase == "1",
+    "keep_home": keep_home == "1",
+    "hostname": hostname,
+    "user": user,
+    "desktop": desktop or "none",
+    "bootloader": "skipped" if no_bootloader == "1" else "limine-bios-uefi",
+    "serial_console": serial == "1",
+    "target": target,
+}
+print(json.dumps(plan, indent=2, sort_keys=True))
+PY
+    else
+        cat <<EOF
 Plan:
-  disk:       $DISK ($(numfmt --to=iec "$DISK_SIZE"))
-  ESP:        first partition (${ESP_SIZE_MIB} MiB, vfat, LABEL=GRINTIONESP)
-  root:       second partition (ext4, LABEL=GRINTION_ROOT)
-  swap:       $([ "$SWAP_SIZE_MIB" -gt 0 ] && echo "${SWAP_SIZE_MIB} MiB (linux-swap)" || echo none)
+  mode:       $([ "$CUSTOM_PARTITIONS" -eq 1 ] && echo "custom partitions (ESP: $ESP_PART_SPEC, Root: $ROOT_PART_SPEC)" || echo "automatic disk layout on $DISK ($(numfmt --to=iec "$DISK_SIZE" 2>/dev/null || echo "$DISK_SIZE bytes"))")
+  ESP:        $([ "$CUSTOM_PARTITIONS" -eq 1 ] && echo "$ESP_PART_SPEC" || echo "first partition (${ESP_SIZE_MIB} MiB, vfat, LABEL=GRINTIONESP)")
+  root:       $([ "$CUSTOM_PARTITIONS" -eq 1 ] && echo "$ROOT_PART_SPEC ($FILESYSTEM)" || echo "second partition ($FILESYSTEM, LABEL=GRINTION_ROOT)")
+  encryption: $([ "$ENCRYPT" -eq 1 ] && echo 'LUKS2 (aes-xts-plain64, argon2id)' || echo none)
+  /home:      $([ "$SEPARATE_HOME" -eq 1 ] && echo "separate $([ "$FILESYSTEM" = "btrfs" ] && echo 'Btrfs subvolume @home' || echo "partition ${HOME_SIZE_MIB:-2048} MiB")$([ "$ENCRYPT_HOME" -eq 1 ] && echo ' [encrypted]')" || echo 'inside the root')
+  swap:       $([ "$SWAP_SIZE_MIB" -gt 0 ] && echo "${SWAP_SIZE_MIB} MiB partition$([ "$ENCRYPT" -eq 1 ] && echo ', LUKS2')" || ([ "$SWAP_FILE_MIB" -gt 0 ] && echo "${SWAP_FILE_MIB} MiB swapfile" || echo none))
+  recovery:   $([ "$RECOVERY_PARTITION" -eq 1 ] && echo "${RECOVERY_SIZE_MIB} MiB recovery partition" || echo none)
+  secure-wipe: $([ "$SECURE_ERASE" -eq 1 ] && echo enabled || echo disabled)
+  removable:  $([ "$REMOVABLE" -eq 1 ] && echo 'yes (USB/removable EFI fallback)' || echo no)
   hostname:   $HOSTNAME
   user:       $USER_NAME (wheel)
   bootloader: $([ "$NO_BOOTLOADER" -eq 1 ] && echo skipped || echo Limine BIOS+UEFI)
   target:     $TARGET
 Dry run complete; nothing was changed.
 EOF
+    fi
     exit 0
 fi
 
@@ -230,64 +649,239 @@ cleanup() {
     CLEANUP_DONE=1
     set +e
     sync
-    for path in run dev/pts dev sys proc boot/efi; do
+    for path in home .snapshots run dev/pts dev sys proc boot/efi; do
         if mountpoint -q "$TARGET/$path" 2>/dev/null; then
             umount -l "$TARGET/$path" 2>/dev/null || umount "$TARGET/$path" 2>/dev/null || true
         fi
     done
+    if [ -n "$BTRFS_STAGE" ] && mountpoint -q "$BTRFS_STAGE" 2>/dev/null; then
+        umount -l "$BTRFS_STAGE" 2>/dev/null || true
+    fi
+    [ -n "$BTRFS_STAGE" ] && rmdir "$BTRFS_STAGE" 2>/dev/null || true
     if mountpoint -q "$TARGET" 2>/dev/null; then umount -l "$TARGET" 2>/dev/null || umount "$TARGET" 2>/dev/null || true; fi
+    if command -v cryptsetup >/dev/null 2>&1; then
+        [ -e "/dev/mapper/$HOME_CRYPT_NAME" ] && cryptsetup luksClose "$HOME_CRYPT_NAME" 2>/dev/null || true
+        [ -e "/dev/mapper/$SWAP_CRYPT_NAME" ] && cryptsetup luksClose "$SWAP_CRYPT_NAME" 2>/dev/null || true
+        [ -e "/dev/mapper/$CRYPT_NAME" ] && cryptsetup luksClose "$CRYPT_NAME" 2>/dev/null || true
+    fi
+    [ -n "$SWAP_KEY_FILE" ] && rm -f "$SWAP_KEY_FILE" 2>/dev/null || true
+    [ -n "$HOME_KEY_FILE" ] && rm -f "$HOME_KEY_FILE" 2>/dev/null || true
+    rm -f "/run/grintion-smart.$$" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-log "partitioning $DISK"
-ROOT_END="100%"
-if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
-    ROOT_END="$((DISK_MIB - SWAP_SIZE_MIB))MiB"
+if [ "$SECURE_ERASE" -eq 1 ]; then
+    log "secure-erasing $DISK"
+    if blkdiscard -f "$DISK" 2>/dev/null; then
+        log "blkdiscard completed on $DISK"
+    else
+        dd if=/dev/zero of="$DISK" bs=4M count=64 conv=fsync status=none 2>/dev/null || true
+        log "initial block zeroing completed on $DISK"
+    fi
 fi
-parted -s "$DISK" mklabel gpt
-parted -s "$DISK" mkpart ESP fat32 1MiB "$((1 + ESP_SIZE_MIB))MiB"
-parted -s "$DISK" set 1 esp on
-parted -s "$DISK" mkpart GRINTION_ROOT ext4 "$((1 + ESP_SIZE_MIB))MiB" "$ROOT_END"
-if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
-    parted -s "$DISK" mkpart GRINTION_SWAP linux-swap "$ROOT_END" 100%
-fi
-partprobe "$DISK" 2>/dev/null || true
-sleep 1
 
-# Derive the real partition names from lsblk instead of guessing the suffix
-# from the device name (F3 Stage 1).
-PARTITIONS="$(lsblk -lnpo NAME,TYPE "$DISK" | awk '$2 == "part" {print $1}')"
-ESP="$(printf '%s\n' "$PARTITIONS" | sed -n '1p')"
-ROOT_PART="$(printf '%s\n' "$PARTITIONS" | sed -n '2p')"
-SWAP_PART="$(printf '%s\n' "$PARTITIONS" | sed -n '3p')"
+if [ "$CUSTOM_PARTITIONS" -eq 1 ]; then
+    log "using custom partition assignment"
+    ESP="$ESP_PART_SPEC"
+    ROOT_PART="$ROOT_PART_SPEC"
+    [ -n "$SWAP_PART_SPEC" ] && SWAP_PART="$SWAP_PART_SPEC"
+    [ -n "$HOME_PART_SPEC" ] && HOME_PART="$HOME_PART_SPEC"
+else
+    log "partitioning $DISK"
+    RESERVED_MIB=0
+    [ "$SWAP_SIZE_MIB" -gt 0 ] && RESERVED_MIB=$((RESERVED_MIB + SWAP_SIZE_MIB))
+    [ "$RECOVERY_PARTITION" -eq 1 ] && RESERVED_MIB=$((RESERVED_MIB + RECOVERY_SIZE_MIB))
+    if [ "$SEPARATE_HOME" -eq 1 ] && [ "$FILESYSTEM" != "btrfs" ]; then
+        H_SIZE=${HOME_SIZE_MIB:-2048}
+        RESERVED_MIB=$((RESERVED_MIB + H_SIZE))
+    fi
+
+    ROOT_END="$((DISK_MIB - RESERVED_MIB))MiB"
+    [ "$RESERVED_MIB" -eq 0 ] && ROOT_END="100%"
+
+    ROOT_PART_NAME=GRINTION_ROOT
+    if [ "$ENCRYPT" -eq 1 ]; then ROOT_PART_NAME=GRINTION_CRYPT; fi
+
+    parted -s "$DISK" mklabel gpt
+    parted -s "$DISK" mkpart ESP fat32 1MiB "$((1 + ESP_SIZE_MIB))MiB"
+    parted -s "$DISK" set 1 esp on
+    parted -s "$DISK" mkpart "$ROOT_PART_NAME" ext4 "$((1 + ESP_SIZE_MIB))MiB" "$ROOT_END"
+
+    CURR_OFFSET=$((DISK_MIB - RESERVED_MIB))
+
+    if [ "$SEPARATE_HOME" -eq 1 ] && [ "$FILESYSTEM" != "btrfs" ]; then
+        H_SIZE=${HOME_SIZE_MIB:-2048}
+        NEXT_OFFSET=$((CURR_OFFSET + H_SIZE))
+        parted -s "$DISK" mkpart GRINTION_HOME ext4 "${CURR_OFFSET}MiB" "${NEXT_OFFSET}MiB"
+        CURR_OFFSET=$NEXT_OFFSET
+    fi
+
+    if [ "$RECOVERY_PARTITION" -eq 1 ]; then
+        NEXT_OFFSET=$((CURR_OFFSET + RECOVERY_SIZE_MIB))
+        parted -s "$DISK" mkpart GRINTION_RECOVERY ext4 "${CURR_OFFSET}MiB" "${NEXT_OFFSET}MiB"
+        CURR_OFFSET=$NEXT_OFFSET
+    fi
+
+    if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+        parted -s "$DISK" mkpart GRINTION_SWAP linux-swap "${CURR_OFFSET}MiB" 100%
+    fi
+
+    partprobe "$DISK" 2>/dev/null || true
+    sleep 1
+
+    PARTITIONS="$(lsblk -lnpo NAME,TYPE "$DISK" | awk '$2 == "part" {print $1}')"
+    ESP="$(printf '%s\n' "$PARTITIONS" | sed -n '1p')"
+    ROOT_PART="$(printf '%s\n' "$PARTITIONS" | sed -n '2p')"
+    p_idx=3
+    if [ "$SEPARATE_HOME" -eq 1 ] && [ "$FILESYSTEM" != "btrfs" ]; then
+        HOME_PART="$(printf '%s\n' "$PARTITIONS" | sed -n "${p_idx}p")"
+        p_idx=$((p_idx + 1))
+    fi
+    if [ "$RECOVERY_PARTITION" -eq 1 ]; then
+        RECOVERY_PART="$(printf '%s\n' "$PARTITIONS" | sed -n "${p_idx}p")"
+        p_idx=$((p_idx + 1))
+    fi
+    if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+        SWAP_PART="$(printf '%s\n' "$PARTITIONS" | sed -n "${p_idx}p")"
+    fi
+fi
+
 [ -b "$ESP" ] || die "ESP did not appear: ${ESP:-<none>}"
 [ -b "$ROOT_PART" ] || die "root partition did not appear: ${ROOT_PART:-<none>}"
 if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
     [ -b "$SWAP_PART" ] || die "swap partition did not appear: ${SWAP_PART:-<none>}"
 fi
 
-log "formatting $ESP and $ROOT_PART"
-mkfs.vfat -F32 -n GRINTIONESP "$ESP" >/dev/null
-mkfs.ext4 -F -L GRINTION_ROOT -m 0 "$ROOT_PART" >/dev/null
-
-SWAP_UUID=""
-if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
-    log "formatting swap partition $SWAP_PART"
-    mkswap -L GRINTION_SWAP "$SWAP_PART" >/dev/null
-    SWAP_UUID="$(blkid -s UUID -o value "$SWAP_PART")"
-    [ -n "$SWAP_UUID" ] || die "could not read the swap filesystem UUID"
+if [ "$CUSTOM_PARTITIONS" -eq 1 ] && [ "$(blkid -s TYPE -o value "$ESP" 2>/dev/null || true)" = "vfat" ]; then
+    log "reusing existing FAT32 ESP: $ESP"
+else
+    log "formatting $ESP"
+    mkfs.vfat -F32 -n GRINTIONESP "$ESP" >/dev/null
 fi
 
-ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"
+ROOT_DEV="$ROOT_PART"
+if [ "$ENCRYPT" -eq 1 ]; then
+    log "creating the LUKS2 container on $ROOT_PART"
+    printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksFormat --batch-mode \
+        --type luks2 --cipher aes-xts-plain64 --key-size 512 \
+        --hash sha256 --pbkdf argon2id --pbkdf-memory 65536 \
+        --pbkdf-parallel 2 --label GRINTION_CRYPT --key-file - \
+        "$ROOT_PART" >/dev/null
+    printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksOpen \
+        --key-file - "$ROOT_PART" "$CRYPT_NAME" >/dev/null
+    ROOT_DEV="/dev/mapper/$CRYPT_NAME"
+    LUKS_UUID="$(cryptsetup luksUUID "$ROOT_PART")"
+    [ -n "$LUKS_UUID" ] || die "could not read the LUKS UUID"
+    [ -b "$ROOT_DEV" ] || die "LUKS mapper did not appear: $ROOT_DEV"
+    unset LUKS_PASSPHRASE
+fi
+
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    log "formatting Btrfs root on $ROOT_DEV"
+    mkfs.btrfs -f -L GRINTION_ROOT "$ROOT_DEV" >/dev/null
+    BTRFS_STAGE="$(mktemp -d /run/grintion-btrfs.XXXXXX)"
+    mount "$ROOT_DEV" "$BTRFS_STAGE"
+    btrfs subvolume create "$BTRFS_STAGE/@" >/dev/null
+    btrfs subvolume create "$BTRFS_STAGE/@snapshots" >/dev/null
+    if [ "$SEPARATE_HOME" -eq 1 ]; then
+        btrfs subvolume create "$BTRFS_STAGE/@home" >/dev/null
+    fi
+    umount "$BTRFS_STAGE"
+    rmdir "$BTRFS_STAGE"
+    BTRFS_STAGE=""
+elif [ "$FILESYSTEM" = "xfs" ]; then
+    log "formatting XFS root on $ROOT_DEV"
+    mkfs.xfs -f -L GRINTION_ROOT "$ROOT_DEV" >/dev/null
+elif [ "$FILESYSTEM" = "f2fs" ]; then
+    log "formatting F2FS root on $ROOT_DEV"
+    mkfs.f2fs -f -l GRINTION_ROOT "$ROOT_DEV" >/dev/null
+else
+    log "formatting ext4 root on $ROOT_DEV"
+    mkfs.ext4 -F -L GRINTION_ROOT -m 0 "$ROOT_DEV" >/dev/null
+fi
+
+HOME_DEV=""
+HOME_UUID=""
+HOME_CRYPT_UUID=""
+if [ -n "${HOME_PART:-}" ] && [ -b "$HOME_PART" ]; then
+    if [ "$ENCRYPT_HOME" -eq 1 ]; then
+        log "creating encrypted container for /home on $HOME_PART"
+        HOME_KEY_FILE="$(mktemp /run/grintion-home-key.XXXXXX)"
+        chmod 0600 "$HOME_KEY_FILE"
+        openssl rand -out "$HOME_KEY_FILE" 64
+        cryptsetup luksFormat --batch-mode --type luks2 \
+            --key-file "$HOME_KEY_FILE" --label GRINTION_HOME_CRYPT \
+            "$HOME_PART" >/dev/null
+        cryptsetup luksOpen --key-file "$HOME_KEY_FILE" "$HOME_PART" \
+            "$HOME_CRYPT_NAME" >/dev/null
+        HOME_DEV="/dev/mapper/$HOME_CRYPT_NAME"
+        HOME_CRYPT_UUID="$(cryptsetup luksUUID "$HOME_PART")"
+    else
+        HOME_DEV="$HOME_PART"
+    fi
+    if [ "$KEEP_HOME" -eq 0 ]; then
+        log "formatting /home filesystem on $HOME_DEV"
+        case "$FILESYSTEM" in
+            btrfs) mkfs.btrfs -f -L GRINTION_HOME "$HOME_DEV" >/dev/null ;;
+            xfs)   mkfs.xfs -f -L GRINTION_HOME "$HOME_DEV" >/dev/null ;;
+            f2fs)  mkfs.f2fs -f -l GRINTION_HOME "$HOME_DEV" >/dev/null ;;
+            *)     mkfs.ext4 -F -L GRINTION_HOME -m 0 "$HOME_DEV" >/dev/null ;;
+        esac
+    else
+        log "preserving existing contents on $HOME_DEV"
+    fi
+    HOME_UUID="$(blkid -s UUID -o value "$HOME_DEV")"
+fi
+
+SWAP_UUID=""
+SWAP_CRYPT_UUID=""
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    if [ "$ENCRYPT" -eq 1 ]; then
+        log "creating encrypted swap on $SWAP_PART"
+        SWAP_KEY_FILE="$(mktemp /run/grintion-swap-key.XXXXXX)"
+        chmod 0600 "$SWAP_KEY_FILE"
+        openssl rand -out "$SWAP_KEY_FILE" 64
+        cryptsetup luksFormat --batch-mode --type luks2 \
+            --key-file "$SWAP_KEY_FILE" --label GRINTION_SWAP_CRYPT \
+            "$SWAP_PART" >/dev/null
+        cryptsetup luksOpen --key-file "$SWAP_KEY_FILE" "$SWAP_PART" \
+            "$SWAP_CRYPT_NAME" >/dev/null
+        mkswap "/dev/mapper/$SWAP_CRYPT_NAME" >/dev/null
+        SWAP_CRYPT_UUID="$(cryptsetup luksUUID "$SWAP_PART")"
+        [ -n "$SWAP_CRYPT_UUID" ] || die "could not read the encrypted swap UUID"
+    else
+        log "formatting swap partition $SWAP_PART"
+        mkswap -L GRINTION_SWAP "$SWAP_PART" >/dev/null
+        SWAP_UUID="$(blkid -s UUID -o value "$SWAP_PART")"
+        [ -n "$SWAP_UUID" ] || die "could not read the swap filesystem UUID"
+    fi
+fi
+
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT_DEV")"
 ESP_UUID="$(blkid -s UUID -o value "$ESP")"
 [ -n "$ROOT_UUID" ] || die "could not read the root filesystem UUID"
 [ -n "$ESP_UUID" ] || die "could not read the ESP UUID"
 
 log "mounting the target"
 mkdir -p "$TARGET"
-mount "$ROOT_PART" "$TARGET"
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    mount -o noatime,subvol=@ "$ROOT_DEV" "$TARGET"
+else
+    mount -o noatime "$ROOT_DEV" "$TARGET"
+fi
 mkdir -p "$TARGET/boot/efi"
 mount "$ESP" "$TARGET/boot/efi"
+if [ -n "$HOME_DEV" ]; then
+    mkdir -p "$TARGET/home"
+    mount -o noatime "$HOME_DEV" "$TARGET/home"
+elif [ "$FILESYSTEM" = "btrfs" ] && [ "$SEPARATE_HOME" -eq 1 ]; then
+    mkdir -p "$TARGET/home"
+    mount -o noatime,subvol=@home "$ROOT_DEV" "$TARGET/home"
+fi
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    mkdir -p "$TARGET/.snapshots"
+    mount -o noatime,subvol=@snapshots "$ROOT_DEV" "$TARGET/.snapshots"
+fi
 
 log "copying the live root filesystem"
 rsync -aHAX --numeric-ids --one-file-system \
@@ -322,6 +916,10 @@ rm -f "$TARGET/etc/grintion/live"
 tr -d '-' < /proc/sys/kernel/random/uuid > "$TARGET/etc/machine-id"
 chmod 0444 "$TARGET/etc/machine-id"
 
+mkdir -p "$TARGET/etc/grintion"
+printf '%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security-profile"
+printf 'PROFILE=%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security.conf"
+
 printf '%s\n' "$HOSTNAME" > "$TARGET/etc/hostname"
 cat > "$TARGET/etc/hosts" <<EOF
 127.0.0.1   localhost
@@ -329,13 +927,75 @@ cat > "$TARGET/etc/hosts" <<EOF
 127.0.1.1   $HOSTNAME
 EOF
 
+ROOT_FS_OPTS="defaults,noatime"
+ROOT_PASS=1
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    ROOT_FS_OPTS="defaults,noatime,subvol=@"
+    ROOT_PASS=0
+fi
 cat > "$TARGET/etc/fstab" <<EOF
 # /etc/fstab - generated by grintion-install
-UUID=$ROOT_UUID  /          ext4  defaults,noatime  0 1
+UUID=$ROOT_UUID  /          $FILESYSTEM  $ROOT_FS_OPTS  0 $ROOT_PASS
 UUID=$ESP_UUID   /boot/efi  vfat  umask=0077,noatime  0 2
 EOF
+if [ -n "$HOME_UUID" ]; then
+    printf 'UUID=%s  /home  %s  defaults,noatime  0 2\n' "$HOME_UUID" "$FILESYSTEM" >> "$TARGET/etc/fstab"
+elif [ "$FILESYSTEM" = "btrfs" ] && [ "$SEPARATE_HOME" -eq 1 ]; then
+    printf 'UUID=%s  /home  btrfs  defaults,noatime,subvol=@home  0 0\n' "$ROOT_UUID" >> "$TARGET/etc/fstab"
+fi
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    printf 'UUID=%s  /.snapshots  btrfs  defaults,noatime,subvol=@snapshots  0 0\n' "$ROOT_UUID" >> "$TARGET/etc/fstab"
+fi
 if [ -n "$SWAP_UUID" ]; then
     printf 'UUID=%s  none  swap  defaults  0 0\n' "$SWAP_UUID" >> "$TARGET/etc/fstab"
+fi
+
+if [ "$SWAP_FILE_MIB" -gt 0 ]; then
+    log "creating ${SWAP_FILE_MIB} MiB swapfile at $TARGET/swapfile"
+    if [ "$FILESYSTEM" = "btrfs" ]; then
+        if command -v btrfs >/dev/null 2>&1 && btrfs filesystem --help 2>&1 | grep -q mkswapfile; then
+            btrfs filesystem mkswapfile --size "${SWAP_FILE_MIB}m" "$TARGET/swapfile" >/dev/null 2>&1 || {
+                truncate -s 0 "$TARGET/swapfile"
+                chattr +C "$TARGET/swapfile" 2>/dev/null || true
+                dd if=/dev/zero of="$TARGET/swapfile" bs=1M count="$SWAP_FILE_MIB" status=none
+            }
+        else
+            truncate -s 0 "$TARGET/swapfile"
+            chattr +C "$TARGET/swapfile" 2>/dev/null || true
+            dd if=/dev/zero of="$TARGET/swapfile" bs=1M count="$SWAP_FILE_MIB" status=none
+        fi
+    else
+        fallocate -l "${SWAP_FILE_MIB}M" "$TARGET/swapfile" 2>/dev/null || \
+            dd if=/dev/zero of="$TARGET/swapfile" bs=1M count="$SWAP_FILE_MIB" status=none
+    fi
+    chmod 0600 "$TARGET/swapfile"
+    mkswap "$TARGET/swapfile" >/dev/null
+    printf '/swapfile  none  swap  defaults  0 0\n' >> "$TARGET/etc/fstab"
+fi
+
+if [ -n "$HOME_CRYPT_UUID" ]; then
+    install -m 0600 "$HOME_KEY_FILE" "$TARGET/etc/grintion/home.key"
+    cat > "$TARGET/etc/grintion/home.conf" <<EOF
+LUKS_UUID=$HOME_CRYPT_UUID
+NAME=$HOME_CRYPT_NAME
+KEY=/etc/grintion/home.key
+EOF
+    chmod 0600 "$TARGET/etc/grintion/home.conf" "$TARGET/etc/grintion/home.key"
+    rm -f "$HOME_KEY_FILE"
+    HOME_KEY_FILE=""
+fi
+
+if [ -n "$SWAP_CRYPT_UUID" ]; then
+    install -m 0600 "$SWAP_KEY_FILE" "$TARGET/etc/grintion/swap.key"
+    cat > "$TARGET/etc/grintion/swap.conf" <<EOF
+LUKS_UUID=$SWAP_CRYPT_UUID
+NAME=$SWAP_CRYPT_NAME
+KEY=/etc/grintion/swap.key
+EOF
+    chmod 0600 "$TARGET/etc/grintion/swap.conf" "$TARGET/etc/grintion/swap.key"
+    ln -sfn /etc/sv/cryptswap "$TARGET/var/service/cryptswap"
+    rm -f "$SWAP_KEY_FILE"
+    SWAP_KEY_FILE=""
 fi
 
 log "creating the administrative account"
@@ -497,6 +1157,18 @@ if [ "$NO_BOOTLOADER" -eq 0 ]; then
     install -D -m 0644 /usr/share/limine/BOOTAA64.EFI \
         "$TARGET/boot/efi/EFI/BOOT/BOOTAA64.EFI"
 
+    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
+    if [ "$FILESYSTEM" = "btrfs" ]; then
+        ROOT_CMDLINE="$ROOT_CMDLINE rootflags=subvol=@"
+    fi
+    if [ "$ENCRYPT" -eq 1 ]; then
+        ROOT_CMDLINE="cryptdevice=UUID=$LUKS_UUID:$CRYPT_NAME $ROOT_CMDLINE"
+    fi
+    CONSOLE_ARGS="console=ttyS0,115200 console=tty0"
+    if [ "$SERIAL_CONSOLE" -eq 1 ]; then
+        CONSOLE_ARGS="console=tty0 console=ttyS0,115200"
+        ROOT_CMDLINE="$ROOT_CMDLINE grintion.cryptconsole=/dev/ttyS0"
+    fi
     cat > "$TARGET/boot/efi/limine.conf" <<EOF
 timeout: 5
 interface_branding: Grintion-OS $VERSION
@@ -504,15 +1176,58 @@ interface_branding: Grintion-OS $VERSION
 /Grintion-OS $VERSION
     protocol: linux
     kernel_path: boot():/EFI/grintion/vmlinuz-grintion
-    cmdline: root=UUID=$ROOT_UUID rw quiet console=ttyS0,115200 console=tty0 grintion.serial=1
+    cmdline: $ROOT_CMDLINE $CONSOLE_ARGS grintion.serial=1
     module_path: boot():/EFI/grintion/initramfs-install.img
 
 /Grintion-OS $VERSION (recovery)
     protocol: linux
     kernel_path: boot():/EFI/grintion/vmlinuz-grintion
-    cmdline: root=UUID=$ROOT_UUID rw single console=ttyS0,115200 console=tty0 grintion.serial=1
+    cmdline: $ROOT_CMDLINE single $CONSOLE_ARGS grintion.serial=1
     module_path: boot():/EFI/grintion/initramfs-install.img
 EOF
+
+    if [ "$RECOVERY_PARTITION" -eq 1 ]; then
+        cat >> "$TARGET/boot/efi/limine.conf" <<EOF
+
+/Grintion-OS $VERSION (recovery environment)
+    protocol: linux
+    kernel_path: boot():/EFI/grintion/vmlinuz-grintion
+    cmdline: $ROOT_CMDLINE single grintion.recovery=1 $CONSOLE_ARGS grintion.serial=1
+    module_path: boot():/EFI/grintion/initramfs-install.img
+EOF
+    fi
+
+    # Probe other partitions for dual-boot OSes
+    DUAL_BOOT_ENTRIES=()
+    if [ -f "$TARGET/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi" ]; then
+        DUAL_BOOT_ENTRIES+=("Windows Boot Manager:boot():/EFI/Microsoft/Boot/bootmgfw.efi")
+    else
+        for probe_part in $(lsblk -lnpo NAME,FSTYPE 2>/dev/null | awk '$2 ~ /vfat|fat/ {print $1}'); do
+            [ -b "$probe_part" ] || continue
+            [ "$probe_part" = "$ESP" ] && continue
+            probe_mnt="$(mktemp -d /run/grintion-probe.XXXXXX)"
+            if mount -o ro "$probe_part" "$probe_mnt" 2>/dev/null; then
+                if [ -f "$probe_mnt/EFI/Microsoft/Boot/bootmgfw.efi" ]; then
+                    mkdir -p "$TARGET/boot/efi/EFI/Microsoft/Boot"
+                    cp -a "$probe_mnt/EFI/Microsoft/Boot"/* "$TARGET/boot/efi/EFI/Microsoft/Boot/" 2>/dev/null || true
+                    DUAL_BOOT_ENTRIES+=("Windows Boot Manager:boot():/EFI/Microsoft/Boot/bootmgfw.efi")
+                fi
+                umount "$probe_mnt" 2>/dev/null || true
+            fi
+            rmdir "$probe_mnt" 2>/dev/null || true
+        done
+    fi
+    for dual_entry in "${DUAL_BOOT_ENTRIES[@]}"; do
+        d_title="${dual_entry%%:*}"
+        d_path="${dual_entry#*:}"
+        cat >> "$TARGET/boot/efi/limine.conf" <<EOF
+
+/$d_title
+    protocol: efi_chainload
+    image_path: $d_path
+EOF
+    done
+
     cp "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"
 
     if [ -x /usr/share/limine/limine ]; then
@@ -520,9 +1235,24 @@ EOF
         /usr/share/limine/limine bios-install "$DISK" || warn "BIOS boot record was not written; UEFI boot is still installed"
     fi
 
-    if [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null 2>&1; then
+    if [ "$REMOVABLE" -eq 0 ] && [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null 2>&1; then
         efibootmgr -c -d "$DISK" -p 1 -L "Grintion-OS" \
             -l '\EFI\BOOT\BOOTX64.EFI' >/dev/null 2>&1 || true
+    fi
+fi
+
+SELF_TEST_OK=1
+if [ "$SKIP_SELF_TEST" -eq 0 ]; then
+    if command -v grintion-verify-install >/dev/null 2>&1; then
+        VERIFY_ARGS=(--root "$TARGET" --user "$USER_NAME" --filesystem "$FILESYSTEM")
+        [ "$ENCRYPT" -eq 1 ] && VERIFY_ARGS+=(--encrypted)
+        [ -n "$SWAP_CRYPT_UUID" ] && VERIFY_ARGS+=(--encrypted-swap)
+        if ! grintion-verify-install "${VERIFY_ARGS[@]}"; then
+            SELF_TEST_OK=0
+            warn "post-install self-test failed; the installed system may not boot"
+        fi
+    else
+        warn "grintion-verify-install is missing; skipping the post-install self-test"
     fi
 fi
 
@@ -537,9 +1267,17 @@ echo "=============================================================="
 echo "disk:      $DISK"
 echo "root UUID: $ROOT_UUID"
 echo "ESP UUID:  $ESP_UUID"
+echo "filesystem: $FILESYSTEM"
+echo "encryption: $([ "$ENCRYPT" -eq 1 ] && echo 'LUKS2 root' || echo none)"
 if [ -n "$SWAP_UUID" ]; then
-    echo "swap UUID: $SWAP_UUID"
+    echo "swap:      ${SWAP_SIZE_MIB} MiB (plain, UUID $SWAP_UUID)"
+elif [ -n "$SWAP_CRYPT_UUID" ]; then
+    echo "swap:      ${SWAP_SIZE_MIB} MiB (LUKS2, key /etc/grintion/swap.key)"
 fi
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    echo "snapshots: /.snapshots (subvol @snapshots)"
+fi
+echo "self-test: $([ "$SELF_TEST_OK" -eq 1 ] && echo passed || echo FAILED)"
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
@@ -557,6 +1295,6 @@ echo
 echo "Remove the installation media and reboot."
 echo "=============================================================="
 
-if [ "$DESKTOP_READY" -ne 1 ]; then
+if [ "$DESKTOP_READY" -ne 1 ] || [ "$SELF_TEST_OK" -ne 1 ]; then
     exit 1
 fi

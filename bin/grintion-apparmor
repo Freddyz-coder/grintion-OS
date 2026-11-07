@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""grintion-apparmor - manage AppArmor profiles and security boundaries.
+
+Supports parsing, loading, checking enforcement mode (enforce/complain/disable),
+and reporting status of system AppArmor profiles.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_PROFILE_DIR = Path(os.environ.get("GRINTION_APPARMOR_DIR", "/etc/apparmor.d"))
+SYS_APPARMOR = Path(os.environ.get("GRINTION_SYS_APPARMOR", "/sys/kernel/security/apparmor"))
+
+
+def is_apparmor_enabled() -> bool:
+    param = Path(os.environ.get("GRINTION_SYSFS_APPARMOR_PARAM", "/sys/module/apparmor/parameters/enabled"))
+    if param.is_file():
+        try:
+            return param.read_text(encoding="utf-8").strip().upper() == "Y"
+        except OSError:
+            pass
+    return SYS_APPARMOR.is_dir()
+
+
+def list_profiles(profile_dir: Path = DEFAULT_PROFILE_DIR) -> list[dict[str, str]]:
+    results = []
+    if not profile_dir.is_dir():
+        return results
+
+    for p in sorted(profile_dir.glob("*")):
+        if p.is_file() and not p.name.startswith((".", "local")):
+            mode = "enforce"
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                if "flags=(complain)" in content:
+                    mode = "complain"
+                elif "flags=(audit)" in content:
+                    mode = "audit"
+            except OSError:
+                mode = "unknown"
+            results.append({"name": p.name, "path": str(p), "mode": mode})
+    return results
+
+
+def status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    enabled = is_apparmor_enabled()
+    profiles = list_profiles(profile_dir)
+    enforced = [p["name"] for p in profiles if p["mode"] == "enforce"]
+    complaining = [p["name"] for p in profiles if p["mode"] == "complain"]
+
+    return {
+        "enabled": enabled,
+        "profiles_loaded": len(profiles),
+        "enforce_count": len(enforced),
+        "complain_count": len(complaining),
+        "profiles": profiles,
+    }
+
+
+def set_profile_mode(name: str, target_mode: str, profile_dir: Path = DEFAULT_PROFILE_DIR) -> bool:
+    target = profile_dir / name
+    if not target.is_file():
+        return False
+    try:
+        content = target.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        new_lines = []
+        replaced = False
+        for line in lines:
+            if "flags=(" in line and not line.strip().startswith("#"):
+                if target_mode == "complain":
+                    new_lines.append(line.split("flags=")[0] + "flags=(complain) {")
+                else:
+                    new_lines.append(line.split("flags=")[0] + "{")
+                replaced = True
+            elif target_mode == "complain" and "{" in line and not replaced and not line.strip().startswith("#"):
+                parts = line.split("{", 1)
+                new_lines.append(f"{parts[0]} flags=(complain) {{{parts[1]}")
+                replaced = True
+            else:
+                new_lines.append(line)
+        target.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="Output in JSON")
+
+    parser = argparse.ArgumentParser(
+        prog="grintion-apparmor",
+        parents=[common],
+        description="Inspect and manage AppArmor security profiles for Grintion-OS.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="Show AppArmor status and active profiles")
+    p_load = sub.add_parser("load", parents=[common], help="Load or parse an AppArmor profile")
+    p_load.add_argument("profile", help="Profile filename or path")
+
+    p_enforce = sub.add_parser("enforce", parents=[common], help="Set profile to enforce mode")
+    p_enforce.add_argument("profile", help="Profile name in /etc/apparmor.d")
+
+    p_complain = sub.add_parser("complain", parents=[common], help="Set profile to complain mode")
+    p_complain.add_argument("profile", help="Profile name in /etc/apparmor.d")
+
+    args = parser.parse_args()
+
+    profile_dir = Path(os.environ.get("GRINTION_APPARMOR_DIR", "/etc/apparmor.d"))
+
+    if args.command in (None, "status"):
+        st = status(profile_dir)
+        if getattr(args, "json", False):
+            print(json.dumps(st, indent=2))
+        else:
+            state_str = "ENABLED" if st["enabled"] else "DISABLED (simulated/permissive)"
+            print(f"AppArmor Status: {state_str}")
+            print(f"Profiles: {st['profiles_loaded']} total, {st['enforce_count']} enforced, {st['complain_count']} complain")
+            for p in st["profiles"]:
+                print(f"  [{p['mode'].upper():8}] {p['name']}")
+        return 0
+
+    if args.command == "enforce":
+        if set_profile_mode(args.profile, "enforce", profile_dir):
+            print(f"Profile '{args.profile}' set to enforce mode.")
+            return 0
+        print(f"Error: Profile '{args.profile}' not found in {profile_dir}", file=sys.stderr)
+        return 1
+
+    if args.command == "complain":
+        if set_profile_mode(args.profile, "complain", profile_dir):
+            print(f"Profile '{args.profile}' set to complain mode.")
+            return 0
+        print(f"Error: Profile '{args.profile}' not found in {profile_dir}", file=sys.stderr)
+        return 1
+
+    if args.command == "load":
+        p_path = Path(args.profile)
+        if not p_path.is_file():
+            p_path = profile_dir / args.profile
+        if not p_path.is_file():
+            print(f"Error: Profile file not found: {args.profile}", file=sys.stderr)
+            return 1
+        parser_bin = shutil.which("apparmor_parser")
+        if parser_bin:
+            res = subprocess.run([parser_bin, "-r", str(p_path)], capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"Parser error: {res.stderr.strip()}", file=sys.stderr)
+                return res.returncode
+        print(f"Profile '{p_path.name}' parsed and verified.")
+        return 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

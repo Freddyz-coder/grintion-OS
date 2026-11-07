@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""grintion-security-report - read-only post-install security posture report.
+
+The report does not change settings and does not treat an absent optional
+control as present. Exit status is 0 by default; --strict exits 1 when a
+warning or failure is recorded.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+EXPECTED_SYSCTLS = {
+    "kernel.randomize_va_space": "2",
+    "kernel.dmesg_restrict": "1",
+    "kernel.kptr_restrict": "2",
+    "kernel.yama.ptrace_scope": "2",
+    "kernel.perf_event_paranoid": "3",
+    "kernel.unprivileged_bpf_disabled": "1",
+    "fs.protected_symlinks": "1",
+    "fs.protected_hardlinks": "1",
+    "fs.protected_fifos": "2",
+    "fs.protected_regular": "2",
+    "fs.suid_dumpable": "0",
+}
+
+
+def read_text(path: object, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return default
+
+
+def run(argv: list[str], timeout: int = 10):
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def add(checks: list[dict], ident: str, status: str, summary: str, detail: str = "") -> None:
+    checks.append({"id": ident, "status": status, "summary": summary, "detail": detail})
+
+
+def secure_boot_state() -> str:
+    if not Path("/sys/firmware/efi").is_dir():
+        return "not-applicable"
+    for entry in Path("/sys/firmware/efi/efivars").glob("SecureBoot-*"):
+        try:
+            data = entry.read_bytes()
+        except OSError:
+            continue
+        if len(data) >= 5:
+            return "enabled" if data[4] == 1 else "disabled"
+    return "unknown"
+
+
+def root_password_state() -> str:
+    text = read_text("/etc/shadow")
+    if not text:
+        return "unknown"
+    for line in text.splitlines():
+        fields = line.split(":")
+        if fields and fields[0] == "root":
+            if len(fields) < 2:
+                return "unknown"
+            password = fields[1]
+            if password == "":
+                return "empty"
+            if password.startswith(("!", "*")):
+                return "locked"
+            return "set"
+    return "unknown"
+
+
+def encrypted_block_devices() -> list[str]:
+    found: set[str] = set()
+    for device in Path("/sys/class/block").glob("dm-*"):
+        uuid = read_text(device / "dm" / "uuid").strip()
+        if uuid.startswith("CRYPT-"):
+            found.add(device.name)
+    result = run(["lsblk", "-rno", "FSTYPE"])
+    if result is not None and result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if line.strip() == "crypto_LUKS":
+                found.add("crypto_LUKS")
+    return sorted(found)
+
+
+def exposed_listeners() -> list[str] | None:
+    ss = shutil.which("ss")
+    if ss is None:
+        return None
+    result = run([ss, "-H", "-ltnu"])
+    if result is None or result.returncode != 0:
+        return None
+    exposed: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        address = fields[4]
+        host, _, port = address.rpartition(":")
+        host = host.strip("[]")
+        if host in ("127.0.0.1", "::1") or host.startswith("127."):
+            continue
+        exposed.add(f"{host}:{port}")
+    return sorted(exposed)
+
+
+def running_process(name: str) -> bool:
+    try:
+        entries = Path("/proc").iterdir()
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.name.isdigit() and read_text(entry / "comm").strip() == name:
+            return True
+    return False
+
+
+def sudo_logging_enabled() -> bool:
+    texts = [read_text("/etc/sudoers")]
+    for path in Path("/etc/sudoers.d").glob("*"):
+        texts.append(read_text(path))
+    joined = "\n".join(texts)
+    return "log_input" in joined or "log_output" in joined or "LOG_INPUT" in joined or "LOG_OUTPUT" in joined
+
+
+def collect() -> dict:
+    checks: list[dict] = []
+    version = read_text("/etc/grintion/version").strip()
+    if version:
+        add(checks, "image", "ok", f"Grintion-OS {version}")
+    else:
+        add(checks, "image", "warn", "/etc/grintion/version is missing",
+            "This may not be a Grintion-OS image; the report still inspects the host.")
+
+    secure_boot = secure_boot_state()
+    if secure_boot == "enabled":
+        add(checks, "secure-boot", "warn", "Secure Boot is enabled",
+            "The Grintion boot chain is unsigned; the firmware should refuse it.")
+    elif secure_boot == "disabled":
+        add(checks, "secure-boot", "ok", "Secure Boot is disabled",
+            "The unsigned Limine chain can boot, but there is no verified boot.")
+    elif secure_boot == "not-applicable":
+        add(checks, "secure-boot", "info", "BIOS/legacy boot; Secure Boot is not applicable")
+    else:
+        add(checks, "secure-boot", "warn", "Secure Boot state is unknown")
+
+    password_state = root_password_state()
+    if password_state == "locked":
+        add(checks, "root-account", "ok", "root account is locked")
+    elif password_state == "set":
+        add(checks, "root-account", "ok", "root account has a password set")
+    elif password_state == "empty":
+        add(checks, "root-account", "fail", "root account has an empty password")
+    else:
+        add(checks, "root-account", "warn", "root account state could not be read")
+
+    encrypted = encrypted_block_devices()
+    if encrypted:
+        add(checks, "disk-encryption", "ok", "encrypted block device detected",
+            ", ".join(encrypted))
+    else:
+        add(checks, "disk-encryption", "warn", "no LUKS/crypto block device detected",
+            "Installed roots are not encrypted in 0.9.x.")
+
+    nft = shutil.which("nft")
+    if nft is None:
+        add(checks, "firewall", "warn", "nftables is not installed")
+    else:
+        result = run([nft, "list", "ruleset"])
+        if result is None or result.returncode != 0:
+            add(checks, "firewall", "warn", "cannot query the nftables ruleset",
+                "Run as root to inspect the active rules.")
+        elif "table " in result.stdout:
+            add(checks, "firewall", "ok", "nftables ruleset is loaded")
+        else:
+            add(checks, "firewall", "warn", "nftables ruleset is empty")
+
+    listeners = exposed_listeners()
+    if listeners is None:
+        add(checks, "listeners", "warn", "cannot enumerate listening sockets")
+    elif listeners:
+        add(checks, "listeners", "warn", f"{len(listeners)} non-loopback listener(s)",
+            ", ".join(listeners[:12]))
+    else:
+        add(checks, "listeners", "ok", "no non-loopback TCP/UDP listeners")
+
+    module_signing = read_text("/sys/module/module/parameters/sig_enforce").strip()
+    if module_signing == "Y":
+        add(checks, "module-signing", "ok", "unsigned kernel modules are refused")
+    elif module_signing:
+        add(checks, "module-signing", "warn", "kernel module signature enforcement is off")
+    else:
+        add(checks, "module-signing", "warn", "kernel module signing state is unknown")
+
+    mismatches = []
+    for key, expected in EXPECTED_SYSCTLS.items():
+        actual = read_text(f"/proc/sys/{key.replace('.', '/')}").strip()
+        if actual and actual != expected:
+            mismatches.append(f"{key}={actual} (expected {expected})")
+    if mismatches:
+        add(checks, "sysctls", "warn", f"{len(mismatches)} hardening sysctl(s) differ",
+            "; ".join(mismatches[:10]))
+    else:
+        add(checks, "sysctls", "ok", "documented hardening sysctls match")
+
+    faillock = Path("/etc/security/faillock.conf").is_file() and "pam_faillock.so" in read_text(
+        "/etc/pam.d/system-auth"
+    )
+    if faillock:
+        add(checks, "faillock", "ok", "pam_faillock is configured")
+    else:
+        add(checks, "faillock", "warn", "pam_faillock is not configured")
+
+    apparmor = read_text("/sys/module/apparmor/parameters/enabled").strip()
+    if apparmor == "Y":
+        add(checks, "apparmor", "ok", "AppArmor is enabled")
+    else:
+        add(checks, "apparmor", "warn", "AppArmor is not enabled",
+            "No mandatory access control is provided by 0.9.x.")
+
+    if running_process("auditd"):
+        add(checks, "auditd", "ok", "auditd is running")
+    else:
+        add(checks, "auditd", "warn", "auditd is not running")
+
+    if shutil.which("aide") or Path("/var/lib/aide/aide.db").is_file():
+        add(checks, "aide", "info", "AIDE is installed; verify its baseline is current")
+    else:
+        add(checks, "aide", "warn", "AIDE is not installed")
+
+    if shutil.which("usbguard"):
+        add(checks, "usbguard", "info", "USBGuard is installed; verify its policy")
+    else:
+        add(checks, "usbguard", "warn", "USBGuard is not installed")
+
+    if Path("/sys/class/tpm/tpm0").exists() or Path("/dev/tpm0").exists():
+        add(checks, "tpm", "info", "TPM device present")
+    else:
+        add(checks, "tpm", "info", "no TPM device detected")
+
+    if sudo_logging_enabled():
+        add(checks, "sudo-logging", "ok", "sudo I/O logging is configured")
+    else:
+        add(checks, "sudo-logging", "warn", "sudo I/O logging is not configured")
+
+    repos = sorted(Path("/etc/garb/repos.d").glob("*.conf")) if Path("/etc/garb/repos.d").is_dir() else []
+    if repos:
+        add(checks, "repositories", "info", f"{len(repos)} package repository file(s) configured")
+    else:
+        add(checks, "repositories", "info", "no package repositories configured")
+
+    profile_path = Path("/etc/grintion/security-profile")
+    active_profile = profile_path.read_text(encoding="utf-8").strip() if profile_path.is_file() else "workstation"
+    add(checks, "security-profile", "info", f"active security profile: {active_profile}")
+
+    database = Path("/var/lib/garb/db.json")
+    if database.is_file():
+        try:
+            data = json.loads(database.read_text(encoding="utf-8"))
+            count = len(data.get("packages", {})) if isinstance(data, dict) else 0
+            add(checks, "package-database", "info", f"native package database tracks {count} package(s)")
+        except (OSError, json.JSONDecodeError):
+            add(checks, "package-database", "warn", "native package database is unreadable",
+                "Run 'garb fsck --format json'.")
+    else:
+        add(checks, "package-database", "info", "no native package database present")
+
+    summary = {status: sum(1 for check in checks if check["status"] == status)
+               for status in ("ok", "warn", "fail", "info")}
+    return {
+        "schema": 1,
+        "generated": int(time.time()),
+        "host": os.uname().nodename,
+        "version": version or "unknown",
+        "security_profile": active_profile,
+        "checks": checks,
+        "summary": summary,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-security-report",
+        description="Read-only security posture report for a running Grintion-OS system.",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--strict", action="store_true",
+                        help="exit 1 when any warning or failure is present")
+    args = parser.parse_args()
+
+    payload = collect()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Grintion-OS security report (version {payload['version']})")
+        print(f"host: {payload['host']}")
+        labels = {"ok": "[ ok ]", "warn": "[WARN]", "fail": "[FAIL]", "info": "[info]"}
+        for check in payload["checks"]:
+            print(f"{labels[check['status']]} {check['summary']}")
+            if check["detail"] and check["status"] in ("warn", "fail"):
+                print(f"       {check['detail']}")
+        summary = payload["summary"]
+        print(
+            f"summary: {summary['ok']} ok, {summary['warn']} warning(s), "
+            f"{summary['fail']} failure(s), {summary['info']} informational"
+        )
+
+    if args.strict and (payload["summary"]["warn"] or payload["summary"]["fail"]):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

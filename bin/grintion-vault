@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""grintion-vault - encrypted secret vault, secure wipe, and certificate trust store."""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+VAULT_DIR = Path(os.environ.get("GRINTION_VAULT_DIR", Path.home() / ".local/share/grintion/vault"))
+CERT_DIR = Path(os.environ.get("GRINTION_CERT_DIR", "/etc/ssl/certs"))
+
+
+def secure_shred(file_path: Path, passes: int = 3) -> bool:
+    if not file_path.is_file():
+        return False
+
+    shred_bin = shutil.which("shred")
+    if shred_bin:
+        res = subprocess.run([shred_bin, "-u", "-n", str(passes), "-z", str(file_path)])
+        return res.returncode == 0
+
+    # Fallback secure wipe in Python
+    size = file_path.stat().st_size
+    with file_path.open("wb") as f:
+        for _ in range(passes):
+            f.seek(0)
+            f.write(os.urandom(size))
+            f.flush()
+            os.fsync(f.fileno())
+        f.seek(0)
+        f.write(b"\x00" * size)
+        f.flush()
+        os.fsync(f.fileno())
+    file_path.unlink()
+    return True
+
+
+def list_certificates(cert_dir: Path = CERT_DIR) -> list[str]:
+    certs = []
+    if not cert_dir.is_dir():
+        return certs
+    for c in sorted(cert_dir.glob("*.pem")):
+        certs.append(c.name)
+    for c in sorted(cert_dir.glob("*.crt")):
+        certs.append(c.name)
+    return certs
+
+
+def add_certificate(cert_file: Path, cert_dir: Path = CERT_DIR) -> bool:
+    if not cert_file.is_file():
+        return False
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    target = cert_dir / cert_file.name
+    try:
+        shutil.copy2(cert_file, target)
+        trust_cmd = shutil.which("update-ca-trust") or shutil.which("update-ca-certificates")
+        if trust_cmd:
+            subprocess.run([trust_cmd], check=False)
+        return True
+    except OSError:
+        return False
+
+
+def remove_certificate(cert_name: str, cert_dir: Path = CERT_DIR) -> bool:
+    target = cert_dir / cert_name
+    if target.is_file():
+        try:
+            target.unlink()
+            trust_cmd = shutil.which("update-ca-trust") or shutil.which("update-ca-certificates")
+            if trust_cmd:
+                subprocess.run([trust_cmd], check=False)
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def encrypt_data(raw_bytes: bytes, passphrase: str) -> str:
+    # Deterministic simple symmetric encapsulation with key derivation
+    salt = os.urandom(16)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 100000, dklen=32)
+    # Simple stream xor for portable zero-dependency encryption
+    keystream = hashlib.sha256(key).digest()
+    encrypted = bytearray()
+    for i, b in enumerate(raw_bytes):
+        encrypted.append(b ^ keystream[i % len(keystream)])
+    payload = salt + bytes(encrypted)
+    return base64.b64encode(payload).decode("ascii")
+
+
+def decrypt_data(encoded: str, passphrase: str) -> bytes | None:
+    try:
+        payload = base64.b64decode(encoded)
+        if len(payload) < 16:
+            return None
+        salt = payload[:16]
+        encrypted = payload[16:]
+        key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 100000, dklen=32)
+        keystream = hashlib.sha256(key).digest()
+        decrypted = bytearray()
+        for i, b in enumerate(encrypted):
+            decrypted.append(b ^ keystream[i % len(keystream)])
+        return bytes(decrypted)
+    except Exception:
+        return None
+
+
+def store_secret(key_name: str, value: str, passphrase: str, vault_dir: Path = VAULT_DIR) -> bool:
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    target = vault_dir / f"{key_name}.vault"
+    enc = encrypt_data(value.encode("utf-8"), passphrase)
+    try:
+        target.write_text(enc, encoding="utf-8")
+        target.chmod(0o600)
+        return True
+    except OSError:
+        return False
+
+
+def retrieve_secret(key_name: str, passphrase: str, vault_dir: Path = VAULT_DIR) -> str | None:
+    target = vault_dir / f"{key_name}.vault"
+    if not target.is_file():
+        return None
+    try:
+        enc = target.read_text(encoding="utf-8").strip()
+        data = decrypt_data(enc, passphrase)
+        if data is None:
+            return None
+        return data.decode("utf-8")
+    except Exception:
+        return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-vault",
+        description="Encrypted secrets store, secure file wipe, and certificate manager.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_store = sub.add_parser("set", help="Store encrypted secret in vault")
+    p_store.add_argument("key", help="Key identifier")
+    p_store.add_argument("value", help="Secret value to store")
+    p_store.add_argument("--passphrase", default="grintion-default-vault-key", help="Vault encryption passphrase")
+
+    p_get = sub.add_parser("get", help="Retrieve encrypted secret from vault")
+    p_get.add_argument("key", help="Key identifier")
+    p_get.add_argument("--passphrase", default="grintion-default-vault-key", help="Vault encryption passphrase")
+
+    p_shred = sub.add_parser("shred", help="Securely overwrite and remove a file")
+    p_shred.add_argument("file", help="File to wipe")
+    p_shred.add_argument("--passes", type=int, default=3, help="Number of wipe passes")
+
+    sub.add_parser("list-certs", help="List system trusted CA certificates")
+    p_add_cert = sub.add_parser("trust-cert", help="Install certificate into trust store")
+    p_add_cert.add_argument("cert", help="Certificate file (.crt/.pem)")
+
+    p_del_cert = sub.add_parser("untrust-cert", help="Remove certificate from trust store")
+    p_del_cert.add_argument("name", help="Certificate filename")
+
+    args = parser.parse_args()
+
+    if args.command == "set":
+        if store_secret(args.key, args.value, args.passphrase):
+            print(f"Secret '{args.key}' saved to vault.")
+            return 0
+        return 1
+
+    if args.command == "get":
+        val = retrieve_secret(args.key, args.passphrase)
+        if val is not None:
+            print(val)
+            return 0
+        print(f"Error: Secret '{args.key}' not found or decryption failed.", file=sys.stderr)
+        return 1
+
+    if args.command == "shred":
+        target = Path(args.file)
+        if secure_shred(target, args.passes):
+            print(f"File {target} securely shredded ({args.passes} passes).")
+            return 0
+        print(f"Error: Failed to shred {target}", file=sys.stderr)
+        return 1
+
+    if args.command == "list-certs":
+        certs = list_certificates()
+        print(f"System Trusted Certificates ({len(certs)} installed):")
+        for c in certs[:30]:
+            print(f"  {c}")
+        if len(certs) > 30:
+            print(f"  ... and {len(certs) - 30} more")
+        return 0
+
+    if args.command == "trust-cert":
+        if add_certificate(Path(args.cert)):
+            print(f"Certificate {args.cert} trusted and installed.")
+            return 0
+        return 1
+
+    if args.command == "untrust-cert":
+        if remove_certificate(args.name):
+            print(f"Certificate {args.name} removed from trust store.")
+            return 0
+        return 1
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

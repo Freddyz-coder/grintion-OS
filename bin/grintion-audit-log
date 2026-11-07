@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""grintion-audit-log - query and inspect auditd and sudo audit trail events."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+AUDIT_LOG = Path(os.environ.get("GRINTION_AUDIT_LOG", "/var/log/audit/audit.log"))
+SUDO_LOG = Path(os.environ.get("GRINTION_SUDO_LOG", "/var/log/sudo.log"))
+
+
+def parse_audit_entries(path: Path) -> list[dict]:
+    entries = []
+    if not path.is_file():
+        return entries
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return entries
+
+    for line in lines:
+        if not line.strip():
+            continue
+        entry = {"raw": line, "type": "UNKNOWN", "key": None, "comm": None}
+        tokens = line.split()
+        for tok in tokens:
+            if tok.startswith("type="):
+                entry["type"] = tok.split("=", 1)[1]
+            elif tok.startswith("key="):
+                entry["key"] = tok.split("=", 1)[1].strip('"')
+            elif tok.startswith("comm="):
+                entry["comm"] = tok.split("=", 1)[1].strip('"')
+        entries.append(entry)
+    return entries
+
+
+def parse_sudo_entries(path: Path) -> list[dict]:
+    entries = []
+    if not path.is_file():
+        return entries
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return entries
+
+    for line in lines:
+        if not line.strip():
+            continue
+        entries.append({"raw": line, "timestamp": line[:15], "detail": line[16:].strip()})
+    return entries
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-audit-log",
+        description="Inspect system auditd trails and sudo execution logs.",
+    )
+    parser.add_argument("--sudo", action="store_true", help="View sudo execution trail")
+    parser.add_argument("--key", help="Filter audit events by key tag (e.g. priv_esc, identity)")
+    parser.add_argument("--json", action="store_true", help="Format output in JSON")
+    parser.add_argument("--limit", type=int, default=50, help="Max entries to display")
+
+    args = parser.parse_args()
+
+    if args.sudo:
+        entries = parse_sudo_entries(SUDO_LOG)
+        if args.json:
+            print(json.dumps(entries[:args.limit], indent=2))
+        else:
+            print(f"=== Sudo Execution Log ({len(entries)} events) ===")
+            for e in entries[-args.limit:]:
+                print(e["raw"])
+        return 0
+
+    entries = parse_audit_entries(AUDIT_LOG)
+    if args.key:
+        entries = [e for e in entries if e.get("key") == args.key]
+
+    if args.json:
+        print(json.dumps(entries[:args.limit], indent=2))
+    else:
+        print(f"=== Grintion Audit Trail ({len(entries)} events) ===")
+        if not entries:
+            print("No audit events recorded or auditd log unavailable.")
+        for e in entries[-args.limit:]:
+            print(f"[{e['type']}] key={e['key']} comm={e['comm']} -> {e['raw'][:80]}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

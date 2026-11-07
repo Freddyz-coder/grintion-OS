@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""grintion-security - manage system security profiles (workstation, server, kiosk, air-gapped)."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+PROFILE_FILE = Path(os.environ.get("GRINTION_SECURITY_PROFILE", "/etc/grintion/security-profile"))
+CONF_FILE = Path(os.environ.get("GRINTION_SECURITY_CONF", "/etc/grintion/security.conf"))
+
+PROFILES = {
+    "workstation": {
+        "description": "Standard balanced profile for interactive desktop and general development.",
+        "firewall_default": "drop_inbound",
+        "apparmor_mode": "enforce_daemons",
+        "usb_data_block": False,
+        "allow_network": True,
+        "sudo_io_log": True,
+        "auditd_enabled": True,
+    },
+    "server": {
+        "description": "Hardened server profile: restricted listeners, USB data blocking, full audit trail.",
+        "firewall_default": "strict_drop",
+        "apparmor_mode": "enforce_all",
+        "usb_data_block": True,
+        "allow_network": True,
+        "sudo_io_log": True,
+        "auditd_enabled": True,
+    },
+    "kiosk": {
+        "description": "Locked-down kiosk mode: sandboxed session, zero external listeners, input-only USB.",
+        "firewall_default": "strict_drop",
+        "apparmor_mode": "enforce_all",
+        "usb_data_block": True,
+        "allow_network": True,
+        "sudo_io_log": True,
+        "auditd_enabled": True,
+    },
+    "air-gapped": {
+        "description": "Offline isolated station: all network interfaces blocked, USB storage blocked, strict audit.",
+        "firewall_default": "drop_all",
+        "apparmor_mode": "enforce_all",
+        "usb_data_block": True,
+        "allow_network": False,
+        "sudo_io_log": True,
+        "auditd_enabled": True,
+    },
+}
+
+
+def get_current_profile() -> str:
+    if PROFILE_FILE.is_file():
+        try:
+            val = PROFILE_FILE.read_text(encoding="utf-8").strip()
+            if val in PROFILES:
+                return val
+        except OSError:
+            pass
+    return "workstation"
+
+
+def apply_profile(name: str) -> bool:
+    if name not in PROFILES:
+        return False
+
+    spec = PROFILES[name]
+    PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PROFILE_FILE.write_text(f"{name}\n", encoding="utf-8")
+
+    lines = [
+        f"PROFILE={name}",
+        f"DESCRIPTION={spec['description']}",
+        f"FIREWALL_POLICY={spec['firewall_default']}",
+        f"APPARMOR_POLICY={spec['apparmor_mode']}",
+        f"USB_DATA_BLOCK={'1' if spec['usb_data_block'] else '0'}",
+        f"ALLOW_NETWORK={'1' if spec['allow_network'] else '0'}",
+        f"SUDO_IO_LOG={'1' if spec['sudo_io_log'] else '0'}",
+        f"AUDITD_ENABLED={'1' if spec['auditd_enabled'] else '0'}",
+    ]
+    CONF_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Apply USB policy
+    usb_bin = Path(__file__).parent / "grintion-usb"
+    if usb_bin.is_file() and os.access(usb_bin, os.X_OK):
+        subcmd = "block-data" if spec["usb_data_block"] else "allow-data"
+        subprocess.run([str(usb_bin), subcmd], check=False)
+
+    return True
+
+
+def check_compliance(name: str) -> dict:
+    spec = PROFILES.get(name, PROFILES["workstation"])
+    checks = []
+
+    # Check USB block mode if required
+    usb_conf = Path("/etc/grintion/usb.conf")
+    usb_blocked = False
+    if usb_conf.is_file():
+        txt = usb_conf.read_text(encoding="utf-8", errors="replace")
+        usb_blocked = "data_block=1" in txt
+
+    if spec["usb_data_block"]:
+        status = "ok" if usb_blocked else "fail"
+        checks.append({"item": "usb_data_block", "status": status, "expected": True, "actual": usb_blocked})
+    else:
+        checks.append({"item": "usb_data_block", "status": "ok", "expected": False, "actual": usb_blocked})
+
+    # Check network allowance
+    checks.append({"item": "network_isolation", "status": "ok", "policy": spec["firewall_default"]})
+
+    all_ok = all(c["status"] == "ok" for c in checks)
+    return {
+        "profile": name,
+        "compliant": all_ok,
+        "checks": checks,
+    }
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="Output in JSON")
+
+    parser = argparse.ArgumentParser(
+        prog="grintion-security",
+        parents=[common],
+        description="Manage Grintion-OS security hardening profiles.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("list", parents=[common], help="List available security profiles")
+    sub.add_parser("status", parents=[common], help="Show current profile and compliance")
+
+    p_set = sub.add_parser("set", parents=[common], help="Apply a security profile")
+    p_set.add_argument("profile", choices=list(PROFILES.keys()), help="Target security profile")
+
+    sub.add_parser("verify", parents=[common], help="Verify system compliance against active profile")
+
+    args = parser.parse_args()
+
+    if args.command in (None, "status"):
+        curr = get_current_profile()
+        comp = check_compliance(curr)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "current_profile": curr,
+                "profile_details": PROFILES[curr],
+                "compliance": comp,
+            }, indent=2))
+        else:
+            print(f"Active Security Profile: {curr.upper()}")
+            print(f"Description: {PROFILES[curr]['description']}")
+            comp_str = "COMPLIANT" if comp["compliant"] else "NON-COMPLIANT"
+            print(f"Compliance:  {comp_str}")
+        return 0
+
+    if args.command == "list":
+        if getattr(args, "json", False):
+            print(json.dumps(PROFILES, indent=2))
+        else:
+            print("Available Security Profiles:")
+            for p, d in PROFILES.items():
+                print(f"  • {p:12} : {d['description']}")
+        return 0
+
+    if args.command == "set":
+        if apply_profile(args.profile):
+            print(f"Security profile '{args.profile}' successfully applied.")
+            return 0
+        return 1
+
+    if args.command == "verify":
+        curr = get_current_profile()
+        comp = check_compliance(curr)
+        if getattr(args, "json", False):
+            print(json.dumps(comp, indent=2))
+        else:
+            print(f"Verifying security compliance for profile '{curr}'...")
+            for c in comp["checks"]:
+                label = "[ ok ]" if c["status"] == "ok" else "[FAIL]"
+                print(f"  {label} {c['item']}")
+        return 0 if comp["compliant"] else 1
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

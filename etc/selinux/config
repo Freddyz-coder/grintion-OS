@@ -1,0 +1,6 @@
+# Grintion-OS SELinux configuration (Experimental Track)
+# Grintion-OS primarily enforces mandatory access control via AppArmor.
+# SELinux support is provided as an opt-in experimental reference track.
+SELINUX=permissive
+SELINUXTYPE=targeted
+

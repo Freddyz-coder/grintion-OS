@@ -1,0 +1,39 @@
+# Grintion-OS auditd rules
+# Documented rule set for security-sensitive system monitoring
+
+# Delete all existing rules
+-D
+
+# Buffer size
+-b 8192
+
+# Failure mode: 1 = printk, 2 = panic
+-f 1
+
+# Monitor identity changes
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+# Monitor system environment and network config
+-w /etc/grintion/ -p wa -k grintion-config
+-w /etc/issue -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+-w /etc/hosts -p wa -k system-network
+
+# Monitor privilege escalation
+-w /bin/su -p x -k priv_esc
+-w /usr/bin/sudo -p x -k priv_esc
+-w /etc/sudoers -p wa -k priv_esc
+-w /etc/sudoers.d/ -p wa -k priv_esc
+
+# Monitor security system alterations
+-w /etc/apparmor/ -p wa -k mac_policy
+-w /etc/apparmor.d/ -p wa -k mac_policy
+-w /etc/usbguard/ -p wa -k usbguard
+
+# Make the configuration immutable until next reboot
+-e 2
+

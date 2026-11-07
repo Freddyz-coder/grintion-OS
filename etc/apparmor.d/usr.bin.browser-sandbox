@@ -1,0 +1,34 @@
+# AppArmor profile for sandboxed web browsers and untrusted web clients
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/usr/bin/browser-sandbox {
+  include <abstractions/base>
+  include <abstractions/fonts>
+  include <abstractions/nameservice>
+  include <abstractions/X>
+
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+
+  /usr/bin/browser-sandbox mr,
+  /usr/bin/bwrap ix,
+  /usr/bin/firejail ix,
+
+  owner @{HOME}/.cache/** rw,
+  owner @{HOME}/.config/** r,
+  owner @{HOME}/Downloads/** rw,
+
+  /dev/dri/** rw,
+  /dev/shm/** rwm,
+
+  deny /etc/shadow* rwklx,
+  deny /etc/sudoers* rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+  deny /boot/** rwklx,
+  deny /root/** rwklx,
+}
+

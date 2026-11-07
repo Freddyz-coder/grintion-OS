@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""grintion-integrity - file integrity checker and AIDE baseline manager."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+DEFAULT_DB = Path(os.environ.get("GRINTION_INTEGRITY_DB", "/var/lib/aide/integrity-baseline.json"))
+MONITORED_PATHS = [
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/usr/bin"),
+    Path("/usr/sbin"),
+    Path("/etc/grintion"),
+    Path("/etc/shadow"),
+    Path("/etc/passwd"),
+    Path("/etc/sudoers"),
+]
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def scan_paths(roots: list[Path]) -> dict[str, dict]:
+    entries: dict[str, dict] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            stat = root.stat()
+            entries[str(root)] = {
+                "hash": sha256_file(root),
+                "size": stat.st_size,
+                "mode": oct(stat.st_mode),
+                "mtime": stat.st_mtime,
+            }
+        elif root.is_dir():
+            for item in sorted(root.glob("**/*")):
+                if item.is_file() and not item.is_symlink():
+                    try:
+                        stat = item.stat()
+                        entries[str(item)] = {
+                            "hash": sha256_file(item),
+                            "size": stat.st_size,
+                            "mode": oct(stat.st_mode),
+                            "mtime": stat.st_mtime,
+                        }
+                    except OSError:
+                        continue
+    return entries
+
+
+def cmd_init(db_path: Path, paths: list[Path]) -> int:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = scan_paths(paths)
+    data = {"version": 1, "created": os.uname().nodename, "entries": entries}
+    db_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"Integrity baseline initialized with {len(entries)} file records at {db_path}")
+    return 0
+
+
+def cmd_check(db_path: Path, paths: list[Path]) -> tuple[int, dict]:
+    if not db_path.is_file():
+        print(f"Error: Integrity baseline not found at {db_path}. Run 'init' first.", file=sys.stderr)
+        return 2, {"status": "missing_db"}
+
+    try:
+        baseline = json.loads(db_path.read_text(encoding="utf-8"))
+        entries = baseline.get("entries", {})
+    except Exception as e:
+        print(f"Error reading baseline database: {e}", file=sys.stderr)
+        return 2, {"status": "corrupt_db"}
+
+    current = scan_paths(paths)
+
+    added = []
+    removed = []
+    modified = []
+
+    for path, meta in current.items():
+        if path not in entries:
+            added.append(path)
+        elif meta["hash"] != entries[path]["hash"]:
+            modified.append(path)
+
+    for path in entries:
+        if path not in current:
+            removed.append(path)
+
+    report = {
+        "status": "clean" if not (added or removed or modified) else "tampered",
+        "added": sorted(added),
+        "removed": sorted(removed),
+        "modified": sorted(modified),
+        "total_monitored": len(current),
+    }
+
+    if added or removed or modified:
+        return 1, report
+    return 0, report
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", help="Path to baseline database file")
+    common.add_argument("--path", action="append", help="Custom path to monitor (can repeat)")
+    common.add_argument("--json", action="store_true", help="Output results in JSON")
+
+    parser = argparse.ArgumentParser(
+        prog="grintion-integrity",
+        parents=[common],
+        description="Verify system binary integrity and detect file tampering.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("init", parents=[common], help="Create new cryptographic file integrity baseline")
+    sub.add_parser("check", parents=[common], help="Verify current files against integrity baseline")
+    sub.add_parser("update", parents=[common], help="Update integrity baseline with current files")
+
+    args = parser.parse_args()
+
+    db_path = Path(args.db) if getattr(args, "db", None) else DEFAULT_DB
+    paths = [Path(p) for p in args.path] if getattr(args, "path", None) else MONITORED_PATHS
+
+    if args.command in ("init", "update"):
+        return cmd_init(db_path, paths)
+
+    if args.command == "check":
+        code, report = cmd_check(db_path, paths)
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+        else:
+            if code == 0:
+                print(f"[ ok ] All {report['total_monitored']} monitored files match baseline.")
+            else:
+                print(f"[FAIL] System integrity check failed! Modifications detected:")
+                for m in report.get("modified", []):
+                    print(f"  [MODIFIED] {m}")
+                for a in report.get("added", []):
+                    print(f"  [ADDED]    {a}")
+                for r in report.get("removed", []):
+                    print(f"  [REMOVED]  {r}")
+        return code
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
