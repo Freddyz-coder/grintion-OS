@@ -52,6 +52,18 @@ def list_certificates(cert_dir: Path = CERT_DIR) -> list[str]:
     return certs
 
 
+def refresh_ca_paths(cert_dir: Path) -> None:
+    """Rebuild CApath hash links for certificates in cert_dir.
+
+    The image has no p11-kit/update-ca-trust. OpenSSL still honours a CApath
+    directory when each certificate has an old-style hash symlink.
+    """
+    openssl = shutil.which("openssl")
+    if openssl:
+        subprocess.run([openssl, "rehash", str(cert_dir)],
+                       check=False, capture_output=True)
+
+
 def add_certificate(cert_file: Path, cert_dir: Path = CERT_DIR) -> bool:
     if not cert_file.is_file():
         return False
@@ -62,6 +74,20 @@ def add_certificate(cert_file: Path, cert_dir: Path = CERT_DIR) -> bool:
         trust_cmd = shutil.which("update-ca-trust") or shutil.which("update-ca-certificates")
         if trust_cmd:
             subprocess.run([trust_cmd], check=False)
+        else:
+            # The image ships only the concatenated bundle and no p11-kit, so
+            # update-ca-trust does not exist here. OpenSSL reads
+            # /etc/ssl/cert.pem (a link to this bundle) for default
+            # verification, so an unhashed copy in certs/ would be invisible.
+            bundle = cert_dir / "ca-certificates.crt"
+            pem = target.read_bytes()
+            existing = bundle.read_bytes() if bundle.is_file() else b""
+            if pem not in existing:
+                with open(bundle, "ab") as handle:
+                    if existing and not existing.endswith(b"\n"):
+                        handle.write(b"\n")
+                    handle.write(pem if pem.endswith(b"\n") else pem + b"\n")
+        refresh_ca_paths(cert_dir)
         return True
     except OSError:
         return False
@@ -71,10 +97,18 @@ def remove_certificate(cert_name: str, cert_dir: Path = CERT_DIR) -> bool:
     target = cert_dir / cert_name
     if target.is_file():
         try:
+            pem = target.read_bytes()
             target.unlink()
             trust_cmd = shutil.which("update-ca-trust") or shutil.which("update-ca-certificates")
             if trust_cmd:
                 subprocess.run([trust_cmd], check=False)
+            else:
+                bundle = cert_dir / "ca-certificates.crt"
+                if bundle.is_file():
+                    content = bundle.read_bytes()
+                    if pem in content:
+                        bundle.write_bytes(content.replace(pem, b""))
+            refresh_ca_paths(cert_dir)
             return True
         except OSError:
             pass

@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.10.0
+- **Version:** 0.10.1
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,7 +17,7 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers install with `grintion-desktop` or `garb`; XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input, while KDE Plasma, GNOME, LXQt and Sway remain unverified
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber and the PulseAudio compatibility daemon, started by the X11 session hook. Playback is verified end-to-end on XFCE and i3 with QEMU audio capture
 
-Grintion-OS 0.10.0 is built from this tree. There is no hosted binary
+Grintion-OS 0.10.1 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Official
 release artifacts can be signed with `make sign-release` and verified with
 `bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
@@ -196,7 +196,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.10.0 |
+| Feature | 0.10.1 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU and bare-metal fleet |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF and bare-metal fleet |
@@ -243,7 +243,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.10.0 has not undergone an independent third-party
+and atomic rollback, but 0.10.1 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

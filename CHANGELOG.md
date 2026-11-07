@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.1] - 2026-11-08
+
+Bug-fix release for package delegation, the pacman database seed, TLS trust,
+clock synchronization, and UTF-8/locale output.
+
+### Fixed
+
+- **`garb install` no longer reinstalls packages that are already current.**
+  The pacman translation used `-S`, which prints `warning: <pkg> is up to date
+  -- reinstalling` and rewrites the installed package. `install` now passes
+  `--needed`, so it means "ensure present", and reports when every requested
+  package was already installed. `garb upgrade` and `garb install --upgrade`
+  remain the explicit reinstall/upgrade paths.
+- **The seeded pacman database records only files that exist in the image**
+  (`build/seed-pacman-db.py`). The build used to copy the build host's entire
+  file inventory and `mtree` for every seeded package. pacman therefore saw
+  thousands of owned paths the rootfs never contained (for example
+  `util-linux`: 1688 recorded paths, 44 present), and reinstalling a seeded
+  package emitted hundreds of `warning: could not get file information for
+  usr/share/man/...` lines while removing the old version. Seeded entries now
+  carry a pruned inventory and an `mtree` regenerated from the assembled
+  rootfs, so those warnings disappear and `pacman -Qkk` verifies the image
+  instead of a build-host tree.
+- **OpenSSL's default trust store is complete.** The image shipped only
+  `/etc/ssl/certs/ca-certificates.crt`; `/etc/ssl/cert.pem` — the CAfile that
+  OpenSSL's compiled-in defaults use — was missing. Anything relying on
+  `SSL_CTX_set_default_verify_paths()` (Python's `ssl` module, `openssl
+  s_client`, libraries that do not set their own bundle) trusted zero CAs.
+  `build/make-rootfs.sh` now creates the `cert.pem` link.
+- **`grintion-vault trust-cert` works without p11-kit.** The image has no
+  `update-ca-trust`/`update-ca-certificates`, so the command copied the
+  certificate and reported success without adding it to any store. The fallback
+  appends or removes the PEM in `/etc/ssl/certs/ca-certificates.crt` and
+  refreshes the CApath hash links. This is the supported way to trust a
+  legitimate enterprise TLS proxy CA; it does not disable verification.
+- **The clock is synchronized.** No NTP client or service existed, and stage 1
+  never read the RTC. A stale VMware/QEMU RTC makes every certificate look
+  expired or not yet valid (HSTS-preloaded sites such as Google then refuse to
+  load) and makes signed `garb` indexes look expired. A supervised `timesync`
+  service (`/etc/sv/timesync/run`, busybox `ntpd`, `/etc/ntp.conf`) is enabled
+  by default, and `/etc/runit/1` falls back to `hwclock --hctosys`.
+- **Non-default locales can be generated.** The image had no `localedef`, no
+  `/usr/share/i18n` and no locale archive. `grintion-config set locale
+  en_GB.UTF-8` wrote a name glibc could not load, so programs silently ran in
+  the C locale and replaced non-ASCII glyphs with `?`. `localedef` and the
+  locale sources are shipped now, and `grintion-config` generates and verifies
+  the locale before changing `/etc/locale.conf`.
+- **The virtual console translates UTF-8.** Runit stage 1 enables VT UTF-8 mode
+  (`ESC % G`). The built-in 8x16 font already covers the CP437 box-drawing and
+  block glyphs used by fastfetch's logo and htop's meters.
+
+### Documentation
+
+- `docs/DIAGNOSTICS.md` documents the clock, TLS, locale and pacman-database
+  checks, including the meaning of `could not get file information`.
+- `docs/SYSTEM-CONFIG.md` documents locale generation and the `timesync`
+  service.
+
+---
+
 ## [0.10.0] - 2026-11-07
 
 Comprehensive system capabilities, boot-chain hardening, package ecosystem, bare-metal validation, and system handbook release.

@@ -190,6 +190,14 @@ log "deploying terminfo, CA certificates and OpenSSL providers"
 cp -a /usr/share/terminfo/. "$ROOTFS/usr/share/terminfo/"
 install -D -m 0644 /etc/ssl/certs/ca-certificates.crt "$ROOTFS/etc/ssl/certs/ca-certificates.crt"
 install -D -m 0644 /etc/ssl/openssl.cnf "$ROOTFS/etc/ssl/openssl.cnf" 2>/dev/null || true
+# OpenSSL is compiled with OPENSSLDIR=/etc/ssl, so its default CAfile is
+# /etc/ssl/cert.pem (not the bundle in certs/). Without that link, anything
+# that calls SSL_CTX_set_default_verify_paths() — Python's ssl module and the
+# openssl command line, among others — trusts zero CAs even though the bundle
+# is present. curl has its own compiled-in bundle path and is unaffected.
+if [ -f "$ROOTFS/etc/ssl/certs/ca-certificates.crt" ]; then
+    ln -sfn certs/ca-certificates.crt "$ROOTFS/etc/ssl/cert.pem"
+fi
 if [ -d /usr/lib/ossl-modules ]; then
     mkdir -p "$ROOTFS/usr/lib/ossl-modules"
     cp -a /usr/lib/ossl-modules/. "$ROOTFS/usr/lib/ossl-modules/"
@@ -254,6 +262,14 @@ if [ -d /usr/lib/gconv ]; then
     mkdir -p "$ROOTFS/usr/lib/gconv"
     cp -a /usr/lib/gconv/. "$ROOTFS/usr/lib/gconv/"
 fi
+
+# localedef needs the glibc locale sources. Without them, `grintion-config set
+# locale en_US.UTF-8` wrote a locale name that glibc could not load, so
+# programs silently fell back to the C locale and non-ASCII glyphs became '?'.
+[ -d /usr/share/i18n ] || die "host locale sources are missing: /usr/share/i18n"
+log "deploying glibc locale sources"
+mkdir -p "$ROOTFS/usr/share/i18n" "$ROOTFS/usr/lib/locale"
+cp -a /usr/share/i18n/. "$ROOTFS/usr/share/i18n/"
 
 # Deploy GLib 2.0 schemas and data
 if [ -d /usr/share/glib-2.0 ]; then
@@ -366,7 +382,7 @@ chmod 0700 "$ROOTFS/root/.ssh"
 
 # service links: every link points at a service that exists and whose run
 # script only execs programs present in this rootfs.
-for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local boot-health seatd udev; do
+for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local boot-health seatd udev timesync; do
     [ -x "$ROOTFS/etc/sv/$service/run" ] || die "service is missing or not executable: $service"
     ln -sfn "/etc/sv/$service" "$ROOTFS/var/service/$service"
 done
@@ -398,7 +414,7 @@ python3 "$GRINTION_REPO_ROOT/build/resolve-libs.py" "$ROOTFS"
 # checks that a package's shared libraries and binaries are really in the image;
 # dependency libraries are copied by resolve-libs.py above, so seeding earlier
 # would mark present packages (zlib, libarchive, systemd-libs) as absent.
-python3 "$GRINTION_REPO_ROOT/build/seed-pacman-db.py" "$ROOTFS"
+python3 "$GRINTION_REPO_ROOT/build/seed-pacman-db.py" "$ROOTFS" --epoch "$SOURCE_DATE_EPOCH"
 
 # Recreate standard symlinks that the resolver may have skipped.
 for alias in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libutil.so.1; do

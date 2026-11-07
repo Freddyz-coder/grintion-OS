@@ -89,4 +89,19 @@ if [ -x /usr/bin/mdev ]; then
     fi
 fi
 
+# The kernel only sets the system clock from the RTC at boot when
+# CONFIG_RTC_HCTOSYS succeeds. Read it again here so a failed early read does
+# not leave the clock in 1970; the timesync service keeps it correct afterwards.
+/usr/bin/hwclock --hctosys >/dev/null 2>&1 || true
+
+# The virtual console translates UTF-8 to the built-in 8x16 font only in UTF-8
+# mode. Without ESC % G, block and box-drawing output (fastfetch's logo, htop's
+# meters) is interpreted as Latin-1 and rendered as mojibake. The built-in font
+# plus its CP437 mapping already cover U+2500 and U+2580-U+2593, so no console
+# font file is needed for the default gettys.
+for vt in /dev/tty1 /dev/tty2; do
+    [ -c "$vt" ] || continue
+    printf '\033%%G' > "$vt" 2>/dev/null || true
+done
+
 exit 0

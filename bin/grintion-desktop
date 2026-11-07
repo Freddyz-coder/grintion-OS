@@ -141,12 +141,15 @@ pkg_install() {
         if [ "$NO_CONFIRM" -eq 1 ]; then
             noconfirm=("--noconfirm")
         fi
-        # No --needed: the image ships a seeded pacman database that already
-        # lists many packages whose files were never copied (dbus is installed
-        # according to the database but has no /usr/bin/dbus-daemon). With
+        # No --needed: the image ships a seeded pacman database, and a seeded
+        # package can be recorded as installed while some of its data files
+        # were not copied (dbus had no /usr/bin/dbus-daemon before the seed was
+        # pruned). Reinstalling every listed package is what completes it. With
         # --needed pacman skipped those packages, their dependencies stayed
-        # missing, and the package scriptlets failed while the desktop still
-        # looked installed (ProblemsWhenInstalling.txt #9).
+        # missing, and scriptlets failed while the desktop still looked
+        # installed (ProblemsWhenInstalling.txt #9). Since 0.10.1 the pruned
+        # seed also means the reinstall no longer logs bogus missing-file
+        # warnings for paths that were never in the image.
         manager=(pacman "${root_flag[@]}" -Sy "${noconfirm[@]}")
     elif command -v garb >/dev/null 2>&1; then
         manager=(garb "${root_flag[@]}" install "${pkgs[@]}")

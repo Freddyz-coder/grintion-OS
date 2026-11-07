@@ -36,6 +36,25 @@ All modifications made via `grintion-config` are written to standard `/etc` file
 (`/etc/localtime`, `/etc/timezone`, `/etc/locale.conf`, `/etc/vconsole.conf`,
 `/etc/hostname`, `/etc/grintion/power.conf`, `/var/service/`) and survive reboot.
 
+### Locales and time
+
+`grintion-config set locale` runs `localedef` before it writes
+`/etc/locale.conf`. An unsupported locale fails with the compiler error instead
+of being persisted; a locale that glibc cannot load silently falls back to `C`,
+which turns UTF-8 output into `?`. `C.UTF-8` is built into glibc and needs no
+generation.
+
+The `timesync` runit service keeps the clock correct using the peers in
+`/etc/ntp.conf` (busybox `ntpd`, part of the base image). This matters beyond
+cosmetic timestamps: a wrong clock invalidates TLS certificates and makes
+signed `garb` repository indexes look expired.
+
+```sh
+sv status timesync
+cat /etc/ntp.conf
+date -u
+```
+
 ## Wi-Fi and Network Privacy: `grintion-network`
 
 `grintion-network` manages wired and wireless networking, WPA2/WPA3 Enterprise,

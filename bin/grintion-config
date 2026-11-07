@@ -111,6 +111,35 @@ def set_timezone(tz: str) -> None:
 
 
 def set_locale(loc: str) -> None:
+    """Set LANG and make sure the locale can actually be loaded.
+
+    The image has no pre-generated locale archive; only C.UTF-8 is built into
+    glibc. Writing LANG=en_US.UTF-8 without running localedef made glibc fall
+    back to the C locale, so UTF-8 output degraded to '?'. Generate the locale
+    first and fail clearly instead of persisting an unusable value.
+    """
+    if loc not in ("C", "POSIX", "C.UTF-8"):
+        localedef = shutil.which("localedef")
+        if localedef is None:
+            raise SystemExit(
+                f"[-] localedef is not installed; cannot generate {loc}. "
+                "Keep C.UTF-8 or install the glibc locale sources."
+            )
+        lang, _, charset = loc.partition(".")
+        command = [localedef]
+        prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+        if prefix:
+            command.append(f"--prefix={prefix}")
+        root_path("/usr/lib/locale").mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            command + ["-i", lang or loc, "-f", charset or "UTF-8", loc],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise SystemExit(f"[-] cannot generate locale {loc}: {detail}")
     write_file(root_path("/etc/locale.conf"), f"LANG={loc}")
     # Also write to /etc/default/locale for compatibility
     write_file(root_path("/etc/default/locale"), f"LANG={loc}")

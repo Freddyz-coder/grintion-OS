@@ -1,0 +1,27 @@
+#!/bin/sh
+# Grintion-OS runit service: clock synchronization
+#
+# TLS certificates are valid only inside their not-before/not-after window, and
+# `garb` refuses signed repository indexes whose expiry has passed. A guest
+# whose RTC is stale therefore fails every HTTPS connection with a certificate
+# or HSTS error and cannot update packages. busybox provides the NTP client, so
+# this service needs no package that is not already in the image.
+exec 2>&1
+
+# The kernel reads the RTC at boot when CONFIG_RTC_HCTOSYS=y. Repeat it here so
+# a failed early read (or a VM that changes its RTC) does not leave 1970.
+/usr/bin/hwclock --hctosys >/dev/null 2>&1 || true
+
+# DHCP may still be running when this service starts. Wait briefly for a
+# resolver instead of exiting into a fast runsv restart loop.
+i=0
+while [ "$i" -lt 30 ]; do
+    grep -qs '^nameserver' /etc/resolv.conf && break
+    sleep 1
+    i=$((i + 1))
+done
+
+# -n stays in the foreground so runit supervises it. -N runs at high priority
+# so the first large correction is applied promptly. Peers come from
+# /etc/ntp.conf.
+exec /usr/bin/busybox ntpd -n -N

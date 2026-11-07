@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.10.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.10.1 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -106,6 +106,11 @@ Rules and limits:
   index, per-file verification and rollback are not used.
 - `--force` is rejected by both external backends; `--quick` is rejected by the
   `apk` backend; `--key` and `--allow-unsigned` are native-only options.
+- `garb install` maps to `pacman -S --needed`: a package that is already
+  installed and current is skipped instead of reinstalled. Use
+  `garb upgrade PACKAGE` (or `garb install --upgrade PACKAGE`) when a reinstall
+  is what you want. `grintion-desktop` deliberately omits `--needed` so a seeded
+  package is reinstalled and completed.
 - The image ships `/etc/pacman.conf`, the Arch public keyring, gpg helpers and a
   local package database seeded from the build host by
   `build/seed-pacman-db.py`. `apk` is not included.

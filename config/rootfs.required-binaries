@@ -106,6 +106,7 @@ hexdump
 xxd
 iconv
 locale
+localedef
 
 # Archives
 tar

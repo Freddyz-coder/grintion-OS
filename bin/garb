@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 SCHEMA = 1
 DEFAULT_DB = "var/lib/garb/db.json"
 DEFAULT_REPOS = "etc/garb/repos.d"
@@ -1888,7 +1888,15 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
         elif command == "install":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
-            argv += ["-S", "--noconfirm", *args.package]
+            # `pacman -S` on an installed, current package prints
+            # "warning: <pkg> is up to date -- reinstalling" and rewrites it.
+            # `garb install` means "make sure it is present", so let pacman
+            # skip packages that are already installed. `garb upgrade` (or
+            # `garb install --upgrade`) is the explicit reinstall/upgrade path.
+            argv.append("-S")
+            if not getattr(args, "upgrade", False):
+                argv.append("--needed")
+            argv += ["--noconfirm", *args.package]
         elif command == "remove":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
@@ -2007,6 +2015,16 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         return subprocess.run(argv).returncode
     rc, output = run_streaming(argv)
     if rc == 0:
+        if (
+            backend == "pacman"
+            and args.command == "install"
+            and "--needed" in argv
+            and "up to date -- skipping" in output
+        ):
+            log(
+                "all requested packages are already installed and up to date; "
+                "nothing to do (use 'garb upgrade' to reinstall)"
+            )
         return 0
     conflicts = conflict_paths(output)
     if not conflicts:

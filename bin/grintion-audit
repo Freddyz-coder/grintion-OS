@@ -63,7 +63,7 @@ def generate_spdx_sbom(packages: dict[str, dict], filter_pkg: str | None = None)
         "documentNamespace": f"https://grintion.org/spdx/{int(time.time())}",
         "creationInfo": {
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "creators": ["Tool: grintion-audit-0.10.0", "Organization: Grintion-OS Project"],
+            "creators": ["Tool: grintion-audit-0.10.1", "Organization: Grintion-OS Project"],
         },
         "packages": [],
         "files": [],
@@ -108,11 +108,11 @@ def generate_cyclonedx_sbom(packages: dict[str, dict], filter_pkg: str | None = 
         "version": 1,
         "metadata": {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "tools": [{"vendor": "Grintion-OS", "name": "grintion-audit", "version": "0.10.0"}],
+            "tools": [{"vendor": "Grintion-OS", "name": "grintion-audit", "version": "0.10.1"}],
             "component": {
                 "type": "operating-system",
                 "name": "Grintion-OS",
-                "version": "0.10.0",
+                "version": "0.10.1",
             },
         },
         "components": [],

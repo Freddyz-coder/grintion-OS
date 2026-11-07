@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 export LC_ALL=C
 
-VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.10.0')"
+VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.10.1')"
 HOSTNAME="$(hostname 2>/dev/null || echo 'grintion')"
 KERNEL="$(uname -r)"
 
