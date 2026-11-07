@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -571,3 +572,98 @@ def test_setuid_archive_is_rejected_at_install(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "setuid" in result.stderr.lower()
     assert not (root / "usr/bin/suid-helper").exists()
+
+
+def test_transaction_journal_records_a_committed_install(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    records = json.loads(run(root, "history", "--format", "json").stdout)
+    assert any(
+        record.get("status") == "committed" and "app" in record.get("packages", [])
+        for record in records
+    )
+    text = run(root, "history").stdout
+    assert "committed" in text
+    assert "app" in text
+
+
+def test_lock_blocks_a_concurrent_transaction(environment: dict) -> None:
+    root = environment["root"]
+    lock = root / "var/lib/garb/lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a+", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = run(root, "install", "app", check=False)
+    assert result.returncode != 0
+    assert "another garb transaction is running" in result.stderr
+    assert not (root / "usr/share/libfoo/data.txt").exists()
+    run(root, "install", "app")
+
+
+def test_fsck_accepts_a_healthy_install(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    result = run(root, "fsck")
+    assert "fsck passed" in result.stdout
+    assert run(root, "fsck", "--hash").returncode == 0
+
+
+def test_fsck_detects_missing_files(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    (root / "usr/bin/app").unlink()
+    result = run(root, "fsck", check=False)
+    assert result.returncode != 0
+    assert "missing file" in result.stdout
+    payload = json.loads(run(root, "fsck", "--format", "json", check=False).stdout)
+    assert payload["ok"] is False
+    assert any(issue["kind"] == "missing" for issue in payload["issues"])
+
+
+def test_fsck_detects_tampering_only_with_hash(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    (root / "usr/bin/app").write_text("tampered\n")
+    assert run(root, "fsck").returncode == 0
+    result = run(root, "fsck", "--hash", check=False)
+    assert result.returncode != 0
+    assert "hash mismatch" in result.stdout
+
+
+def test_corrupt_database_fails_closed(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    database = root / "var/lib/garb/db.json"
+    database.write_text("{not json\n")
+    result = run(root, "list", check=False)
+    assert result.returncode != 0
+    assert "corrupt" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+    fsck = run(root, "fsck", "--format", "json", check=False)
+    assert fsck.returncode != 0
+    payload = json.loads(fsck.stdout)
+    assert any(issue["kind"] == "database" for issue in payload["issues"])
+
+
+def test_fsck_reports_incomplete_journal_and_backup(environment: dict) -> None:
+    root = environment["root"]
+    run(root, "install", "app")
+    journal = root / "var/lib/garb/journal.jsonl"
+    journal.write_text(
+        journal.read_text()
+        + json.dumps({
+            "schema": 1,
+            "txid": "test-incomplete",
+            "time": 0,
+            "root": str(root),
+            "command": "install",
+            "packages": ["app"],
+            "status": "started",
+        })
+        + "\n"
+    )
+    (root / "var/lib/garb/tmp/garb-backup-test").mkdir(parents=True)
+    payload = json.loads(run(root, "fsck", "--format", "json").stdout)
+    kinds = {issue["kind"] for issue in payload["issues"]}
+    assert "journal" in kinds
+    assert "backup" in kinds

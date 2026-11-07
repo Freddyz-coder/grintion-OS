@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""grintion-channel - release channel coordinator (stable, beta, nightly) for Grintion-OS.
+
+Manages repository update streams and release channels across the system.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+CHANNELS = ["stable", "beta", "nightly"]
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def get_current_channel() -> str:
+    chan_file = root_path("/etc/grintion/channel")
+    if chan_file.is_file():
+        val = chan_file.read_text(encoding="utf-8").strip()
+        if val in CHANNELS:
+            return val
+    return "stable"
+
+
+def set_channel(channel: str) -> None:
+    if channel not in CHANNELS:
+        raise ValueError(f"invalid channel: {channel}. Supported: {', '.join(CHANNELS)}")
+
+    chan_file = root_path("/etc/grintion/channel")
+    chan_file.parent.mkdir(parents=True, exist_ok=True)
+    chan_file.write_text(channel + "\n", encoding="utf-8")
+
+    # Update repo configs
+    repo_dir = root_path("/etc/garb/repos.d")
+    if repo_dir.is_dir():
+        for conf in repo_dir.glob("*.conf"):
+            content = conf.read_text(encoding="utf-8")
+            new_content = re.sub(r"/(stable|beta|nightly)/", f"/{channel}/", content)
+            conf.write_text(new_content, encoding="utf-8")
+
+    print(f"[*] system release channel switched to: {channel}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Release Channel Manager")
+    sub = parser.add_subparsers(dest="command")
+
+    get_p = sub.add_parser("get", help="get active release channel")
+    get_p.add_argument("--json", action="store_true")
+
+    set_p = sub.add_parser("set", help="set release channel (stable, beta, nightly)")
+    set_p.add_argument("channel", choices=CHANNELS)
+
+    sub.add_parser("list", help="list available release channels")
+
+    args = parser.parse_args()
+    cmd = args.command or "get"
+
+    if cmd == "get":
+        ch = get_current_channel()
+        if getattr(args, "json", False):
+            print(json.dumps({"channel": ch}))
+        else:
+            print(ch)
+    elif cmd == "set":
+        set_channel(args.channel)
+    elif cmd == "list":
+        current = get_current_channel()
+        print("Available Release Channels:")
+        for c in CHANNELS:
+            cur_marker = " *" if c == current else "  "
+            print(f"{cur_marker} {c}")
+
+
+if __name__ == "__main__":
+    main()
+

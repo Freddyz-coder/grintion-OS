@@ -11,6 +11,7 @@ Design goals for 1.0:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import gzip
 import hashlib
 import io
@@ -18,6 +19,7 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -30,7 +32,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 SCHEMA = 1
 DEFAULT_DB = "var/lib/garb/db.json"
 DEFAULT_REPOS = "etc/garb/repos.d"
@@ -39,6 +41,7 @@ DEFAULT_CACHE = "var/cache/garb"
 DEFAULT_TMP = "var/lib/garb/tmp"
 METADATA_NAME = "GARB_METADATA.json"
 EXTERNAL_COMMANDS = frozenset({"update", "search", "info", "install", "remove", "verify", "upgrade"})
+MUTATING_COMMANDS = frozenset({"install", "remove", "upgrade", "downgrade", "rollback-generation"})
 
 
 class GarbError(Exception):
@@ -127,10 +130,18 @@ class Paths:
         self.keys = self.root / DEFAULT_KEYS
         self.cache = self.root / DEFAULT_CACHE
         self.tmp = self.root / DEFAULT_TMP
+        self.lock = self.root / "var/lib/garb/lock"
+        self.journal = self.root / "var/lib/garb/journal.jsonl"
+        self.generations = self.root / "var/lib/garb/generations"
+        self.holds = self.root / "etc/garb/holds.conf"
+        self.pins = self.root / "etc/garb/pins.conf"
+        self.preferences = self.root / "etc/garb/preferences.conf"
 
     def ensure_runtime(self) -> None:
         self.tmp.mkdir(parents=True, exist_ok=True)
         self.cache.mkdir(parents=True, exist_ok=True)
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        self.generations.mkdir(parents=True, exist_ok=True)
 
     def inside(self, rel: str) -> Path:
         rel = normalise_member(rel)
@@ -146,15 +157,25 @@ class Database:
         self.data = self._load()
 
     def _load(self) -> dict:
-        if self.paths.db.exists():
-            try:
-                with open(self.paths.db, encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict) and isinstance(data.get("packages"), dict):
-                    return data
-            except (OSError, json.JSONDecodeError) as exc:
-                warn(f"corrupt database {self.paths.db}: {exc}; starting empty")
-        return {"schema": SCHEMA, "packages": {}}
+        if not self.paths.db.exists():
+            return {"schema": SCHEMA, "packages": {}}
+        try:
+            with open(self.paths.db, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            # Starting empty would forget which files belong to which package
+            # and let a later install overwrite them. Fail closed and point at
+            # fsck instead; the database is the only ownership record.
+            raise GarbError(
+                f"package database is corrupt or unreadable: {self.paths.db}: {exc}; "
+                "run 'garb fsck --format json' before mutating packages"
+            ) from exc
+        if not isinstance(data, dict) or not isinstance(data.get("packages"), dict):
+            raise GarbError(
+                f"package database has an unexpected structure: {self.paths.db}; "
+                "run 'garb fsck --format json' before mutating packages"
+            )
+        return data
 
     def save(self) -> None:
         self.paths.db.parent.mkdir(parents=True, exist_ok=True)
@@ -162,7 +183,17 @@ class Database:
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(self.data, handle, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, self.paths.db)
+        try:
+            directory = os.open(self.paths.db.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except OSError:
+            return
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def installed(self, name: str) -> dict | None:
         return self.data["packages"].get(name)
@@ -172,6 +203,289 @@ class Database:
 
     def remove(self, name: str) -> None:
         self.data["packages"].pop(name, None)
+
+
+class TransactionLock:
+    """One mutating native transaction per target root.
+
+    Package installation moves files into place and then updates the database.
+    Two concurrent garb processes can therefore interleave ownership records.
+    The lock is advisory but every native mutating path takes it, and it names
+    the holder so a blocked operator can find the other process.
+    """
+
+    def __init__(self, paths: Paths, command: str) -> None:
+        self.paths = paths
+        self.command = command
+        self.handle = None
+
+    def __enter__(self) -> "TransactionLock":
+        self.paths.lock.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.paths.lock, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.handle.seek(0)
+            holder = self.handle.read().strip() or "unknown holder"
+            self.handle.close()
+            self.handle = None
+            raise GarbError(
+                f"another garb transaction is running ({holder}); wait for it to finish"
+            )
+        self.handle.seek(0)
+        self.handle.truncate()
+        self.handle.write(f"pid={os.getpid()} command={self.command}\n")
+        self.handle.flush()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        if self.handle is None:
+            return
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
+
+
+def journal_append(paths: Paths, record: dict) -> None:
+    """Append one durable transaction record.
+
+    A crash between "started" and the final record is visible to fsck. The
+    journal is append-only and mode 0600; it never stores file contents.
+    """
+    paths.journal.parent.mkdir(parents=True, exist_ok=True)
+    line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = os.open(
+        paths.journal,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        0o600,
+    )
+    try:
+        os.write(descriptor, line)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def read_journal(paths: Paths) -> list[dict]:
+    if not paths.journal.exists():
+        return []
+    records = []
+    try:
+        lines = paths.journal.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        warn(f"cannot read transaction journal {paths.journal}: {exc}")
+        return []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            warn(f"ignoring malformed journal line in {paths.journal}")
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def cmd_history(args: argparse.Namespace) -> None:
+    records = read_journal(args.paths)
+    if args.limit > 0:
+        records = records[-args.limit:]
+    if args.format == "json":
+        print(json.dumps(records, indent=2, sort_keys=True))
+        return
+    if not records:
+        print("[-] no transactions recorded")
+        return
+    for record in records:
+        stamp = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(int(record.get("time", 0) or 0)),
+        )
+        packages = ",".join(str(item) for item in record.get("packages", [])) or "-"
+        print(
+            f"  {stamp}  {record.get('status', '?'):<11} "
+            f"{record.get('command', '?'):<8} {packages}"
+        )
+
+
+def cmd_fsck(args: argparse.Namespace) -> None:
+    paths = args.paths
+    issues: list[dict] = []
+    raw = None
+    database_error = None
+    if paths.db.exists():
+        try:
+            raw = json.loads(paths.db.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            database_error = f"{paths.db}: {exc}"
+    if raw is not None and not (
+        isinstance(raw, dict) and isinstance(raw.get("packages"), dict)
+    ):
+        database_error = f"{paths.db}: expected an object with a 'packages' object"
+        raw = None
+    if database_error:
+        issues.append({"severity": "error", "kind": "database", "detail": database_error})
+
+    packages = raw.get("packages", {}) if isinstance(raw, dict) else {}
+    owners: dict[str, str] = {}
+    checked = 0
+    for name, entry in sorted(packages.items()):
+        if not isinstance(entry, dict):
+            issues.append({
+                "severity": "error",
+                "kind": "package",
+                "detail": f"package entry for {name} is not an object",
+            })
+            continue
+        recorded_name = entry.get("name")
+        if recorded_name not in (None, name):
+            issues.append({
+                "severity": "warning",
+                "kind": "package",
+                "detail": f"database key {name} records itself as {recorded_name}",
+            })
+        files = entry.get("files", [])
+        if not isinstance(files, list):
+            issues.append({
+                "severity": "error",
+                "kind": "package",
+                "detail": f"package {name} has a non-list file inventory",
+            })
+            continue
+        for item in files:
+            if not isinstance(item, dict) or "path" not in item:
+                issues.append({
+                    "severity": "error",
+                    "kind": "package",
+                    "detail": f"package {name} has a malformed file entry",
+                })
+                continue
+            try:
+                rel = normalise_member(str(item["path"]))
+            except GarbError as exc:
+                issues.append({
+                    "severity": "error",
+                    "kind": "path",
+                    "detail": f"package {name}: {exc}",
+                })
+                continue
+            previous = owners.get(rel)
+            if previous is not None and previous != name:
+                issues.append({
+                    "severity": "error",
+                    "kind": "duplicate",
+                    "detail": f"{rel} is owned by both {previous} and {name}",
+                })
+            else:
+                owners[rel] = name
+            target = paths.root / rel
+            checked += 1
+            if item.get("type") == "symlink":
+                if not target.is_symlink():
+                    issues.append({
+                        "severity": "error",
+                        "kind": "missing",
+                        "detail": f"{name}: missing symlink {rel}",
+                    })
+                elif os.readlink(target) != item.get("target"):
+                    issues.append({
+                        "severity": "error",
+                        "kind": "symlink",
+                        "detail": f"{name}: symlink target changed for {rel}",
+                    })
+                continue
+            if not target.is_file() or target.is_symlink():
+                issues.append({
+                    "severity": "error",
+                    "kind": "missing",
+                    "detail": f"{name}: missing file {rel}",
+                })
+                continue
+            if not args.hash:
+                continue
+            try:
+                digest = sha256_file(target)
+            except OSError as exc:
+                issues.append({
+                    "severity": "error",
+                    "kind": "unreadable",
+                    "detail": f"{name}: cannot hash {rel}: {exc}",
+                })
+                continue
+            if digest != item.get("sha256"):
+                issues.append({
+                    "severity": "error",
+                    "kind": "tampered",
+                    "detail": f"{name}: hash mismatch for {rel}",
+                })
+        for dependency in entry.get("dependencies", []) or []:
+            if dependency not in packages:
+                issues.append({
+                    "severity": "warning",
+                    "kind": "dependency",
+                    "detail": (
+                        f"{name} depends on {dependency}, which is not tracked by the "
+                        "native database (it may come from the base image)"
+                    ),
+                })
+
+    latest: dict[str, dict] = {}
+    for record in read_journal(paths):
+        txid = record.get("txid")
+        if isinstance(txid, str) and txid:
+            latest[txid] = record
+    for txid, record in latest.items():
+        if record.get("status") == "started":
+            issues.append({
+                "severity": "warning",
+                "kind": "journal",
+                "detail": (
+                    f"transaction {txid} started but recorded no result; inspect "
+                    f"{paths.tmp} and run 'garb verify'"
+                ),
+            })
+
+    if paths.tmp.is_dir():
+        for backup in sorted(paths.tmp.glob("garb-backup-*")):
+            if backup.is_dir():
+                issues.append({
+                    "severity": "warning",
+                    "kind": "backup",
+                    "detail": f"leftover rollback backup: {backup}",
+                })
+
+    errors = [item for item in issues if item["severity"] == "error"]
+    warnings = [item for item in issues if item["severity"] == "warning"]
+    if args.format == "json":
+        print(json.dumps(
+            {
+                "schema": 1,
+                "root": str(paths.root),
+                "packages": len(packages),
+                "files_checked": checked,
+                "ok": not errors,
+                "errors": len(errors),
+                "warnings": len(warnings),
+                "issues": issues,
+            },
+            indent=2,
+            sort_keys=True,
+        ))
+    else:
+        for issue in issues:
+            label = "[BAD]" if issue["severity"] == "error" else "[WARN]"
+            print(f"  {label} {issue['kind']}: {issue['detail']}")
+        if errors:
+            print(f"[-] fsck found {len(errors)} error(s) and {len(warnings)} warning(s)")
+        else:
+            print(
+                f"[+] fsck passed: {len(packages)} package(s), {checked} file(s), "
+                f"{len(warnings)} warning(s)"
+            )
+    if errors:
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------- repositories
@@ -276,11 +590,32 @@ def sign_bytes(data: bytes, private_key: Path) -> bytes:
         return sig_path.read_bytes()
 
 
+def load_repo_priorities(paths: Paths) -> dict[str, int]:
+    if not paths.preferences.is_file():
+        return {}
+    priors: dict[str, int] = {}
+    for line in paths.preferences.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            try:
+                priors[k.strip()] = int(v.strip())
+            except ValueError:
+                pass
+    return priors
+
+
 def load_indexes(paths: Paths) -> dict:
     packages: dict = {}
     if not paths.cache.is_dir():
         return packages
-    for index_path in sorted(paths.cache.glob("repos/*/index.json")):
+    priors = load_repo_priorities(paths)
+    index_files = sorted(
+        paths.cache.glob("repos/*/index.json"),
+        key=lambda p: priors.get(p.parent.name, 500),
+        reverse=True,
+    )
+    for index_path in index_files:
         try:
             data = json.loads(index_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -583,6 +918,44 @@ def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -
     }
 
 
+def parse_dep_spec(dep: str) -> tuple[str, str, str]:
+    for op in (">=", "<=", "!=", ">", "<", "="):
+        if op in dep:
+            parts = dep.split(op, 1)
+            return parts[0].strip(), op, parts[1].strip()
+    return dep.strip(), "", ""
+
+
+def safe_version_tuple(val: str) -> tuple:
+    parts = []
+    for token in re.split(r"[._-]", str(val)):
+        if token.isdigit():
+            parts.append((0, int(token)))
+        else:
+            parts.append((1, token))
+    return tuple(parts)
+
+
+def match_version(actual: str, op: str, req: str) -> bool:
+    if not op or not req:
+        return True
+    a = safe_version_tuple(actual)
+    r = safe_version_tuple(req)
+    if op == ">=":
+        return a >= r
+    elif op == "<=":
+        return a <= r
+    elif op == ">":
+        return a > r
+    elif op == "<":
+        return a < r
+    elif op == "=":
+        return a == r
+    elif op == "!=":
+        return a != r
+    return True
+
+
 def resolve_dependencies(names: list[str], index: dict, db: Database, upgrading: bool = False) -> list[str]:
     order: list[str] = []
     visiting: set[str] = set()
@@ -599,9 +972,24 @@ def resolve_dependencies(names: list[str], index: dict, db: Database, upgrading:
         if db.installed(name) and not upgrading:
             done.add(name)
             return
+
+        for conf in entry.get("conflicts", []) or []:
+            if db.installed(conf):
+                raise GarbError(f"package {name} conflicts with installed package {conf}")
+
         visiting.add(name)
-        for dep in entry.get("dependencies", []):
-            visit(dep)
+        for raw_dep in entry.get("dependencies", []) or []:
+            dep_name, op, req_ver = parse_dep_spec(raw_dep)
+            if dep_name not in index:
+                for cand_name, cand_entry in index.items():
+                    if dep_name in (cand_entry.get("provides") or []):
+                        dep_name = cand_name
+                        break
+            if dep_name in index:
+                cand = index[dep_name]
+                if op and req_ver and not match_version(cand.get("version", "0"), op, req_ver):
+                    raise GarbError(f"{name} requires {raw_dep}, but available version is {cand.get('version')}")
+            visit(dep_name)
         visiting.remove(name)
         done.add(name)
         if not (db.installed(name) and not upgrading):
@@ -820,13 +1208,59 @@ def cmd_verify(args: argparse.Namespace) -> None:
         print(f"[+] integrity check passed: {checked} files checked")
 
 
+def snapshot_before_upgrade(paths: Paths, args: argparse.Namespace) -> None:
+    """Create a Btrfs snapshot before a system upgrade when the tool exists."""
+    if getattr(args, "no_snapshot", False):
+        return
+    if getattr(paths, "root", Path("/")) != Path("/"):
+        return
+    if shutil.which("grintion-snapshot") is None:
+        warn("grintion-snapshot is not installed; upgrading without a snapshot")
+        return
+    try:
+        fstype = subprocess.check_output(
+            ["findmnt", "-n", "-o", "FSTYPE", "/"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return
+    if fstype != "btrfs":
+        return
+    if os.geteuid() != 0:
+        die("a Btrfs pre-upgrade snapshot requires root; rerun with sudo or --no-snapshot")
+    log("creating a pre-upgrade Btrfs snapshot")
+    result = subprocess.run(["grintion-snapshot", "create", "pre-upgrade"], check=False)
+    if result.returncode != 0:
+        die("the pre-upgrade snapshot failed; refusing to upgrade without a recovery point")
+
+
+def load_holds(paths: Paths) -> set[str]:
+    if not paths.holds.is_file():
+        return set()
+    holds = set()
+    for line in paths.holds.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            holds.add(line)
+    return holds
+
+
+def save_holds(paths: Paths, holds: set[str]) -> None:
+    paths.holds.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# /etc/garb/holds.conf - Held packages"] + sorted(holds)
+    paths.holds.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def cmd_upgrade(args: argparse.Namespace) -> None:
     paths = args.paths
     db = Database(paths)
     index = load_indexes(paths)
+    holds = load_holds(paths)
     names = args.package or [name for name in db.data["packages"] if name in index]
     upgrades = []
     for name in names:
+        if name in holds:
+            log(f"skipping held package: {name}")
+            continue
         installed = db.installed(name)
         available = index.get(name)
         if not installed or not available:
@@ -836,6 +1270,7 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     if not upgrades:
         log("nothing to upgrade")
         return
+    snapshot_before_upgrade(paths, args)
     log(f"upgrading: {', '.join(upgrades)}")
     args.package = upgrades
     args.force = False
@@ -1048,6 +1483,318 @@ def cmd_sign_index(args: argparse.Namespace) -> None:
     signature = sign_bytes(index_path.read_bytes(), Path(args.key))
     Path(str(index_path) + ".sig").write_bytes(signature)
     print(f"[+] signed {index_path}")
+
+
+def record_generation(paths: Paths, reason: str = "") -> int:
+    paths.generations.mkdir(parents=True, exist_ok=True)
+    existing = []
+    for f in paths.generations.glob("*.json"):
+        if f.stem.isdigit():
+            existing.append(int(f.stem))
+    next_id = max(existing, default=0) + 1
+    db = Database(paths)
+    gen_data = {
+        "id": next_id,
+        "timestamp": int(time.time()),
+        "reason": reason,
+        "packages": db.data.get("packages", {}),
+    }
+    target = paths.generations / f"{next_id}.json"
+    with open(target, "w", encoding="utf-8") as f:
+        json.dump(gen_data, f, indent=2, sort_keys=True)
+    current_link = paths.generations / "current"
+    if current_link.is_symlink() or current_link.exists():
+        current_link.unlink()
+    try:
+        current_link.symlink_to(f"{next_id}.json")
+    except OSError:
+        pass
+    return next_id
+
+
+def cmd_generations(args: argparse.Namespace) -> None:
+    paths = args.paths
+    paths.generations.mkdir(parents=True, exist_ok=True)
+    gens = []
+    current_link = paths.generations / "current"
+    current_id = -1
+    if current_link.is_symlink():
+        try:
+            current_id = int(os.readlink(current_link).removesuffix(".json"))
+        except (ValueError, OSError):
+            pass
+
+    for f in sorted(paths.generations.glob("*.json")):
+        if f.stem.isdigit():
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                gid = int(f.stem)
+                gens.append({
+                    "id": gid,
+                    "timestamp": data.get("timestamp", 0),
+                    "reason": data.get("reason", ""),
+                    "package_count": len(data.get("packages", {})),
+                    "is_current": (gid == current_id),
+                })
+            except Exception:
+                pass
+
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(gens, indent=2))
+    else:
+        print("=" * 60)
+        print("Grintion Package Generations")
+        print("=" * 60)
+        for g in gens:
+            cur = " *" if g["is_current"] else "  "
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(g["timestamp"]))
+            print(f"{cur} Generation {g['id']:<4} | {ts} | {g['package_count']} packages | {g['reason']}")
+        print("=" * 60)
+
+
+def cmd_rollback_generation(args: argparse.Namespace) -> None:
+    paths = args.paths
+    target_id = args.generation
+    gen_file = paths.generations / f"{target_id}.json"
+    if not gen_file.is_file():
+        die(f"generation {target_id} not found in {paths.generations}")
+
+    target_gen = json.loads(gen_file.read_text(encoding="utf-8"))
+    target_pkgs = target_gen.get("packages", {})
+
+    db = Database(paths)
+    current_pkgs = db.data.get("packages", {})
+
+    for pkg_name, pkg_data in list(current_pkgs.items()):
+        if pkg_name not in target_pkgs:
+            log(f"removing package {pkg_name} (absent in generation {target_id})")
+            for item in pkg_data.get("files", []):
+                target_path = paths.inside(item["path"])
+                if target_path.exists() or target_path.is_symlink():
+                    try:
+                        target_path.unlink()
+                    except OSError:
+                        pass
+
+    db.data["packages"] = target_pkgs
+    db.save()
+    print(f"[+] rolled back system packages to generation {target_id} ({len(target_pkgs)} packages)")
+
+
+def cmd_hold(args: argparse.Namespace) -> None:
+    holds = load_holds(args.paths)
+    for pkg in args.package:
+        holds.add(pkg)
+        log(f"holding package {pkg}")
+    save_holds(args.paths, holds)
+    print(f"[+] held {len(args.package)} package(s)")
+
+
+def cmd_unhold(args: argparse.Namespace) -> None:
+    holds = load_holds(args.paths)
+    for pkg in args.package:
+        holds.discard(pkg)
+        log(f"unholding package {pkg}")
+    save_holds(args.paths, holds)
+    print(f"[+] unheld {len(args.package)} package(s)")
+
+
+def load_pins(paths: Paths) -> dict[str, str]:
+    if not paths.pins.is_file():
+        return {}
+    pins: dict[str, str] = {}
+    for line in paths.pins.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            pins[k.strip()] = v.strip().strip('"\'')
+    return pins
+
+
+def cmd_pin(args: argparse.Namespace) -> None:
+    pins = load_pins(args.paths)
+    for spec in args.package:
+        if "=" in spec:
+            pkg, ver = spec.split("=", 1)
+            pins[pkg.strip()] = ver.strip()
+            log(f"pinned {pkg.strip()} to version {ver.strip()}")
+        else:
+            die("pin format must be package=version (e.g. openssl=3.0.0)")
+    args.paths.pins.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# /etc/garb/pins.conf - Pinned package versions"] + [f"{k} = {v}" for k, v in sorted(pins.items())]
+    args.paths.pins.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[+] pinned {len(args.package)} package(s)")
+
+
+def cmd_downgrade(args: argparse.Namespace) -> None:
+    paths = args.paths
+    pkg = args.package
+    version = args.version
+    db = Database(paths)
+    installed = db.installed(pkg)
+    if not installed:
+        die(f"package {pkg} is not installed")
+    log(f"downgrading {pkg} from {installed.get('version')} to {version}")
+
+    archive = None
+    for candidate in paths.cache.glob(f"**/{pkg}-{version}*.garb"):
+        if candidate.is_file():
+            archive = candidate
+            break
+
+    if not archive:
+        index = load_indexes(paths)
+        entry = index.get(pkg)
+        if entry and str(entry.get("version")) == version:
+            archive = fetch_archive(paths, pkg, entry)
+
+    if not archive:
+        die(f"archive for {pkg}={version} not found in cache or repositories")
+
+    staging = Path(tempfile.mkdtemp(prefix="garb-stage-", dir=paths.tmp))
+    try:
+        metadata, _members = extract_staged(archive, staging)
+        entry_db = commit_package(paths, staging, metadata, archive)
+        db.add(pkg, entry_db)
+        db.save()
+        print(f"[+] {pkg} downgraded to {version}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def cmd_mirror_rank(args: argparse.Namespace) -> None:
+    repos = read_repo_configs(args.paths)
+    results = []
+    for r in repos:
+        name = r.get("name", "repo")
+        url = r.get("url", "")
+        start = time.time()
+        status = "ok"
+        try:
+            if url.startswith(("http://", "https://")):
+                req = urllib.request.Request(url, headers={"User-Agent": f"garb/{VERSION}"})
+                with urllib.request.urlopen(req, timeout=args.timeout):
+                    pass
+            latency_ms = round((time.time() - start) * 1000, 2)
+        except Exception:
+            latency_ms = 9999.0
+            status = "unreachable"
+
+        results.append({
+            "name": name,
+            "url": url,
+            "latency_ms": latency_ms,
+            "status": status,
+        })
+
+    results.sort(key=lambda x: x["latency_ms"])
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(results, indent=2))
+    else:
+        print("=" * 60)
+        print("Grintion Mirror Latency Ranking")
+        print("=" * 60)
+        for idx, m in enumerate(results, start=1):
+            print(f"[{idx}] {m['name']} ({m['url']}) - {m['latency_ms']} ms [{m['status']}]")
+        print("=" * 60)
+
+
+def cmd_delta_create(args: argparse.Namespace) -> None:
+    old_archive = Path(args.old)
+    new_archive = Path(args.new)
+    out_delta = Path(args.out)
+    if not old_archive.is_file() or not new_archive.is_file():
+        die("old and new archives must exist")
+
+    old_files = {}
+    with tarfile.open(old_archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isfile():
+                f = tar.extractfile(member)
+                if f:
+                    old_files[member.name] = hashlib.sha256(f.read()).hexdigest()
+
+    out_delta.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="garb-delta-"))
+    try:
+        delta_members = []
+        with tarfile.open(new_archive, "r:gz") as new_tar:
+            for member in new_tar.getmembers():
+                if member.isfile():
+                    f = new_tar.extractfile(member)
+                    if f:
+                        content = f.read()
+                        h = hashlib.sha256(content).hexdigest()
+                        if old_files.get(member.name) != h:
+                            dest = temp_dir / member.name
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            dest.write_bytes(content)
+                            delta_members.append(member.name)
+
+        deleted_members = [m for m in old_files if m not in delta_members]
+        meta = {
+            "format": "garb-delta-v1",
+            "old_sha256": sha256_file(old_archive),
+            "new_sha256": sha256_file(new_archive),
+            "modified": delta_members,
+            "deleted": deleted_members,
+        }
+        (temp_dir / "GARB_DELTA_METADATA.json").write_text(json.dumps(meta, indent=2))
+
+        with tarfile.open(out_delta, "w:gz") as out_tar:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    full_p = Path(root) / file
+                    rel_p = full_p.relative_to(temp_dir)
+                    out_tar.add(full_p, arcname=str(rel_p))
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    log(f"created delta update {out_delta} ({out_delta.stat().st_size} bytes)")
+
+
+def cmd_delta_apply(args: argparse.Namespace) -> None:
+    old_archive = Path(args.old)
+    delta_file = Path(args.delta)
+    out_archive = Path(args.out)
+
+    extract_old = Path(tempfile.mkdtemp(prefix="garb-apply-old-"))
+    extract_delta = Path(tempfile.mkdtemp(prefix="garb-apply-delta-"))
+    try:
+        with tarfile.open(old_archive, "r:gz") as tar:
+            tar.extractall(extract_old)
+        with tarfile.open(delta_file, "r:gz") as tar:
+            tar.extractall(extract_delta)
+
+        meta_file = extract_delta / "GARB_DELTA_METADATA.json"
+        if meta_file.is_file():
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            for d in meta.get("deleted", []):
+                del_path = extract_old / d
+                if del_path.exists():
+                    del_path.unlink()
+            meta_file.unlink()
+
+        for root, dirs, files in os.walk(extract_delta):
+            for file in files:
+                src = Path(root) / file
+                rel = src.relative_to(extract_delta)
+                dst = extract_old / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+        out_archive.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(out_archive, "w:gz") as tar:
+            for root, dirs, files in os.walk(extract_old):
+                for file in files:
+                    full_p = Path(root) / file
+                    rel_p = full_p.relative_to(extract_old)
+                    tar.add(full_p, arcname=str(rel_p))
+    finally:
+        shutil.rmtree(extract_old, ignore_errors=True)
+        shutil.rmtree(extract_delta, ignore_errors=True)
+
+    log(f"reconstructed archive {out_archive} from delta")
 
 
 PACMAN_VERSION_RE = re.compile(r"Pacman v(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
@@ -1342,6 +2089,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     upgrade = sub.add_parser("upgrade", help="upgrade installed packages")
     upgrade.add_argument("package", nargs="*")
+    upgrade.add_argument("--no-snapshot", action="store_true", help="skip the Btrfs pre-upgrade snapshot")
     upgrade.set_defaults(func=cmd_upgrade)
 
     listing = sub.add_parser("list", help="list installed packages")
@@ -1352,6 +2100,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     clean = sub.add_parser("clean", help="remove cached repository indexes and downloads")
     clean.set_defaults(func=cmd_clean)
+
+    history = sub.add_parser("history", help="show the transaction journal")
+    history.add_argument("--format", choices=("text", "json"), default="text")
+    history.add_argument("--limit", type=int, default=20, help="show the last N records (0 = all)")
+    history.set_defaults(func=cmd_history)
+
+    fsck = sub.add_parser("fsck", help="check the package database and installed files")
+    fsck.add_argument("--format", choices=("text", "json"), default="text")
+    fsck.add_argument("--hash", action="store_true", help="re-hash every installed file")
+    fsck.set_defaults(func=cmd_fsck)
 
     build = sub.add_parser("build", help="build one .garb from a Garbfile")
     build.add_argument("manifest")
@@ -1384,6 +2142,49 @@ def build_parser() -> argparse.ArgumentParser:
     sign_index.add_argument("index")
     sign_index.add_argument("--key", required=True)
     sign_index.set_defaults(func=cmd_sign_index)
+
+    gens = sub.add_parser("generations", help="list package generations")
+    gens.add_argument("--format", choices=("text", "json"), default="text")
+    gens.set_defaults(func=cmd_generations)
+
+    rb_gen = sub.add_parser("rollback-generation", help="roll back package state to a previous generation")
+    rb_gen.add_argument("generation", type=int, help="generation ID to restore")
+    rb_gen.set_defaults(func=cmd_rollback_generation)
+
+    hold_p = sub.add_parser("hold", help="hold packages to prevent automatic upgrades")
+    hold_p.add_argument("package", nargs="+")
+    hold_p.set_defaults(func=cmd_hold)
+
+    unhold_p = sub.add_parser("unhold", help="remove hold on packages")
+    unhold_p.add_argument("package", nargs="+")
+    unhold_p.set_defaults(func=cmd_unhold)
+
+    pin_p = sub.add_parser("pin", help="pin package to specific version (e.g. openssl=3.0.0)")
+    pin_p.add_argument("package", nargs="+")
+    pin_p.set_defaults(func=cmd_pin)
+
+    down_p = sub.add_parser("downgrade", help="downgrade a package to a specific version")
+    down_p.add_argument("package")
+    down_p.add_argument("version")
+    down_p.set_defaults(func=cmd_downgrade)
+
+    mirror_p = sub.add_parser("mirror-rank", help="measure repository mirror latencies")
+    mirror_p.add_argument("--format", choices=("text", "json"), default="text")
+    mirror_p.add_argument("--timeout", type=int, default=5)
+    mirror_p.set_defaults(func=cmd_mirror_rank)
+
+    dcreate_p = sub.add_parser("delta-create", help="create a delta update between two .garb packages")
+    dcreate_p.add_argument("--old", required=True)
+    dcreate_p.add_argument("--new", required=True)
+    dcreate_p.add_argument("--out", required=True)
+    dcreate_p.set_defaults(func=cmd_delta_create)
+
+    dapply_p = sub.add_parser("delta-apply", help="apply a delta update onto an old .garb package")
+    dapply_p.add_argument("--old", required=True)
+    dapply_p.add_argument("--delta", required=True)
+    dapply_p.add_argument("--out", required=True)
+    dapply_p.set_defaults(func=cmd_delta_apply)
+
     return parser
 
 
@@ -1417,7 +2218,34 @@ def main() -> int:
                 backend_version(backend_name, binary)
                 return run_external_backend(backend_name, binary, args)
         args.paths = Paths(Path(args.root))
-        args.func(args)
+        if args.command in MUTATING_COMMANDS:
+            with TransactionLock(args.paths, args.command):
+                txid = f"{int(time.time())}-{os.getpid()}-{secrets.token_hex(4)}"
+                base = {
+                    "schema": 1,
+                    "txid": txid,
+                    "time": int(time.time()),
+                    "root": str(args.paths.root),
+                    "command": args.command,
+                    "packages": list(getattr(args, "package", []) or []),
+                    "garb_version": VERSION,
+                }
+                journal_append(args.paths, {**base, "status": "started"})
+                try:
+                    args.func(args)
+                except BaseException as exc:
+                    journal_append(args.paths, {
+                        **base,
+                        "status": "rolled-back",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+                    raise
+                else:
+                    journal_append(args.paths, {**base, "status": "committed"})
+                    pkg_str = " ".join(getattr(args, "package", []) or []) if isinstance(getattr(args, "package", None), list) else str(getattr(args, "package", "") or "")
+                    record_generation(args.paths, f"{args.command} {pkg_str}".strip())
+        else:
+            args.func(args)
     except GarbError as exc:
         die(str(exc))
     except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as exc:
