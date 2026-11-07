@@ -122,6 +122,9 @@ zcat
 # Filesystems and disks
 mount
 umount
+cryptsetup
+mkfs.btrfs
+btrfs
 fdisk
 parted
 partprobe
@@ -231,10 +234,12 @@ gpg-agent
 gpgconf
 dirmngr
 
-# Graphical session bus (no logind/systemd user manager in this image)
+# Graphical session bus and seat management (no logind/systemd user manager)
 dbus-daemon
 dbus-launch
 dbus-run-session
+seatd
+udevadm
 
 # Live tooling
 python3

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Grintion-OS runit service: cupsd (CUPS printing daemon)
+exec 2>&1
+mkdir -p /var/log/cups /var/run/cups /var/spool/cups
+if [ -x /usr/bin/cupsd ]; then
+    exec /usr/bin/cupsd -f
+elif [ -x /usr/sbin/cupsd ]; then
+    exec /usr/sbin/cupsd -f
+fi
+echo "cupsd binary not found"
+exec sleep 3600
+

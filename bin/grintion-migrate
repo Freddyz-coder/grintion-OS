@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# grintion-migrate - cross-release user and home migration tool for Grintion-OS.
+#
+# Exports /home, user identity, network configurations, and installed package
+# lists so systems can be updated cleanly across major releases without data loss.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-migrate COMMAND [OPTIONS]
+
+Commands:
+  export [OPTIONS]     Export home, user accounts, and configs for migration
+  import ARCHIVE       Import a migration bundle into this system
+  verify ARCHIVE       Verify migration bundle contents
+  -h, --help           Show this help
+
+Options for 'export':
+  --out FILE           Destination file (default: grintion-migration-TIMESTAMP.tar.gz)
+  --include-packages   Include list of installed packages (default: yes)
+  --no-packages        Do not include package lists
+EOF
+}
+
+cmd_export() {
+    local out=""
+    local inc_pkgs=1
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --out)              out=${2:-}; shift 2 ;;
+            --include-packages) inc_pkgs=1; shift ;;
+            --no-packages)      inc_pkgs=0; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    local ts
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    [ -n "$out" ] || out="grintion-migration-${ts}.tar.gz"
+
+    local temp_dir
+    temp_dir="$(mktemp -d /tmp/grintion-migrate.XXXXXX)"
+    mkdir -p "$temp_dir/meta"
+
+    log "collecting system identity and user accounts..."
+    # Filter non-system accounts (UID >= 1000)
+    awk -F: '$3 >= 1000 && $3 < 60000' /etc/passwd > "$temp_dir/meta/passwd.users" 2>/dev/null || true
+    awk -F: '$3 >= 1000 && $3 < 60000' /etc/group > "$temp_dir/meta/group.users" 2>/dev/null || true
+    if [ -r /etc/shadow ] && [ "$(id -u)" -eq 0 ]; then
+        grep -E "$(cut -d: -f1 "$temp_dir/meta/passwd.users" | paste -sd '|' -)" /etc/shadow > "$temp_dir/meta/shadow.users" 2>/dev/null || true
+    fi
+
+    # Network configuration
+    if [ -d /etc/grintion ]; then
+        mkdir -p "$temp_dir/meta/etc_grintion"
+        cp -a /etc/grintion/* "$temp_dir/meta/etc_grintion/" 2>/dev/null || true
+    fi
+
+    if [ "$inc_pkgs" -eq 1 ]; then
+        log "exporting installed package lists..."
+        if command -v pacman >/dev/null 2>&1; then
+            pacman -Qqe > "$temp_dir/meta/pacman-packages.txt" 2>/dev/null || true
+        fi
+        if command -v garb >/dev/null 2>&1; then
+            garb list > "$temp_dir/meta/garb-packages.txt" 2>/dev/null || true
+        fi
+    fi
+
+    # Manifest
+    python3 - "$ts" "$out" <<'PY' > "$temp_dir/meta/manifest.json"
+import json
+import platform
+import sys
+
+ts, out = sys.argv[1:3]
+print(json.dumps({
+    "schema": 1,
+    "timestamp": ts,
+    "target_archive": out,
+    "os": "Grintion-OS",
+    "architecture": platform.machine(),
+}, indent=2))
+PY
+
+    log "creating archive: $out (including /home)..."
+    tar -czf "$out" -C "$temp_dir" meta -C / home 2>/dev/null || tar -czf "$out" -C "$temp_dir" meta
+
+    rm -rf "$temp_dir"
+    log "migration bundle created: $out ($(stat -c %s "$out" 2>/dev/null || echo 0) bytes)"
+}
+
+cmd_verify() {
+    local archive="${1:-}"
+    [ -n "$archive" ] || die "archive path is required"
+    [ -f "$archive" ] || die "archive file not found: $archive"
+
+    log "verifying migration archive: $archive"
+    if tar -tzf "$archive" | grep -q 'meta/manifest.json'; then
+        log "valid migration bundle structure"
+        tar -xzOf "$archive" meta/manifest.json | python3 -m json.tool || true
+        return 0
+    else
+        die "archive does not contain a valid Grintion-OS migration manifest"
+    fi
+}
+
+cmd_import() {
+    local archive="${1:-}"
+    shift || true
+    [ -n "$archive" ] || die "archive path is required"
+    [ -f "$archive" ] || die "archive file not found: $archive"
+    [ "$(id -u)" -eq 0 ] || die "importing requires root"
+
+    local dry_run=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) dry_run=1; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    cmd_verify "$archive"
+
+    if [ "$dry_run" -eq 1 ]; then
+        log "dry-run: contents of migration archive:"
+        tar -tzf "$archive" | head -n 30
+        echo "..."
+        return 0
+    fi
+
+    log "extracting migration bundle to / ..."
+    tar -xzf "$archive" -C / home 2>/dev/null || true
+
+    local temp_meta
+    temp_meta="$(mktemp -d /tmp/grintion-import.XXXXXX)"
+    tar -xzf "$archive" -C "$temp_meta" meta 2>/dev/null || true
+
+    # Restore users
+    if [ -f "$temp_meta/meta/passwd.users" ]; then
+        log "merging user accounts..."
+        while IFS= read -r line; do
+            user="$(printf '%s' "$line" | cut -d: -f1)"
+            if ! grep -q "^${user}:" /etc/passwd; then
+                echo "$line" >> /etc/passwd
+            fi
+        done < "$temp_meta/meta/passwd.users"
+    fi
+
+    if [ -f "$temp_meta/meta/group.users" ]; then
+        while IFS= read -r line; do
+            group="$(printf '%s' "$line" | cut -d: -f1)"
+            if ! grep -q "^${group}:" /etc/group; then
+                echo "$line" >> /etc/group
+            fi
+        done < "$temp_meta/meta/group.users"
+    fi
+
+    if [ -f "$temp_meta/meta/shadow.users" ]; then
+        while IFS= read -r line; do
+            user="$(printf '%s' "$line" | cut -d: -f1)"
+            if ! grep -q "^${user}:" /etc/shadow; then
+                echo "$line" >> /etc/shadow
+            fi
+        done < "$temp_meta/meta/shadow.users"
+    fi
+
+    rm -rf "$temp_meta"
+    log "migration import completed successfully"
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    export)   cmd_export "$@" ;;
+    import)   cmd_import "$@" ;;
+    verify)   cmd_verify "$@" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

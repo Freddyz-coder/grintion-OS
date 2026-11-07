@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# grintion-snapshot - manage read-only Btrfs root snapshots.
+#
+# Snapshots are stored under the @snapshots subvolume mounted at /.snapshots.
+# The boot command creates a writable copy and adds a Limine entry so a snapshot
+# can be booted without changing the running root. It does not roll back /.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+SNAP_DIR="/.snapshots"
+BOOT_ENTRY_MARKER_BEGIN="# BEGIN grintion snapshot entries"
+BOOT_ENTRY_MARKER_END="# END grintion snapshot entries"
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-snapshot COMMAND [ARGS]
+
+Commands:
+  create [LABEL]    Create a read-only snapshot of / (default label: manual)
+  list [--json]     List snapshots
+  delete NAME       Delete a snapshot by name
+  boot NAME         Create a writable copy and add a Limine boot entry
+  rollback NAME     Roll back active root (@) to a snapshot
+  -h, --help        Show this help
+
+The root filesystem must be Btrfs. /home on a separate @home subvolume is not
+included in a root snapshot.
+EOF
+}
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+
+require_btrfs() {
+    [ "$(id -u)" -eq 0 ] || die "run as root"
+    command -v btrfs >/dev/null 2>&1 || die "btrfs is not installed"
+    [ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" = "btrfs" ] \
+        || die "the root filesystem is not Btrfs"
+    [ -d "$SNAP_DIR" ] || die "$SNAP_DIR is missing"
+}
+
+snapshot_name() {
+    local label=${1:-manual}
+    label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')
+    label=${label#-}
+    label=${label%-}
+    [ -n "$label" ] || label=manual
+    printf '%s-%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$label"
+}
+
+snapshot_path() {
+    local name=${1:-}
+    [ -n "$name" ] || die "a snapshot name is required"
+    case "$name" in */*|.|..) die "invalid snapshot name: $name" ;; esac
+    printf '%s/%s\n' "$SNAP_DIR" "$name"
+}
+
+cmd_create() {
+    require_btrfs
+    local name path
+    name=$(snapshot_name "${1:-manual}")
+    path=$(snapshot_path "$name")
+    btrfs subvolume snapshot -r / "$path" >/dev/null
+    printf 'created %s\n' "$path"
+}
+
+cmd_list() {
+    require_btrfs
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+    local names=() path listing
+    # Do not use process substitution here: a minimal installed system may not
+    # have /dev/fd. A temporary file works with the same shell and tools.
+    listing=$(mktemp)
+    btrfs subvolume list -o "$SNAP_DIR" 2>/dev/null | awk '{print $NF}' > "$listing" || true
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        names+=("${path##*/}")
+    done < "$listing"
+    rm -f "$listing"
+    if [ "$json" -eq 1 ]; then
+        python3 - "${names[@]}" <<'PY'
+import json
+import sys
+print(json.dumps({"schema": 1, "snapshots": sys.argv[1:]}, indent=2))
+PY
+    elif [ "${#names[@]}" -eq 0 ]; then
+        echo "no snapshots in $SNAP_DIR"
+    else
+        printf '%s\n' "${names[@]}"
+    fi
+}
+
+cmd_delete() {
+    require_btrfs
+    local path
+    path=$(snapshot_path "${1:-}")
+    btrfs subvolume show "$path" >/dev/null 2>&1 || die "no such snapshot: ${1:-}"
+    btrfs subvolume delete "$path" >/dev/null
+    printf 'deleted %s\n' "$path"
+}
+
+cmd_boot() {
+    require_btrfs
+    local source path name esp conf uuid cmdline=() arg cmd
+    path=$(snapshot_path "${1:-}")
+    btrfs subvolume show "$path" >/dev/null 2>&1 || die "no such snapshot: ${1:-}"
+    name="${path##*/}"
+    local boot_name="${name}-boot-$(date -u +%Y%m%dT%H%M%SZ)"
+    local boot_path="$SNAP_DIR/$boot_name"
+
+    # A read-only snapshot cannot be the writable root. Make a normal snapshot
+    # of it, which is writable, and boot that copy.
+    btrfs subvolume snapshot "$path" "$boot_path" >/dev/null
+    btrfs property set -ts "$boot_path" ro false >/dev/null 2>&1 || true
+
+    esp=$(findmnt -n -o TARGET /boot/efi 2>/dev/null || true)
+    [ -n "$esp" ] || die "the ESP is not mounted at /boot/efi"
+    conf="$esp/limine.conf"
+    [ -f "$conf" ] || die "Limine config is missing: $conf"
+    # findmnt's SOURCE for a Btrfs subvolume includes a suffix such as
+    # /dev/mapper/grintion[/@], which blkid cannot open. Ask findmnt for the
+    # filesystem UUID directly and fall back to stripping the suffix.
+    uuid=$(findmnt -n -o UUID -T / 2>/dev/null || true)
+    if [ -z "$uuid" ]; then
+        source=$(findmnt -n -o SOURCE -T / 2>/dev/null | sed 's/\[.*\]$//')
+        uuid=$(blkid -s UUID -o value "$source" 2>/dev/null || true)
+    fi
+    [ -n "$uuid" ] || die "could not read the root filesystem UUID"
+
+    for arg in $(cat /proc/cmdline); do
+        case "$arg" in
+            root=*|rootflags=*|rw|ro|quiet|BOOT_IMAGE=*|initrd=*) ;;
+            *) cmdline+=("$arg") ;;
+        esac
+    done
+    cmd="root=UUID=$uuid rootflags=subvol=@snapshots/$boot_name rw quiet ${cmdline[*]-}"
+
+    local temp
+    temp=$(mktemp)
+    awk -v begin="$BOOT_ENTRY_MARKER_BEGIN" -v end="$BOOT_ENTRY_MARKER_END" '
+        $0 == begin { skip = 1; next }
+        $0 == end { skip = 0; next }
+        !skip
+    ' "$conf" > "$temp"
+    cat >> "$temp" <<EOF
+$BOOT_ENTRY_MARKER_BEGIN
+/Grintion-OS snapshot $boot_name
+    protocol: linux
+    kernel_path: boot():/EFI/grintion/vmlinuz-grintion
+    cmdline: $cmd
+    module_path: boot():/EFI/grintion/initramfs-install.img
+$BOOT_ENTRY_MARKER_END
+EOF
+    cp -a "$conf" "$conf.bak"
+    install -m 0644 "$temp" "$conf"
+    rm -f "$temp"
+    printf 'created writable boot snapshot %s\n' "$boot_path"
+    printf 'added Limine entry to %s (previous config: %s.bak)\n' "$conf" "$conf"
+}
+
+cmd_rollback() {
+    require_btrfs
+    local snap_name="${1:-}" path
+    path=$(snapshot_path "$snap_name")
+    btrfs subvolume show "$path" >/dev/null 2>&1 || die "no such snapshot: $snap_name"
+
+    local root_src stage
+    root_src=$(findmnt -n -o SOURCE -T / 2>/dev/null | sed 's/\[.*\]$//')
+    [ -n "$root_src" ] || die "could not determine root device for rollback"
+
+    stage=$(mktemp -d /run/grintion-rollback.XXXXXX)
+    mount -o subvolid=5 "$root_src" "$stage" 2>/dev/null || mount "$root_src" "$stage"
+
+    local ts
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    if [ -d "$stage/@" ]; then
+        mv "$stage/@" "$stage/@broken-$ts"
+    fi
+
+    btrfs subvolume snapshot "$stage/@snapshots/$snap_name" "$stage/@" >/dev/null
+    btrfs property set -ts "$stage/@" ro false >/dev/null 2>&1 || true
+
+    umount "$stage"
+    rmdir "$stage"
+    printf '[+] successfully rolled back to snapshot %s (previous root saved as @broken-%s)\n' "$snap_name" "$ts"
+    printf '[+] reboot to load the restored system\n'
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    create)   cmd_create "${1:-manual}" ;;
+    list)     cmd_list "${1:-}" ;;
+    delete)   cmd_delete "${1:-}" ;;
+    boot)     cmd_boot "${1:-}" ;;
+    rollback) cmd_rollback "${1:-}" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac

@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# grintion-boot-health - record boot attempts so a boot loop is visible.
+#
+# The boot-health service calls "record" at boot and "mark-good" after 60
+# seconds. Three failed attempts leave a marker and a console warning. This is a
+# detector, not an automatic rollback: the operator chooses a snapshot.
+
+set -Eeuo pipefail
+
+STATE=/var/lib/grintion/boot-health
+ATTEMPTS="$STATE/attempts"
+FAILED="$STATE/failed"
+LAST_GOOD="$STATE/last-good"
+REVERT_LOG="$STATE/revert.log"
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-boot-health COMMAND [--json]
+
+Commands:
+  record          Record one boot attempt (called by the boot service)
+  mark-good       Clear the attempt count after a stable boot
+  verify-session  Verify user/graphical login and mark good if active
+  auto-revert     Auto-revert default boot entry to snapshot if threshold exceeded
+  status          Show the current boot-health state
+  -h, --help      Show this help
+EOF
+}
+
+json_escape() {
+    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().rstrip("\n")))'
+}
+
+verify_session() {
+    local verified=false
+    # Check if a human user is logged in
+    if who 2>/dev/null | grep -v 'root' | grep -q '[a-zA-Z0-9]'; then
+        verified=true
+    # Check if seatd / display manager / Xorg / Wayland has active session
+    elif [ -S /run/seatd.sock ] || pgrep -x Xorg >/dev/null 2>&1 || pgrep -x sway >/dev/null 2>&1; then
+        verified=true
+    fi
+
+    if [ "$verified" = "true" ]; then
+        mkdir -p "$STATE"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/session-verified"
+        $0 mark-good
+        echo "[+] session verified; boot marked good"
+        return 0
+    fi
+    echo "[!] no active human or graphical session verified yet"
+    return 1
+}
+
+auto_revert() {
+    local attempts=0
+    [ -r "$ATTEMPTS" ] && attempts=$(cat "$ATTEMPTS")
+    if [ "$attempts" -lt 3 ]; then
+        echo "[*] boot attempts ($attempts) below failure threshold (3); no revert needed"
+        return 0
+    fi
+
+    local limine_conf="/boot/efi/limine.conf"
+    [ -f "$limine_conf" ] || limine_conf="/boot/efi/EFI/BOOT/limine.conf"
+    if [ ! -w "$limine_conf" ]; then
+        echo "[-] cannot access $limine_conf for auto-revert" >&2
+        return 1
+    fi
+
+    # Find the newest snapshot boot entry in limine.conf or fallback entry
+    local revert_entry=""
+    revert_entry=$(grep -E '^/[^/]+snapshot' "$limine_conf" | head -n 1 | tr -d '/' || true)
+    if [ -z "$revert_entry" ]; then
+        revert_entry=$(grep -E '^\/[^/]+\(recovery\)' "$limine_conf" | head -n 1 | tr -d '/' || true)
+    fi
+
+    if [ -n "$revert_entry" ]; then
+        # Update default entry in limine.conf
+        sed -i "s/^default_entry:.*/default_entry: \/$revert_entry/" "$limine_conf" 2>/dev/null || \
+            sed -i "1s/^/default_entry: \/$revert_entry\n/" "$limine_conf"
+        mkdir -p "$STATE"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) auto-reverted default entry to '$revert_entry' after $attempts attempts" >> "$REVERT_LOG"
+        echo "[!] Auto-reverted default bootloader entry to: $revert_entry"
+        return 0
+    fi
+    echo "[!] failure threshold exceeded, but no alternate snapshot/recovery entry found"
+    return 1
+}
+
+status() {
+    local attempts=0 failed=false last_good="" cmdline="" session_verified="" reverted=false
+    [ -r "$ATTEMPTS" ] && attempts=$(cat "$ATTEMPTS")
+    [ -e "$FAILED" ] && failed=true
+    [ -r "$LAST_GOOD" ] && last_good=$(cat "$LAST_GOOD")
+    [ -r "$STATE/last-cmdline" ] && cmdline=$(cat "$STATE/last-cmdline")
+    [ -r "$STATE/session-verified" ] && session_verified=$(cat "$STATE/session-verified")
+    [ -r "$REVERT_LOG" ] && reverted=true
+    if [ "${1:-}" = "--json" ]; then
+        python3 - "$attempts" "$failed" "$last_good" "$cmdline" "$session_verified" "$reverted" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "schema": 2,
+    "attempts": int(sys.argv[1]),
+    "failed": sys.argv[2] == "true",
+    "last_good": sys.argv[3] or None,
+    "last_cmdline": sys.argv[4] or None,
+    "session_verified": sys.argv[5] or None,
+    "auto_reverted": sys.argv[6] == "true",
+}, indent=2))
+PY
+    else
+        echo "attempts:         $attempts"
+        echo "failed:           $failed"
+        echo "last-good:        ${last_good:-never}"
+        echo "session-verified: ${session_verified:-no}"
+        echo "auto-reverted:    $reverted"
+        [ -n "$cmdline" ] && echo "cmdline:          $cmdline"
+    fi
+}
+
+COMMAND=${1:-}
+case "$COMMAND" in
+    record)
+        mkdir -p "$STATE"
+        chmod 0755 "$STATE"
+        attempts=0
+        [ -r "$ATTEMPTS" ] && attempts=$(cat "$ATTEMPTS")
+        attempts=$((attempts + 1))
+        printf '%s\n' "$attempts" > "$ATTEMPTS"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-attempt"
+        cat /proc/cmdline > "$STATE/last-cmdline" 2>/dev/null || true
+        if [ "$attempts" -ge 3 ]; then
+            touch "$FAILED"
+            echo "[!] $attempts consecutive boot attempts; the last boot may be failing" >&2
+            echo "[!] use 'grintion-snapshot list' and 'grintion-snapshot boot NAME' to recover" >&2
+            auto_revert || true
+        fi
+        ;;
+    mark-good)
+        mkdir -p "$STATE"
+        chmod 0755 "$STATE"
+        printf '0\n' > "$ATTEMPTS"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$LAST_GOOD"
+        rm -f "$FAILED"
+        ;;
+    verify-session)
+        verify_session
+        ;;
+    auto-revert)
+        auto_revert
+        ;;
+    status)
+        status "${2:-}"
+        ;;
+    -h|--help|"")
+        usage
+        ;;
+    *)
+        echo "unknown command: $COMMAND" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

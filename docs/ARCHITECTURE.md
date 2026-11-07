@@ -116,6 +116,8 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 | `wpa_supplicant` | opt-in Wi-Fi association for the `[wifi]` section; enabled by `grintion-network connect` |
 | `firewall` | loads `/etc/nftables.conf` with `nft -f`, then sleeps |
 | `syslog` | `busybox syslogd -n -O /var/log/messages` |
+| `seatd` | provides `/run/seatd.sock` for Wayland compositors without logind |
+| `udev` | runs standalone `systemd-udevd`, not systemd, so libinput can enumerate devices |
 | `local` | mounts the ESP if `/etc/fstab` lists `/boot/efi`, runs `swapon -a`, then sleeps |
 
 `/etc/grintion/network.conf` is parsed by `etc/grintion/network.lib.sh`
@@ -167,8 +169,10 @@ GPT
   p3  optional end       linux-swap, LABEL=GRINTION_SWAP (--swap-size MIB)
 ```
 
-There is no swap partition and no LVM. `local` runs `swapon -a`, so a user can
-add a swap file or partition manually.
+The installer can create a swap partition; with `--encrypt` it is LUKS2 and
+opened by `/etc/sv/cryptswap` from a root-only key. LVM is not implemented.
+`local` also runs `swapon -a`, so a manually configured swap file or partition
+still works.
 
 ---
 
@@ -177,39 +181,52 @@ add a swap file or partition manually.
 `bin/grintion-install` is intentionally a single shell script with explicit
 steps rather than a Python framework:
 
-1. argument parsing and a root/live-image check;
-2. tool presence check (`parted`, `partprobe`, `mkfs.vfat`, `mkfs.ext4`,
-   `blkid`, `rsync`, `openssl`, `python3`);
-3. disk size check (4 GiB minimum), optional `--swap-size`, `parted` GPT
-   creation, `partprobe`, then partition discovery through `lsblk` rather than
-   guessing the suffix from the device name;
-4. `mkfs.vfat -F32 -n GRINTIONESP`, `mkfs.ext4 -L GRINTION_ROOT -m 0`, and
-   `mkswap -L GRINTION_SWAP` when swap was requested;
-5. mount the root and ESP, `rsync` the live root (excluding `/proc`, `/sys`,
-   `/dev`, `/run`, `/tmp`, `/mnt`, `/media`, `/lost+found`);
-6. write `machine-id`, hostname, hosts and fstab;
+1. argument parsing, an answer-file pre-scan and a root/live-image check;
+2. tool presence check (`parted`, `partprobe`, `mkfs.vfat`, `blkid`, `rsync`,
+   `openssl`, `python3`, plus `mkfs.ext4`, or `mkfs.btrfs`/`btrfs` and
+   `cryptsetup` when selected);
+3. disk size check (4 GiB minimum), swap-size validation, an optional SMART
+   health probe, `parted` GPT creation, `partprobe`, then partition discovery
+   through `lsblk` rather than guessing the suffix from the device name;
+4. `mkfs.vfat -F32 -n GRINTIONESP`; LUKS2 `luksFormat`/`luksOpen` when
+   `--encrypt`; `mkfs.ext4` or Btrfs `mkfs` with `@`/`@snapshots`/`@home`
+   subvolumes; `mkswap` for plain or LUKS2 swap;
+5. mount the selected subvolume and ESP, `rsync` the live root (excluding
+   `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/mnt`, `/media`, `/lost+found`);
+6. write `machine-id`, hostname, hosts, fstab and the encrypted-swap key;
 7. create the user directly in `passwd`/`group`/`shadow`/`gshadow`, then set
    the password through the target's `chpasswd` (yescrypt per
    `/etc/login.defs`) with an `openssl passwd -6 -stdin` fallback. The secret
    never appears in an argument list;
-8. copy the kernel, installed initramfs and Limine assets;
+8. copy the kernel, installed initramfs and Limine assets, with
+   `cryptdevice=`, `rootflags=subvol=@` and the console order in the cmdline;
 9. `limine bios-install` for BIOS; `efibootmgr` when running under UEFI;
-10. `sync`, unmount everything, with a trap that unwinds on failure.
+10. run `grintion-verify-install`, `sync`, and unmount everything, with a trap
+    that unwinds on failure and closes the LUKS mappings.
 
 Account creation is deliberately data-driven: the installer edits the target
 databases instead of running useradd in a chroot. Passwords are applied
 separately with `chpasswd` inside the target, so the hash method follows
 `/etc/login.defs`; the end-to-end login test covers both paths.
 
-`--dry-run` stops after validation. `--force` allows running from an installed
-system, which is useful for testing but not a supported upgrade path.
+`--dry-run` stops after validation; with `--json` it prints the disk,
+filesystem, subvolume and encryption plan. `--force` allows running from an
+installed system, which is useful for testing but not a supported upgrade path.
+The installed initramfs contains busybox, e2fsck, cryptsetup and the dynamic
+library closure; `/init` resolves `cryptdevice=`, prompts on the configured
+console, mounts `rootflags=` and only runs e2fsck for ext filesystems.
 
 Desktop installs are data-driven: `grintion-desktop` reads
 `/etc/grintion/desktops.d/<name>.conf` (`PACKAGES`, `DM`, `DM_BIN`, `XINITRC`,
 `DISPLAY_SERVER`) and `/etc/grintion/drivers.conf` supplies the GPU package
 matrix. `list --json` exposes the profiles and `uninstall <name>` reverses an
 install; display-manager supervision uses the tracked
-`/etc/sv/display-manager/run` script.
+`/etc/sv/display-manager/run` script. For profiles whose `DISPLAY_SERVER`
+contains `wayland`, `grintion-desktop` enables `seatd` and adds human users to
+the `seat` group. `grintion-session` creates a private `XDG_RUNTIME_DIR`, starts
+a session bus when needed, exports the session type and seat socket, and execs
+the compositor. eudev/libinput and logind are still absent, so Wayland sessions
+are **not** claimed as verified.
 
 ---
 
@@ -250,7 +267,14 @@ moving any existing files into a backup directory. A declared path owned by
 another package is refused unless `--force` is used. A failure restores the
 backup and removes files installed so far; an incomplete restore keeps the
 backup directory and reports it. The database is written atomically with
-`os.replace`. Removal refuses to break a reverse dependency unless forced.
+`os.replace`, fsynced, and the parent directory is fsynced as well. Removal
+refuses to break a reverse dependency unless forced.
+
+Mutating transactions hold an exclusive `flock` on `/var/lib/garb/lock`, append
+durable `started`/`committed`/`rolled-back` records to
+`/var/lib/garb/journal.jsonl`, and are inspectable with `garb history` and
+`garb fsck`. A corrupt database is a hard error rather than an empty database,
+because an empty database loses the file-ownership records removal depends on.
 
 See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 

@@ -4,5 +4,11 @@ if grep -qs ' /boot/efi ' /etc/fstab; then
     mkdir -p /boot/efi
     mountpoint -q /boot/efi || mount /boot/efi 2>/dev/null || true
 fi
+# @snapshots is a separate Btrfs subvolume; without this mount, snapshots
+# would be written into the root subvolume instead of the snapshot store.
+if grep -qs ' /.snapshots ' /etc/fstab; then
+    mkdir -p /.snapshots
+    mountpoint -q /.snapshots || mount /.snapshots 2>/dev/null || true
+fi
 swapon -a 2>/dev/null || true
 exec sleep 86400

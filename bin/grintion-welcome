@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# grintion-welcome - Onboarding guide and quick-start helper for Grintion-OS.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.10.0')"
+HOSTNAME="$(hostname 2>/dev/null || echo 'grintion')"
+KERNEL="$(uname -r)"
+
+cmd_welcome() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "$VERSION" "$HOSTNAME" "$KERNEL" <<'PY'
+import json
+import sys
+
+ver, host, kern = sys.argv[1:4]
+print(json.dumps({
+    "schema": 1,
+    "os": "Grintion-OS",
+    "version": ver,
+    "hostname": host,
+    "kernel": kern,
+    "tools": [
+        {"name": "grintion-network", "description": "Manage Wi-Fi and static network configurations"},
+        {"name": "grintion-display", "description": "Configure multi-monitor and HiDPI scaling"},
+        {"name": "grintion-desktop", "description": "Install and manage graphical desktop environments"},
+        {"name": "grintion-apps", "description": "Install curated application profiles"},
+        {"name": "grintion-a11y", "description": "Configure accessibility tools (Orca, magnifier, keyboard)"},
+        {"name": "grintion-doctor", "description": "Run system health and security diagnostics"},
+        {"name": "grintion-snapshot", "description": "Manage Btrfs snapshots and boot entries"},
+        {"name": "grintion-backup", "description": "Create and schedule system/home backups"},
+        {"name": "garb", "description": "Native transaction-safe package manager"},
+    ],
+}, indent=2))
+PY
+        return 0
+    fi
+
+    cat <<EOF
+========================================================================
+             Welcome to Grintion linux $VERSION
+========================================================================
+Hostname: $HOSTNAME | Kernel: $KERNEL
+
+Grintion linux is a lean, independent, non-systemd Linux distribution built
+for privacy, security, and developer control.
+
+Quick Configuration Guide:
+  1. Network:      'grintion-network status' or 'grintion-network connect SSID'
+  2. Display:      'grintion-display scale 1.25' (for HiDPI screens)
+  3. Themes:       'grintion-theme mode dark'
+  4. Desktop:      'grintion-desktop install xfce' (or gnome, kde, sway, i3)
+  5. Applications: 'grintion-apps list' to explore curated app profiles
+  6. Accessibility: 'grintion-a11y status' for screen reader and large text
+  7. Health Check: 'grintion-doctor --security' for system posture
+  8. Backups:      'grintion-backup create' for home and configuration safety
+  9. Snapshots:    'grintion-snapshot create <label>' before making changes
+
+Documentation is available under /usr/share/doc/grintion or online at:
+  https://github.com/Freddyz-coder/grintion-OS
+
+Type 'grintion-welcome --json' for machine-readable output.
+========================================================================
+EOF
+}
+
+cmd_welcome "${1:-}"
+

@@ -9,6 +9,7 @@ video:x:44:
 audio:x:63:
 kvm:x:78:
 render:x:989:
+seat:x:985:
 input:x:990:
 uucp:x:14:
 utmp:x:999:

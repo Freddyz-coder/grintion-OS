@@ -1,0 +1,11 @@
+#!/bin/sh
+# Grintion-OS runit service: bluetoothd (BlueZ daemon)
+exec 2>&1
+if [ -x /usr/lib/bluetooth/bluetoothd ]; then
+    exec /usr/lib/bluetooth/bluetoothd -n
+elif [ -x /usr/libexec/bluetooth/bluetoothd ]; then
+    exec /usr/libexec/bluetooth/bluetoothd -n
+fi
+echo "bluetoothd binary not found"
+exec sleep 3600
+

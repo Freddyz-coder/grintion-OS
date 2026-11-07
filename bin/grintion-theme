@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# grintion-theme - Wallpaper, theme, and font customizer for Grintion-OS.
+#
+# Configures unified themes, wallpapers, dark/light modes, and font metrics
+# across XFCE, GNOME, KDE, Sway, and i3 sessions.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/grintion"
+THEME_CONF="$CONFIG_DIR/theme.conf"
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+get_conf() {
+    local key="$1" default="${2:-}"
+    if [ -f "$THEME_CONF" ]; then
+        local val
+        val="$(sed -n "s/^${key}=//p" "$THEME_CONF" | tr -d ' ')"
+        printf '%s\n' "${val:-$default}"
+    else
+        printf '%s\n' "$default"
+    fi
+}
+
+set_conf() {
+    local key="$1" val="$2"
+    mkdir -p "$CONFIG_DIR"
+    touch "$THEME_CONF"
+    if grep -q "^${key}=" "$THEME_CONF"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$THEME_CONF"
+    else
+        echo "${key}=${val}" >> "$THEME_CONF"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-theme COMMAND [OPTIONS]
+
+Commands:
+  wallpaper PATH       Set desktop wallpaper across window managers
+  mode <dark|light>    Set dark or light appearance preference
+  font-size POINTS     Set base desktop font size (e.g. 10, 11, 12)
+  status [--json]      Show current theme settings
+  -h, --help           Show this help
+EOF
+}
+
+cmd_wallpaper() {
+    local path="${1:-}"
+    [ -n "$path" ] || die "wallpaper path is required"
+    [ -f "$path" ] || die "wallpaper file not found: $path"
+
+    set_conf "WALLPAPER" "$path"
+    log "setting wallpaper: $path"
+
+    # XFCE
+    if command -v xfconf-query >/dev/null 2>&1; then
+        for prop in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E 'last-image|image-path' || true); do
+            xfconf-query -c xfce4-desktop -p "$prop" -s "$path" 2>/dev/null || true
+        done
+    fi
+
+    # Sway
+    if command -v swaymsg >/dev/null 2>&1 && [ -n "${SWAYSOCK:-}" ]; then
+        swaymsg output "*" bg "$path" fill 2>/dev/null || true
+    fi
+
+    # Xorg / i3 / feh fallback
+    if command -v feh >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+        feh --bg-fill "$path" 2>/dev/null || true
+    elif command -v xsetroot >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+        xsetroot -solid "#1e1e2e" 2>/dev/null || true
+    fi
+
+    log "wallpaper applied"
+}
+
+cmd_mode() {
+    local mode="${1:-dark}"
+    case "$mode" in
+        dark|light) ;;
+        *) die "mode must be 'dark' or 'light'" ;;
+    esac
+
+    set_conf "MODE" "$mode"
+    log "setting theme mode: $mode"
+
+    local gtk_theme="Adwaita-dark"
+    [ "$mode" = "light" ] && gtk_theme="Adwaita"
+
+    # GTK 3 / 4 config
+    local gtk3_dir="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-3.0"
+    mkdir -p "$gtk3_dir"
+    cat > "$gtk3_dir/settings.ini" <<EOF
+[Settings]
+gtk-theme-name=$gtk_theme
+gtk-application-prefer-dark-theme=$([ "$mode" = "dark" ] && echo 1 || echo 0)
+EOF
+
+    # Qt platform theme
+    if [ "$mode" = "dark" ]; then
+        export QT_STYLE_OVERRIDE="kvantum-dark"
+    else
+        export QT_STYLE_OVERRIDE="kvantum"
+    fi
+
+    log "theme preference updated to $mode"
+}
+
+cmd_font_size() {
+    local size="${1:-10}"
+    case "$size" in ''|*[!0-9]*) die "invalid font size: $size" ;; esac
+
+    set_conf "FONT_SIZE" "$size"
+    log "setting font size: $size pt"
+}
+
+cmd_status() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    local wp mode fs
+    wp="$(get_conf WALLPAPER '/usr/share/backgrounds/grintion-default.png')"
+    mode="$(get_conf MODE 'dark')"
+    fs="$(get_conf FONT_SIZE '10')"
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "$wp" "$mode" "$fs" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "schema": 1,
+    "wallpaper": sys.argv[1],
+    "mode": sys.argv[2],
+    "font_size_pt": int(sys.argv[3]),
+}, indent=2))
+PY
+    else
+        echo "Theme Status:"
+        echo "  Appearance: $mode"
+        echo "  Font Size:  $fs pt"
+        echo "  Wallpaper:  $wp"
+    fi
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    wallpaper) cmd_wallpaper "${1:-}" ;;
+    mode)      cmd_mode "${1:-dark}" ;;
+    font-size) cmd_font_size "${1:-10}" ;;
+    status)    cmd_status "$@" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

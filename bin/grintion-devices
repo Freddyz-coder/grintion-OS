@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# grintion-devices - Device management for Printing (CUPS), Scanning (SANE), and Bluetooth.
+#
+# Provides runit service control, device enumeration, and simple configuration.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-devices COMMAND [OPTIONS]
+
+Commands:
+  status [--json]       Show status of printing, scanning, and bluetooth
+  cups ACTION           Manage CUPS printing service (start, stop, restart, status)
+  bluetooth ACTION      Manage Bluetooth (on, off, status, scan)
+  sane ACTION           Manage SANE scanning (list, status)
+  -h, --help            Show this help
+EOF
+}
+
+cmd_status() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    local cups_running=false bt_running=false bt_controller=false sane_present=false
+    if sv status cupsd 2>/dev/null | grep -q '^run:'; then
+        cups_running=true
+    fi
+    if sv status bluetoothd 2>/dev/null | grep -q '^run:'; then
+        bt_running=true
+    fi
+    if command -v bluetoothctl >/dev/null 2>&1; then
+        if bluetoothctl show 2>/dev/null | grep -q 'Controller'; then
+            bt_controller=true
+        fi
+    fi
+    if command -v scanimage >/dev/null 2>&1; then
+        sane_present=true
+    fi
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "$cups_running" "$bt_running" "$bt_controller" "$sane_present" <<'PY'
+import json
+import sys
+
+(cups, bt, btc, sane) = [x == "true" for x in sys.argv[1:5]]
+print(json.dumps({
+    "schema": 1,
+    "cups": {
+        "service_running": cups,
+    },
+    "bluetooth": {
+        "service_running": bt,
+        "controller_available": btc,
+    },
+    "sane": {
+        "installed": sane,
+    },
+}, indent=2))
+PY
+    else
+        echo "Device Services Status:"
+        echo "  Printing (CUPS):     $([ "$cups_running" = "true" ] && echo 'running' || echo 'stopped')"
+        echo "  Bluetooth Service:   $([ "$bt_running" = "true" ] && echo 'running' || echo 'stopped')"
+        echo "  Bluetooth Adapter:   $([ "$bt_controller" = "true" ] && echo 'detected' || echo 'none')"
+        echo "  Scanning (SANE):     $([ "$sane_present" = "true" ] && echo 'ready' || echo 'not installed')"
+    fi
+}
+
+cmd_cups() {
+    local action="${1:-status}"
+    case "$action" in
+        start)
+            [ "$(id -u)" -eq 0 ] || die "must run as root"
+            mkdir -p /var/service
+            ln -sfn /etc/sv/cupsd /var/service/cupsd
+            sv start cupsd
+            ;;
+        stop)
+            [ "$(id -u)" -eq 0 ] || die "must run as root"
+            sv stop cupsd || true
+            rm -f /var/service/cupsd
+            ;;
+        restart)
+            [ "$(id -u)" -eq 0 ] || die "must run as root"
+            sv restart cupsd
+            ;;
+        status)
+            sv status /var/service/cupsd 2>/dev/null || echo "cupsd is not running"
+            ;;
+        *) die "unknown cups action: $action (use start, stop, restart, status)" ;;
+    esac
+}
+
+cmd_bluetooth() {
+    local action="${1:-status}"
+    case "$action" in
+        on|start)
+            [ "$(id -u)" -eq 0 ] || die "must run as root"
+            mkdir -p /var/service
+            ln -sfn /etc/sv/bluetoothd /var/service/bluetoothd
+            sv start bluetoothd
+            if command -v rfkill >/dev/null 2>&1; then
+                rfkill unblock bluetooth 2>/dev/null || true
+            fi
+            if command -v bluetoothctl >/dev/null 2>&1; then
+                bluetoothctl power on 2>/dev/null || true
+            fi
+            log "bluetooth enabled"
+            ;;
+        off|stop)
+            [ "$(id -u)" -eq 0 ] || die "must run as root"
+            if command -v bluetoothctl >/dev/null 2>&1; then
+                bluetoothctl power off 2>/dev/null || true
+            fi
+            sv stop bluetoothd 2>/dev/null || true
+            rm -f /var/service/bluetoothd
+            log "bluetooth disabled"
+            ;;
+        scan)
+            command -v bluetoothctl >/dev/null 2>&1 || die "bluetoothctl not installed"
+            log "scanning for nearby bluetooth devices (5s)..."
+            bluetoothctl --timeout 5 scan on 2>/dev/null || true
+            bluetoothctl devices 2>/dev/null || true
+            ;;
+        status)
+            sv status /var/service/bluetoothd 2>/dev/null || echo "bluetoothd is not running"
+            if command -v bluetoothctl >/dev/null 2>&1; then
+                bluetoothctl show 2>/dev/null || true
+            fi
+            ;;
+        *) die "unknown bluetooth action: $action (use on, off, scan, status)" ;;
+    esac
+}
+
+cmd_sane() {
+    local action="${1:-status}"
+    case "$action" in
+        list)
+            command -v scanimage >/dev/null 2>&1 || die "scanimage not installed (install sane)"
+            scanimage -L
+            ;;
+        status)
+            if command -v scanimage >/dev/null 2>&1; then
+                echo "SANE scanning backend is installed"
+            else
+                echo "SANE scanning backend is not installed"
+            fi
+            ;;
+        *) die "unknown sane action: $action (use list, status)" ;;
+    esac
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    status)    cmd_status "$@" ;;
+    cups)      cmd_cups "${1:-status}" ;;
+    bluetooth) cmd_bluetooth "${1:-status}" ;;
+    sane)      cmd_sane "${1:-status}" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

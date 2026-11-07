@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# grintion-session - start a graphical session without systemd or logind.
+#
+# Creates a private XDG_RUNTIME_DIR, exports the session type, waits for the
+# optional seatd socket on Wayland, starts the session D-Bus and then execs the
+# requested command. The command is required; this wrapper never guesses which
+# desktop to start.
+set -Eeuo pipefail
+
+SESSION_TYPE=x11
+DESKTOP=grintion
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-session [OPTIONS] -- COMMAND [ARGS...]
+
+Options:
+  --type x11|wayland   Session type (default: x11)
+  --desktop NAME       XDG_CURRENT_DESKTOP value (default: grintion)
+  -h, --help           Show this help
+
+The wrapper creates XDG_RUNTIME_DIR, exports XDG_SESSION_TYPE and
+XDG_CURRENT_DESKTOP, and starts dbus-run-session when no session bus exists.
+Wayland sessions additionally export SEATD_SOCK=/run/seatd.sock.
+EOF
+}
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --type) SESSION_TYPE=${2:-}; shift 2 ;;
+        --desktop) DESKTOP=${2:-}; shift 2 ;;
+        --) shift; break ;;
+        -h|--help) usage; exit 0 ;;
+        *) break ;;
+    esac
+done
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+case "$SESSION_TYPE" in x11|wayland) ;; *) die "unsupported session type: $SESSION_TYPE" ;; esac
+[ -n "$DESKTOP" ] || die "desktop name cannot be empty"
+
+uid=$(id -u)
+runtime=${XDG_RUNTIME_DIR:-}
+if [ -n "$runtime" ] && [ ! -d "$runtime" ]; then
+    # Honour an explicit path when the caller can create and own it; otherwise
+    # fall back to the same per-user path used on systems without logind.
+    if ! mkdir -p "$runtime" 2>/dev/null || [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+        runtime=""
+    fi
+fi
+if [ -z "$runtime" ] || [ ! -d "$runtime" ] || [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+    runtime="/tmp/grintion-runtime-$uid"
+    if [ -e "$runtime" ] && [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+        runtime="/tmp/grintion-runtime-$uid-$$"
+    fi
+    mkdir -p "$runtime"
+fi
+chmod 700 "$runtime"
+chmod 700 "$runtime" 2>/dev/null || true
+export XDG_RUNTIME_DIR="$runtime"
+export XDG_SESSION_TYPE="$SESSION_TYPE"
+export XDG_CURRENT_DESKTOP="$DESKTOP"
+
+if [ "$SESSION_TYPE" = wayland ]; then
+    export SEATD_SOCK="${SEATD_SOCK:-/run/seatd.sock}"
+    if [ ! -S "$SEATD_SOCK" ]; then
+        printf '[!] %s is not present; the compositor may need direct DRM access\n' "$SEATD_SOCK" >&2
+    fi
+    # libinput uses the udev database to enumerate input devices. The service
+    # starts in parallel, so give it a short bounded window rather than failing
+    # a session that started a fraction of a second too early.
+    i=0
+    while [ ! -S /run/udev/control ] && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if [ ! -S /run/udev/control ]; then
+        printf '[!] /run/udev/control is not present; libinput may see no devices\n' >&2
+    fi
+fi
+
+# Reuse the tracked audio hook so Wayland and X11 sessions get the same
+# PipeWire/WirePlumber startup without a systemd user manager.
+if [ -r /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh ]; then
+    # shellcheck disable=SC1091
+    . /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh || true
+fi
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- "$@"
+fi
+exec "$@"

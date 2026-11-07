@@ -29,6 +29,24 @@ therefore play the file and then fail to exit on 1.6.10; use `pw-play` or
 direct `plughw` playback, or upgrade to PipeWire 1.6.11 when it reaches the
 stable repositories.
 
+### Phase 4 Desktop, Wayland, and Display Manager Matrix
+
+`seatd` is supervised by runit and provides `/run/seatd.sock`. The `seat`
+group is shipped in `/etc/group`; installing a profile whose `DISPLAY_SERVER`
+contains `wayland` enables `seatd` and adds human users to that group.
+`grintion-session --type wayland --desktop sway -- COMMAND` creates a private
+`XDG_RUNTIME_DIR`, exports `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP` and
+`SEATD_SOCK`, starts a session bus with `dbus-run-session`, and then execs the
+command. XDG portal packages are part of each profile.
+
+Display managers (`lightdm`, `sddm`, `gdm`, and `greetd`) are supervised by
+`/etc/sv/display-manager/run` and standalone `/etc/sv/greetd/run`. Dedicated PAM
+stacks are provided in `/etc/pam.d/` (`lightdm`, `sddm`, `sddm-greeter`,
+`sddm-autologin`, `gdm-password`, `gdm-autologin`, `greetd`), and service accounts
+are automatically provisioned by `grintion-desktop`. D-Bus session bus startup
+in X11 sessions provides automatic fallback to `dbus-daemon --session --fork`
+when `dbus-launch` is not installed, eliminating "No session bus running" errors.
+
 KDE Plasma is **not verified**. The Arch Plasma 6.8 package set is Wayland-only
 (`plasma-workspace` ships `startplasma-wayland` and `plasma.desktop`; there is
 no `startplasma-x11` or X11 session file), and the image has no udev or logind,
@@ -217,4 +235,160 @@ For console users who prefer manual start without a display manager:
 - For Sway: run `sway` directly from the console prompt (no `.xinitrc`; copy `/etc/sway/config` to `~/.config/sway/config` to customise it).
 
 The selected display manager is recorded in `/etc/grintion/display-manager` and
-supervised by the tracked `/etc/sv/display-manager/run` service.
+supervised by the tracked `/etc/sv/display-manager/run` service (or `/etc/sv/greetd/run`
+when using greetd).
+
+---
+
+## 6. Accessibility Management (`grintion-a11y`)
+
+`grintion-a11y` configures system-wide accessibility features for console, graphical
+greeters, and desktop sessions:
+
+```sh
+# Toggle or enable screen reader (espeak-ng / orca)
+grintion-a11y screen-reader on
+
+# Enable screen magnifier
+grintion-a11y magnifier on
+
+# Enable on-screen virtual keyboard (onboard / wvkbd)
+grintion-a11y virtual-keyboard on
+
+# Set high-contrast visual theme
+grintion-a11y high-contrast on
+
+# Set large fonts
+grintion-a11y large-fonts on
+
+# Configure greeter accessibility features
+sudo grintion-a11y greeter on
+
+# Check current accessibility status
+grintion-a11y status
+grintion-a11y status --json
+```
+
+---
+
+## 7. Display Configuration and HiDPI Scaling (`grintion-display`)
+
+`grintion-display` manages display resolutions, multi-monitor arrangements, and HiDPI
+display scaling across both X11 and Wayland sessions:
+
+```sh
+# Query connected monitors and current resolutions
+grintion-display status
+grintion-display status --json
+
+# Set fractional or integer scaling (e.g. 1.25x, 1.5x, 2.0x)
+grintion-display scale 1.5
+
+# Set resolution on a specific output
+grintion-display resolution eDP-1 1920x1080
+
+# Configure dual-monitor layout (e.g. external monitor right of laptop)
+grintion-display layout --primary eDP-1 --right-of HDMI-1
+```
+
+---
+
+## 8. Appearance and Themes (`grintion-theme`)
+
+`grintion-theme` configures unified dark/light appearance, desktop wallpapers, and font sizing:
+
+```sh
+# Set dark or light mode (GTK2/3/4 and Qt)
+grintion-theme mode dark
+grintion-theme mode light
+
+# Set desktop wallpaper (X11 feh / Wayland swaybg)
+grintion-theme wallpaper /usr/share/backgrounds/grintion/default.png
+
+# Set global base font size (in pt)
+grintion-theme font-size 11
+
+# Inspect current theme settings
+grintion-theme status
+grintion-theme status --json
+```
+
+---
+
+## 9. Printing, Bluetooth, and Hardware Devices (`grintion-devices`)
+
+`grintion-devices` manages hardware peripherals and their background runit services:
+
+```sh
+# Printing (CUPS):
+sudo grintion-devices cups enable
+grintion-devices cups list-printers
+sudo grintion-devices cups add-printer --name OfficePrinter --uri ipp://192.168.1.50/ipp/print
+
+# Bluetooth:
+sudo grintion-devices bluetooth enable
+grintion-devices bluetooth scan
+sudo grintion-devices bluetooth pair 00:11:22:33:44:55
+
+# Scanning (SANE):
+grintion-devices sane scan
+grintion-devices sane list-scanners
+
+# Status of all hardware subsystems:
+grintion-devices status
+grintion-devices status --json
+```
+
+Underlying runit services live in `/etc/sv/cupsd` and `/etc/sv/bluetoothd`.
+
+---
+
+## 10. System Onboarding (`grintion-welcome`)
+
+`grintion-welcome` provides an interactive first-boot onboarding walkthrough and
+diagnostic tool for new users:
+
+```sh
+# Run interactive welcome wizard
+grintion-welcome
+
+# Output machine-readable readiness state
+grintion-welcome --json
+```
+
+It checks and guides configuration for:
+- Network connectivity (Ethernet, Wi-Fi status)
+- Display scaling and monitor layout
+- Dark/light theme preferences
+- Installed desktop environment
+- Opt-in application suites
+- Rollback snapshots and system recovery status
+
+---
+
+## 11. Modular Application Profiles (`grintion-apps`)
+
+To prevent base image bloat, applications are grouped into opt-in modular profile
+configurations under `/etc/grintion/profiles.d/`:
+
+- `browser.conf`: Web browsing (Firefox, Chromium)
+- `office.conf`: Productivity and document editing (LibreOffice)
+- `gaming.conf`: Gaming runtimes, Steam, Vulkan utilities
+- `vmguest.conf`: Guest integration tools (QEMU guest agent, VirtualBox utilities)
+- `dev.conf`: Developer tools, compilers, Git, debuggers
+
+```sh
+# List available application profiles and installation status
+grintion-apps list
+grintion-apps list --json
+
+# Install an application profile suite
+sudo grintion-apps install browser
+sudo grintion-apps install office
+
+# Remove an application profile
+sudo grintion-apps remove gaming
+
+# Check profile status
+grintion-apps status
+```

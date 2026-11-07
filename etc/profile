@@ -3,6 +3,11 @@
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export SVDIR=/var/service
+
+# glibc 2.44 ships C.UTF-8 as a built-in locale, so UTF-8 needs no generated
+# locale archive. Keep an explicitly chosen LANG, but never leave login shells
+# in the POSIX/C locale by default.
+export LANG="${LANG:-C.UTF-8}"
 export EDITOR="${EDITOR:-nano}"
 export PAGER="${PAGER:-less}"
 umask 022

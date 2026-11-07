@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# grintion-a11y - Accessibility configuration manager for Grintion-OS.
+#
+# Manages screen reader (Orca), screen magnifier, virtual on-screen keyboard,
+# high-contrast themes, large text scaling, and greeter accessibility.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+CONFIG_DIR="/etc/grintion"
+CONFIG_FILE="$CONFIG_DIR/a11y.conf"
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+get_setting() {
+    local key="$1" default="${2:-0}"
+    if [ -f "$CONFIG_FILE" ]; then
+        local val
+        val="$(sed -n "s/^${key}=//p" "$CONFIG_FILE" | tr -d ' ')"
+        printf '%s\n' "${val:-$default}"
+    else
+        printf '%s\n' "$default"
+    fi
+}
+
+set_setting() {
+    local key="$1" val="$2"
+    mkdir -p "$CONFIG_DIR"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        touch "$CONFIG_FILE"
+    fi
+    if grep -q "^${key}=" "$CONFIG_FILE"; then
+        sed -i "s/^${key}=.*/${key}=${val}/" "$CONFIG_FILE"
+    else
+        echo "${key}=${val}" >> "$CONFIG_FILE"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-a11y COMMAND [OPTIONS]
+
+Commands:
+  status [--json]                 Show accessibility status
+  screen-reader <on|off|toggle>   Enable/disable Orca screen reader
+  magnifier <on|off|toggle>       Enable/disable screen magnifier
+  virtual-keyboard <on|off|toggle> Enable/disable on-screen keyboard (onboard/wvkbd)
+  high-contrast <on|off|toggle>   Toggle high-contrast theme
+  large-fonts <on|off|toggle>     Toggle 1.25x large fonts
+  greeter <on|off|toggle>         Toggle greeter accessibility options
+  -h, --help                      Show this help
+EOF
+}
+
+cmd_status() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    local sr mag vk hc lf gr
+    sr="$(get_setting SCREEN_READER 0)"
+    mag="$(get_setting MAGNIFIER 0)"
+    vk="$(get_setting VIRTUAL_KEYBOARD 0)"
+    hc="$(get_setting HIGH_CONTRAST 0)"
+    lf="$(get_setting LARGE_FONTS 0)"
+    gr="$(get_setting GREETER_A11Y 0)"
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "$sr" "$mag" "$vk" "$hc" "$lf" "$gr" <<'PY'
+import json
+import sys
+
+(sr, mag, vk, hc, lf, gr) = [x == "1" for x in sys.argv[1:7]]
+print(json.dumps({
+    "schema": 1,
+    "screen_reader": sr,
+    "magnifier": mag,
+    "virtual_keyboard": vk,
+    "high_contrast": hc,
+    "large_fonts": lf,
+    "greeter_accessibility": gr,
+}, indent=2))
+PY
+    else
+        echo "Accessibility Posture:"
+        echo "  Screen Reader (Orca):   $([ "$sr" = "1" ] && echo enabled || echo disabled)"
+        echo "  Screen Magnifier:       $([ "$mag" = "1" ] && echo enabled || echo disabled)"
+        echo "  Virtual Keyboard:       $([ "$vk" = "1" ] && echo enabled || echo disabled)"
+        echo "  High Contrast Theme:    $([ "$hc" = "1" ] && echo enabled || echo disabled)"
+        echo "  Large Fonts (1.25x):    $([ "$lf" = "1" ] && echo enabled || echo disabled)"
+        echo "  Greeter Accessibility:  $([ "$gr" = "1" ] && echo enabled || echo disabled)"
+    fi
+}
+
+toggle_val() {
+    local cur="$1" action="$2"
+    case "$action" in
+        1|on|enable|true)   echo "1" ;;
+        0|off|disable|false) echo "0" ;;
+        toggle) [ "$cur" = "1" ] && echo "0" || echo "1" ;;
+        *) echo "$cur" ;;
+    esac
+}
+
+cmd_toggle() {
+    local key="$1" name="$2" action="${3:-toggle}"
+    local cur next
+    cur="$(get_setting "$key" 0)"
+    next="$(toggle_val "$cur" "$action")"
+    set_setting "$key" "$next"
+    log "$name $([ "$next" = "1" ] && echo 'enabled' || echo 'disabled')"
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    status)           cmd_status "$@" ;;
+    screen-reader)    cmd_toggle SCREEN_READER "Screen reader" "${1:-toggle}" ;;
+    magnifier)        cmd_toggle MAGNIFIER "Screen magnifier" "${1:-toggle}" ;;
+    virtual-keyboard) cmd_toggle VIRTUAL_KEYBOARD "Virtual on-screen keyboard" "${1:-toggle}" ;;
+    high-contrast)    cmd_toggle HIGH_CONTRAST "High-contrast theme" "${1:-toggle}" ;;
+    large-fonts)      cmd_toggle LARGE_FONTS "Large font scaling" "${1:-toggle}" ;;
+    greeter)          cmd_toggle GREETER_A11Y "Greeter accessibility" "${1:-toggle}" ;;
+    -h|--help)        usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

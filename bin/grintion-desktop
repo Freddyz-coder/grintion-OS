@@ -355,19 +355,28 @@ enable_dm_service() {
     # Only provision the account on the running system. With --root the lightdm
     # package's own scriptlets own target-side account creation; creating the
     # user on the host would be wrong (F4 review note).
-    if [ "$dm" = "/usr/bin/lightdm" ] && [ "$TARGET_ROOT" = "/" ]; then
-        ensure_service_account lightdm /var/lib/lightdm
-        fix_lightdm_greeter_pam
-        mkdir -p "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm"
-        chown -R lightdm:lightdm "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm" 2>/dev/null || true
-        if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then
-            sed -i 's/^#\?greeter-session=.*/greeter-session=lightdm-gtk-greeter/' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
-            # Arch ships session-wrapper=/etc/lightdm/Xsession uncommented, and
-            # lightdm.conf is loaded after lightdm.conf.d/, so the package value
-            # overrides the drop-in. Without this rewrite the D-Bus session
-            # wrapper never runs and XFCE shows "Unable to contact settings
-            # server" with no window manager or panel.
-            sed -i 's|^#\?session-wrapper=.*|session-wrapper=/etc/lightdm/Xsession-grintion|' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+    if [ "$TARGET_ROOT" = "/" ]; then
+        if [ "$dm" = "/usr/bin/lightdm" ]; then
+            ensure_service_account lightdm /var/lib/lightdm
+            fix_lightdm_greeter_pam
+            mkdir -p "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm"
+            chown -R lightdm:lightdm "$TARGET_ROOT/var/lib/lightdm" "$TARGET_ROOT/var/log/lightdm" 2>/dev/null || true
+            if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then
+                sed -i 's/^#\?greeter-session=.*/greeter-session=lightdm-gtk-greeter/' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+                sed -i 's|^#\?session-wrapper=.*|session-wrapper=/etc/lightdm/Xsession-grintion|' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+            fi
+        elif [ "$dm" = "/usr/bin/sddm" ]; then
+            ensure_service_account sddm /var/lib/sddm
+            mkdir -p "$TARGET_ROOT/var/lib/sddm" "$TARGET_ROOT/var/log/sddm"
+            chown -R sddm:sddm "$TARGET_ROOT/var/lib/sddm" "$TARGET_ROOT/var/log/sddm" 2>/dev/null || true
+        elif [ "$dm" = "/usr/bin/gdm" ]; then
+            ensure_service_account gdm /var/lib/gdm
+            mkdir -p "$TARGET_ROOT/var/lib/gdm" "$TARGET_ROOT/var/log/gdm"
+            chown -R gdm:gdm "$TARGET_ROOT/var/lib/gdm" "$TARGET_ROOT/var/log/gdm" 2>/dev/null || true
+        elif [ "$dm" = "/usr/bin/greetd" ]; then
+            ensure_service_account greeter /var/lib/greeter
+            mkdir -p "$TARGET_ROOT/var/lib/greeter" "$TARGET_ROOT/var/log/greetd" "$TARGET_ROOT/etc/greetd"
+            chown -R greeter:greeter "$TARGET_ROOT/var/lib/greeter" "$TARGET_ROOT/var/log/greetd" 2>/dev/null || true
         fi
     fi
 
@@ -398,6 +407,62 @@ enable_dm_service() {
     mkdir -p "$(dirname "$var_sv")"
     ln -sfn "/etc/sv/display-manager" "$var_sv"
     log "Enabled $dm as runit display-manager service"
+}
+
+# Wayland compositors use libseat to obtain DRM/input access. There is no
+# logind in this image, so seatd is the seat provider. Human users need to be
+# in the socket's group; service accounts must not be added.
+enable_wayland_seat() {
+    local group_file="$TARGET_ROOT/etc/group"
+    local passwd_file="$TARGET_ROOT/etc/passwd"
+    local service_dir="$TARGET_ROOT/etc/sv/seatd"
+    [ -f "$group_file" ] || die "target group database is missing: $group_file"
+    [ -f "$passwd_file" ] || die "target account database is missing: $passwd_file"
+
+    if ! grep -q '^seat:' "$group_file"; then
+        local gid=985
+        while awk -F: -v g="$gid" '$3 == g { found = 1 } END { exit !found }' "$group_file"; do
+            gid=$((gid + 1))
+        done
+        printf 'seat:x:%s:\n' "$gid" >> "$group_file"
+    fi
+
+    python3 - "$group_file" "$passwd_file" <<'PY'
+import pathlib
+import sys
+
+group_path = pathlib.Path(sys.argv[1])
+passwd_path = pathlib.Path(sys.argv[2])
+humans = []
+for line in passwd_path.read_text().splitlines():
+    fields = line.split(":")
+    if len(fields) < 4:
+        continue
+    try:
+        uid = int(fields[2])
+    except ValueError:
+        continue
+    if 1000 <= uid < 60000:
+        humans.append(fields[0])
+lines = group_path.read_text().splitlines()
+for index, line in enumerate(lines):
+    fields = line.split(":")
+    if fields and fields[0] == "seat":
+        members = [m for m in (fields[3].split(",") if len(fields) > 3 else []) if m]
+        for user in humans:
+            if user not in members:
+                members.append(user)
+        fields[3] = ",".join(members)
+        lines[index] = ":".join(fields)
+        break
+group_path.write_text("\n".join(lines) + "\n")
+PY
+
+    [ -f "$service_dir/run" ] || die "tracked seatd service is missing: $service_dir/run"
+    chmod 0755 "$service_dir/run"
+    mkdir -p "$(dirname "$TARGET_ROOT/var/service/seatd")"
+    ln -sfn "/etc/sv/seatd" "$TARGET_ROOT/var/service/seatd"
+    log "Enabled seatd for Wayland seat management"
 }
 
 cmd_list() {
@@ -515,6 +580,15 @@ cmd_status() {
     else
         echo "Inactive"
     fi
+
+    echo -n "Seat service: "
+    if [ -L "$TARGET_ROOT/var/service/seatd" ]; then
+        echo "Active (/var/service/seatd)"
+    elif [ -x "$TARGET_ROOT/usr/bin/seatd" ]; then
+        echo "Installed (not enabled)"
+    else
+        echo "None"
+    fi
 }
 
 cmd_drivers() {
@@ -628,6 +702,10 @@ cmd_install() {
     # 3. Configure Display Manager if applicable
     if [ -n "$dm_bin" ]; then
         enable_dm_service "$dm_bin"
+    fi
+    if [[ "${DISPLAY_SERVER:-}" == *wayland* ]]; then
+        [ -x "$TARGET_ROOT/usr/bin/seatd" ] || die "Wayland profile did not provide seatd"
+        enable_wayland_seat
     fi
 
     # 4. Configure .xinitrc fallback from the profile

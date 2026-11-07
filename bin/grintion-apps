@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# grintion-apps - Curated optional application profile manager for Grintion-OS.
+#
+# Allows users to easily install task-oriented application suites (browsers,
+# office, gaming, VM integrations, developer tools) on demand without bloating
+# the minimal base ISO image.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+PROFILES_DIR="${GRINTION_APP_PROFILES_DIR:-/etc/grintion/profiles.d}"
+[ -d "$PROFILES_DIR" ] || PROFILES_DIR="$(dirname "$0")/../etc/grintion/profiles.d"
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-apps COMMAND [OPTIONS]
+
+Commands:
+  list [--json]        List available application profiles
+  status [--json]      Show installed status of application profiles
+  install PROFILE      Install all packages in the specified application profile
+  remove PROFILE       Remove all packages in the specified application profile
+  -h, --help           Show this help
+
+Available Profiles:
+  browser              Modern Web Browsers (Firefox & Chromium)
+  office               Productivity Suite & Document Viewer (LibreOffice, Evince)
+  gaming               Gaming & Compatibility (Steam, Wine, Vulkan tools)
+  vmguest              Virtual Machine Guest Integrations (SPICE, open-vm-tools, QEMU agent)
+  dev                  Developer Workstation (GCC, Make, Python, Git, GDB)
+EOF
+}
+
+load_profile() {
+    local name="$1" file="$PROFILES_DIR/$name.conf"
+    [ -f "$file" ] || die "unknown profile: $name (see 'grintion-apps list')"
+    unset NAME DESCRIPTION PACKAGES
+    # shellcheck disable=SC1090
+    . "$file"
+    [ -n "${NAME:-}" ] || die "invalid profile: missing NAME in $file"
+    [ -n "${PACKAGES:-}" ] || die "invalid profile: missing PACKAGES in $file"
+}
+
+is_pkg_installed() {
+    local pkg="$1"
+    if command -v pacman >/dev/null 2>&1; then
+        pacman -Qq "$pkg" >/dev/null 2>&1 && return 0
+    elif command -v garb >/dev/null 2>&1; then
+        garb info "$pkg" --installed >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+cmd_list() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    local profiles=()
+    for conf in "$PROFILES_DIR"/*.conf; do
+        [ -f "$conf" ] || continue
+        unset NAME DESCRIPTION PACKAGES
+        # shellcheck disable=SC1090
+        . "$conf"
+        [ -n "${NAME:-}" ] || continue
+        profiles+=("$NAME::$DESCRIPTION::$PACKAGES")
+    done
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "${profiles[@]}" <<'PY'
+import json
+import sys
+
+out = []
+for p in sys.argv[1:]:
+    parts = p.split("::")
+    if len(parts) >= 3:
+        out.append({
+            "name": parts[0],
+            "description": parts[1],
+            "packages": parts[2].split(),
+        })
+print(json.dumps({"schema": 1, "profiles": out}, indent=2))
+PY
+    else
+        echo "Available Application Profiles in Grintion-OS:"
+        for p in "${profiles[@]}"; do
+            name="$(printf '%s' "$p" | awk -F'::' '{print $1}')"
+            desc="$(printf '%s' "$p" | awk -F'::' '{print $2}')"
+            pkgs="$(printf '%s' "$p" | awk -F'::' '{print $3}')"
+            printf '  %-10s : %s\n' "$name" "$desc"
+            printf '               Packages: %s\n' "$pkgs"
+        done
+        echo
+        echo "Install a profile with: grintion-apps install <profile>"
+    fi
+}
+
+cmd_status() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    local status_list=()
+    for conf in "$PROFILES_DIR"/*.conf; do
+        [ -f "$conf" ] || continue
+        unset NAME DESCRIPTION PACKAGES
+        # shellcheck disable=SC1090
+        . "$conf"
+        [ -n "${NAME:-}" ] || continue
+
+        local total=0 installed=0
+        for pkg in $PACKAGES; do
+            total=$((total + 1))
+            if is_pkg_installed "$pkg"; then
+                installed=$((installed + 1))
+            fi
+        done
+        local state="not_installed"
+        if [ "$installed" -eq "$total" ] && [ "$total" -gt 0 ]; then
+            state="fully_installed"
+        elif [ "$installed" -gt 0 ]; then
+            state="partially_installed"
+        fi
+        status_list+=("$NAME::$state::$installed::$total::$DESCRIPTION")
+    done
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "${status_list[@]}" <<'PY'
+import json
+import sys
+
+out = []
+for s in sys.argv[1:]:
+    parts = s.split("::")
+    if len(parts) >= 5:
+        out.append({
+            "name": parts[0],
+            "status": parts[1],
+            "installed_packages": int(parts[2]),
+            "total_packages": int(parts[3]),
+            "description": parts[4],
+        })
+print(json.dumps({"schema": 1, "status": out}, indent=2))
+PY
+    else
+        echo "Application Profile Status:"
+        for s in "${status_list[@]}"; do
+            name="$(printf '%s' "$s" | awk -F'::' '{print $1}')"
+            state="$(printf '%s' "$s" | awk -F'::' '{print $2}')"
+            inst="$(printf '%s' "$s" | awk -F'::' '{print $3}')"
+            tot="$(printf '%s' "$s" | awk -F'::' '{print $4}')"
+            printf '  %-10s [%s] (%s/%s packages installed)\n' "$name" "$state" "$inst" "$tot"
+        done
+    fi
+}
+
+cmd_install() {
+    local name="${1:-}"
+    [ -n "$name" ] || die "profile name is required (e.g. 'grintion-apps install browser')"
+    load_profile "$name"
+
+    [ "$(id -u)" -eq 0 ] || die "package installation requires root"
+    log "installing application profile: $NAME ($DESCRIPTION)"
+    log "packages: $PACKAGES"
+
+    # shellcheck disable=SC2086
+    if command -v pacman >/dev/null 2>&1; then
+        pacman -S --needed --noconfirm $PACKAGES
+    elif command -v garb >/dev/null 2>&1; then
+        garb install $PACKAGES
+    else
+        die "no supported package manager found (neither pacman nor garb)"
+    fi
+    log "profile '$NAME' installed successfully"
+}
+
+cmd_remove() {
+    local name="${1:-}"
+    [ -n "$name" ] || die "profile name is required"
+    load_profile "$name"
+
+    [ "$(id -u)" -eq 0 ] || die "package removal requires root"
+    log "removing application profile: $NAME"
+
+    # shellcheck disable=SC2086
+    if command -v pacman >/dev/null 2>&1; then
+        pacman -R --noconfirm $PACKAGES || true
+    elif command -v garb >/dev/null 2>&1; then
+        garb remove --force $PACKAGES || true
+    fi
+    log "profile '$NAME' removed"
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    list)    cmd_list "$@" ;;
+    status)  cmd_status "$@" ;;
+    install) cmd_install "${1:-}" ;;
+    remove)  cmd_remove "${1:-}" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

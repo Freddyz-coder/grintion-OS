@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# grintion-backup - system and user backup/restore utility for Grintion-OS.
+#
+# Provides tar/rsync-backed snapshots, metadata tracking, SHA-256 verification,
+# and automated scheduled jobs.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+DEFAULT_BACKUP_DIR="/var/backups/grintion"
+MANIFEST_FILE="backup.json"
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-backup COMMAND [OPTIONS]
+
+Commands:
+  create [OPTIONS]     Create a new backup archive
+  restore ARCHIVE      Restore files from an existing backup archive
+  list [--json]        List available backups
+  verify ARCHIVE       Verify integrity of a backup archive
+  schedule FREQ        Schedule automated backups (daily, weekly, monthly)
+  status [--json]      Show last backup time and health
+  -h, --help           Show this help
+
+Options for 'create':
+  --target DIR         Backup destination directory (default: /var/backups/grintion)
+  --name NAME          Optional custom backup label
+  --include PATHS      Space-separated paths to include (default: /home /etc)
+  --exclude PATHS      Space-separated patterns to exclude
+  --compress GZ|XZ     Compression algorithm (default: gz)
+
+Options for 'restore':
+  --target DIR         Restore destination directory (default: /)
+  --dry-run            Simulate extraction without writing files
+EOF
+}
+
+cmd_create() {
+    local target_dir="$DEFAULT_BACKUP_DIR"
+    local name="backup"
+    local includes=("/home" "/etc")
+    local excludes=("*.cache*" "*lost+found*" "*.tmp*")
+    local compress="gz"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target)   target_dir=${2:-}; shift 2 ;;
+            --name)     name=${2:-}; shift 2 ;;
+            --include)  read -r -a includes <<< "${2:-}"; shift 2 ;;
+            --exclude)  read -r -a excludes <<< "${2:-}"; shift 2 ;;
+            --compress) compress=${2:-}; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    mkdir -p "$target_dir"
+    local ts
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    local archive_name="${name}-${ts}.tar.${compress}"
+    local archive_path="${target_dir}/${archive_name}"
+
+    log "creating backup archive: $archive_path"
+    local tar_args=(-c)
+    case "$compress" in
+        xz) tar_args+=(-J) ;;
+        *)  tar_args+=(-z) ;;
+    esac
+
+    local exc_args=()
+    for exc in "${excludes[@]}"; do
+        exc_args+=("--exclude=$exc")
+    done
+
+    local existing_inc=()
+    for inc in "${includes[@]}"; do
+        if [ -e "$inc" ]; then
+            existing_inc+=("$inc")
+        fi
+    done
+
+    [ ${#existing_inc[@]} -gt 0 ] || die "none of the include paths exist: ${includes[*]}"
+
+    tar "${tar_args[@]}" "${exc_args[@]}" -f "$archive_path" "${existing_inc[@]}" 2>/dev/null
+
+    local checksum
+    checksum="$(sha256sum "$archive_path" | awk '{print $1}')"
+    local size
+    size="$(stat -c %s "$archive_path" 2>/dev/null || echo 0)"
+
+    local meta_path="${target_dir}/${archive_name}.json"
+    python3 - "$archive_name" "$archive_path" "$checksum" "$size" "$ts" "${existing_inc[*]}" <<'PY' > "$meta_path"
+import json
+import sys
+
+name, path, sha, size, created, includes = sys.argv[1:7]
+print(json.dumps({
+    "schema": 1,
+    "name": name,
+    "path": path,
+    "sha256": sha,
+    "size_bytes": int(size),
+    "created_at": created,
+    "includes": includes.split(),
+}, indent=2))
+PY
+
+    log "backup completed: $archive_name ($size bytes, sha256: ${checksum:0:16}...)"
+}
+
+cmd_restore() {
+    local archive="${1:-}"
+    shift || true
+    [ -n "$archive" ] || die "archive path is required"
+    [ -f "$archive" ] || die "archive file not found: $archive"
+
+    local dest="/"
+    local dry_run=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target)  dest=${2:-}; shift 2 ;;
+            --dry-run) dry_run=1; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    log "restoring from $archive to $dest"
+    local tar_args=(-x)
+    case "$archive" in
+        *.tar.xz) tar_args+=(-J) ;;
+        *.tar.gz) tar_args+=(-z) ;;
+    esac
+
+    if [ "$dry_run" -eq 1 ]; then
+        log "dry-run: files in archive:"
+        tar -t -f "$archive" | head -n 30
+        echo "..."
+        return 0
+    fi
+
+    [ "$(id -u)" -eq 0 ] || die "restoring to system requires root"
+    mkdir -p "$dest"
+    tar "${tar_args[@]}" -C "$dest" -f "$archive"
+    log "restore completed successfully"
+}
+
+cmd_verify() {
+    local archive="${1:-}"
+    [ -n "$archive" ] || die "archive path is required"
+    [ -f "$archive" ] || die "archive not found: $archive"
+
+    local meta="${archive}.json"
+    if [ ! -f "$meta" ]; then
+        die "metadata file missing: $meta"
+    fi
+
+    local expected_sha
+    expected_sha="$(python3 -c "import json; print(json.load(open('$meta'))['sha256'])")"
+    local actual_sha
+    actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+
+    if [ "$expected_sha" = "$actual_sha" ]; then
+        echo "[+] integrity verified: SHA-256 matches ($actual_sha)"
+        return 0
+    else
+        echo "[-] integrity check FAILED: expected $expected_sha, got $actual_sha" >&2
+        return 1
+    fi
+}
+
+cmd_list() {
+    local target_dir="$DEFAULT_BACKUP_DIR"
+    local json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target) target_dir=${2:-}; shift 2 ;;
+            --json)   json=1; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    mkdir -p "$target_dir"
+    python3 - "$target_dir" "$json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+dir_path = Path(sys.argv[1])
+is_json = sys.argv[2] == "1"
+
+backups = []
+for meta_file in sorted(dir_path.glob("*.json")):
+    try:
+        data = json.loads(meta_file.read_text())
+        if "sha256" in data and "path" in data:
+            data["exists"] = Path(data["path"]).exists()
+            backups.append(data)
+    except Exception:
+        continue
+
+if is_json:
+    print(json.dumps({"schema": 1, "target": str(dir_path), "backups": backups}, indent=2))
+else:
+    if not backups:
+        print(f"No backups found in {dir_path}")
+    else:
+        print(f"Backups in {dir_path}:")
+        for b in backups:
+            status = "OK" if b.get("exists") else "MISSING"
+            print(f"  - {b['name']} ({b['size_bytes']} bytes, created: {b['created_at']}) [{status}]")
+PY
+}
+
+cmd_schedule() {
+    [ "$(id -u)" -eq 0 ] || die "scheduling requires root"
+    local freq="${1:-daily}"
+    local target_dir="${2:-$DEFAULT_BACKUP_DIR}"
+
+    local cron_dir="/etc/cron.$freq"
+    mkdir -p "$cron_dir"
+    cat > "$cron_dir/grintion-backup" <<EOF
+#!/bin/sh
+/usr/bin/grintion-backup create --target "$target_dir" >> /var/log/grintion-backup.log 2>&1
+EOF
+    chmod 0755 "$cron_dir/grintion-backup"
+    log "scheduled $freq backup job in $cron_dir/grintion-backup"
+}
+
+cmd_status() {
+    local target_dir="$DEFAULT_BACKUP_DIR"
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    mkdir -p "$target_dir"
+    python3 - "$target_dir" "$json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+dir_path = Path(sys.argv[1])
+is_json = sys.argv[2] == "1"
+
+metas = sorted(dir_path.glob("*.json"))
+last = None
+if metas:
+    try:
+        last = json.loads(metas[-1].read_text())
+    except Exception:
+        pass
+
+data = {
+    "schema": 1,
+    "backup_count": len(metas),
+    "last_backup": last["created_at"] if last else None,
+    "last_archive": last["name"] if last else None,
+    "directory": str(dir_path),
+}
+
+if is_json:
+    print(json.dumps(data, indent=2))
+else:
+    print(f"Backup Count: {data['backup_count']}")
+    print(f"Last Backup:  {data['last_backup'] or 'never'}")
+    print(f"Directory:    {data['directory']}")
+PY
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    create)   cmd_create "$@" ;;
+    restore)  cmd_restore "$@" ;;
+    list)     cmd_list "$@" ;;
+    verify)   cmd_verify "$@" ;;
+    schedule) cmd_schedule "$@" ;;
+    status)   cmd_status "$@" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

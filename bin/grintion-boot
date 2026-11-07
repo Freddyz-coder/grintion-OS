@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# grintion-boot - manage Limine bootloader configuration and entries.
+#
+# Allows listing, selecting defaults, configuring timeout, adding/removing
+# entries, and setting bootloader passwords.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+LIMINE_CONF=""
+for path in /boot/efi/limine.conf /boot/efi/EFI/BOOT/limine.conf; do
+    if [ -f "$path" ]; then
+        LIMINE_CONF="$path"
+        break
+    fi
+done
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+
+find_conf() {
+    if [ -n "$LIMINE_CONF" ] && [ -f "$LIMINE_CONF" ]; then
+        return 0
+    fi
+    die "limine.conf not found under /boot/efi"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-boot COMMAND [OPTIONS]
+
+Commands:
+  list [--json]        List bootloader entries and settings
+  set-default TITLE    Set default boot entry by title
+  set-timeout SECS     Set bootloader countdown timeout
+  add [OPTIONS]        Add a new boot entry
+  remove TITLE         Remove a boot entry by title
+  set-password PWD     Set bootloader password
+  -h, --help           Show this help
+
+Options for 'add':
+  --title TITLE        Entry display name (e.g. "My Custom Kernel")
+  --kernel PATH        Path to kernel (e.g. boot():/EFI/grintion/vmlinuz)
+  --cmdline ARGS       Kernel command-line arguments
+  --module PATH        Optional initramfs / module path
+EOF
+}
+
+cmd_list() {
+    find_conf
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+
+    python3 - "$LIMINE_CONF" "$json" <<'PY'
+import json
+import re
+import sys
+
+conf_path, is_json = sys.argv[1], sys.argv[2] == "1"
+text = open(conf_path, encoding="utf-8", errors="replace").read()
+
+timeout = 5
+timeout_match = re.search(r"^\s*timeout:\s*(\d+)", text, re.MULTILINE)
+if timeout_match:
+    timeout = int(timeout_match.group(1))
+
+default_entry = None
+default_match = re.search(r"^\s*default_entry:\s*(.+)$", text, re.MULTILINE)
+if default_match:
+    default_entry = default_match.group(1).strip()
+
+entries = []
+current_entry = None
+
+for line in text.splitlines():
+    line_stripped = line.strip()
+    if line.startswith("/") and not line.startswith("//"):
+        if current_entry:
+            entries.append(current_entry)
+        current_entry = {
+            "title": line.lstrip("/").strip(),
+            "protocol": "",
+            "kernel_path": "",
+            "cmdline": "",
+            "module_path": None,
+        }
+    elif current_entry and ":" in line_stripped:
+        key, _, val = line_stripped.partition(":")
+        key = key.strip()
+        val = val.strip()
+        if key == "protocol":
+            current_entry["protocol"] = val
+        elif key == "kernel_path":
+            current_entry["kernel_path"] = val
+        elif key == "cmdline":
+            current_entry["cmdline"] = val
+        elif key in ("module_path", "image_path"):
+            current_entry["module_path"] = val
+
+if current_entry:
+    entries.append(current_entry)
+
+data = {
+    "schema": 1,
+    "config_file": conf_path,
+    "timeout": timeout,
+    "default_entry": default_entry or (entries[0]["title"] if entries else None),
+    "entries": entries,
+}
+
+if is_json:
+    print(json.dumps(data, indent=2))
+else:
+    print(f"Config:  {conf_path}")
+    print(f"Timeout: {timeout}s")
+    print(f"Default: {data['default_entry']}")
+    print("\nBoot Entries:")
+    for idx, e in enumerate(entries, 1):
+        mark = " *" if e["title"] == data["default_entry"] else ""
+        print(f"  [{idx}] {e['title']}{mark}")
+        print(f"      Protocol: {e['protocol']}")
+        print(f"      Kernel:   {e['kernel_path']}")
+        if e['cmdline']:
+            print(f"      Cmdline:  {e['cmdline']}")
+        if e['module_path']:
+            print(f"      Module:   {e['module_path']}")
+PY
+}
+
+cmd_set_default() {
+    find_conf
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    local title="${1:-}"
+    [ -n "$title" ] || die "title is required"
+
+    if grep -q "^/${title}$" "$LIMINE_CONF" || grep -q "^default_entry:" "$LIMINE_CONF"; then
+        sed -i "s/^default_entry:.*/default_entry: \/$title/" "$LIMINE_CONF" 2>/dev/null || \
+            sed -i "1s/^/default_entry: \/$title\n/" "$LIMINE_CONF"
+        # Sync to EFI/BOOT copy if present
+        if [ -f "/boot/efi/EFI/BOOT/limine.conf" ] && [ "$LIMINE_CONF" != "/boot/efi/EFI/BOOT/limine.conf" ]; then
+            cp "$LIMINE_CONF" "/boot/efi/EFI/BOOT/limine.conf"
+        fi
+        echo "[+] set default boot entry to: $title"
+    else
+        die "no entry named '$title' found in $LIMINE_CONF"
+    fi
+}
+
+cmd_set_timeout() {
+    find_conf
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    local secs="${1:-}"
+    case "$secs" in ''|*[!0-9]*) die "invalid timeout seconds: $secs" ;; esac
+
+    if grep -q "^timeout:" "$LIMINE_CONF"; then
+        sed -i "s/^timeout:.*/timeout: $secs/" "$LIMINE_CONF"
+    else
+        sed -i "1s/^/timeout: $secs\n/" "$LIMINE_CONF"
+    fi
+    if [ -f "/boot/efi/EFI/BOOT/limine.conf" ] && [ "$LIMINE_CONF" != "/boot/efi/EFI/BOOT/limine.conf" ]; then
+        cp "$LIMINE_CONF" "/boot/efi/EFI/BOOT/limine.conf"
+    fi
+    echo "[+] set timeout to $secs seconds"
+}
+
+cmd_add() {
+    find_conf
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    local title="" kernel="" cmdline="" module=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --title)   title=${2:-}; shift 2 ;;
+            --kernel)  kernel=${2:-}; shift 2 ;;
+            --cmdline) cmdline=${2:-}; shift 2 ;;
+            --module)  module=${2:-}; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [ -n "$title" ]  || die "--title is required"
+    [ -n "$kernel" ] || die "--kernel is required"
+
+    cat >> "$LIMINE_CONF" <<EOF
+
+/$title
+    protocol: linux
+    kernel_path: $kernel
+    cmdline: $cmdline
+EOF
+    if [ -n "$module" ]; then
+        echo "    module_path: $module" >> "$LIMINE_CONF"
+    fi
+
+    if [ -f "/boot/efi/EFI/BOOT/limine.conf" ] && [ "$LIMINE_CONF" != "/boot/efi/EFI/BOOT/limine.conf" ]; then
+        cp "$LIMINE_CONF" "/boot/efi/EFI/BOOT/limine.conf"
+    fi
+    echo "[+] added boot entry: $title"
+}
+
+cmd_remove() {
+    find_conf
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    local title="${1:-}"
+    [ -n "$title" ] || die "title is required"
+
+    python3 - "$LIMINE_CONF" "$title" <<'PY'
+import sys
+
+conf_path, target = sys.argv[1], sys.argv[2]
+lines = open(conf_path, encoding="utf-8").read().splitlines()
+out = []
+skipping = False
+
+for line in lines:
+    if line.startswith(f"/{target}"):
+        skipping = True
+        continue
+    elif skipping and line.startswith("/") and not line.startswith("//"):
+        skipping = False
+    if not skipping:
+        out.append(line)
+
+open(conf_path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+    if [ -f "/boot/efi/EFI/BOOT/limine.conf" ] && [ "$LIMINE_CONF" != "/boot/efi/EFI/BOOT/limine.conf" ]; then
+        cp "$LIMINE_CONF" "/boot/efi/EFI/BOOT/limine.conf"
+    fi
+    echo "[+] removed boot entry: $title"
+}
+
+cmd_set_password() {
+    find_conf
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    local pwd="${1:-}"
+    [ -n "$pwd" ] || die "password is required"
+
+    # Limine supports password hashing or plain password directive
+    local hash
+    hash="$(printf '%s' "$pwd" | sha256sum | awk '{print $1}')"
+    if grep -q "^password_hash:" "$LIMINE_CONF"; then
+        sed -i "s/^password_hash:.*/password_hash: $hash/" "$LIMINE_CONF"
+    else
+        sed -i "1s/^/password_hash: $hash\n/" "$LIMINE_CONF"
+    fi
+    if [ -f "/boot/efi/EFI/BOOT/limine.conf" ] && [ "$LIMINE_CONF" != "/boot/efi/EFI/BOOT/limine.conf" ]; then
+        cp "$LIMINE_CONF" "/boot/efi/EFI/BOOT/limine.conf"
+    fi
+    echo "[+] set bootloader password (sha256 hash stored)"
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    list)         cmd_list "${1:-}" ;;
+    set-default)  cmd_set_default "${1:-}" ;;
+    set-timeout)  cmd_set_timeout "${1:-}" ;;
+    add)          cmd_add "$@" ;;
+    remove)       cmd_remove "${1:-}" ;;
+    set-password) cmd_set_password "${1:-}" ;;
+    -h|--help)    usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

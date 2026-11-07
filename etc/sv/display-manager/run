@@ -39,7 +39,7 @@ if [ -r /etc/grintion/display-manager ]; then
     echo "display-manager: configured display manager is not installed: $configured"
 fi
 
-for dm in /usr/bin/lightdm /usr/bin/sddm /usr/bin/gdm; do
+for dm in /usr/bin/lightdm /usr/bin/greetd /usr/bin/sddm /usr/bin/gdm; do
     if [ -x "$dm" ]; then
         echo "display-manager: starting $dm"
         exec "$dm"

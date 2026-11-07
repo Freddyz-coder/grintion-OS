@@ -1,0 +1,24 @@
+#!/bin/sh
+# Grintion-OS runit service: udev
+# The image boots from devtmpfs + mdev. Wayland's libinput backend enumerates
+# devices through libudev, so run the udev daemon and populate its database
+# without adopting systemd as PID 1.
+exec 2>&1
+
+mkdir -p /run/udev
+if [ ! -x /usr/lib/systemd/systemd-udevd ] || [ ! -x /usr/bin/udevadm ]; then
+    echo "udev: systemd-udevd/udevadm are missing"
+    exec sleep 3600
+fi
+
+/usr/lib/systemd/systemd-udevd &
+udevd_pid=$!
+i=0
+while [ ! -S /run/udev/control ] && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+timeout 20 udevadm trigger --action=add --type=subsystems 2>/dev/null || true
+timeout 20 udevadm trigger --action=add --type=devices 2>/dev/null || true
+timeout 20 udevadm settle 2>/dev/null || true
+wait "$udevd_pid"

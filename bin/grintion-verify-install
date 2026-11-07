@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# grintion-verify-install - structural self-test for a Grintion-OS install.
+#
+# This checks the installed tree and boot configuration. It does not claim the
+# disk boots: the install test still has to reboot the target for that.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+ROOT=""
+USER_NAME=""
+FILESYSTEM="ext4"
+ENCRYPTED=0
+ENCRYPTED_SWAP=0
+JSON=0
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-verify-install --root DIR [OPTIONS]
+
+Options:
+  --root DIR          Mounted installed root (required)
+  --user NAME         Administrative user that must exist
+  --filesystem FS     ext4 or btrfs (default: ext4)
+  --encrypted         Require a LUKS2 root boot entry
+  --encrypted-swap    Require the encrypted-swap key and service
+  --json              Print machine-readable results
+  -h, --help          Show this help
+EOF
+}
+
+die() { printf '[-] %s\n' "$*" >&2; exit 2; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --root) ROOT=${2:-}; shift 2 ;;
+        --user) USER_NAME=${2:-}; shift 2 ;;
+        --filesystem) FILESYSTEM=${2:-}; shift 2 ;;
+        --encrypted) ENCRYPTED=1; shift ;;
+        --encrypted-swap) ENCRYPTED_SWAP=1; shift ;;
+        --json) JSON=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+[ -n "$ROOT" ] || die "--root is required"
+[ -d "$ROOT" ] || die "not a directory: $ROOT"
+case "$FILESYSTEM" in ext4|btrfs) ;; *) die "unsupported filesystem: $FILESYSTEM" ;; esac
+[ "$ENCRYPTED_SWAP" -eq 0 ] || [ "$ENCRYPTED" -eq 1 ] || die "--encrypted-swap requires --encrypted"
+
+NAMES=()
+RESULTS=()
+DETAILS=()
+FAILED=0
+
+check() {
+    local name=$1 detail=$2
+    shift 2
+    NAMES+=("$name")
+    DETAILS+=("$detail")
+    if "$@"; then
+        RESULTS+=("1")
+        if [ "$JSON" -eq 0 ]; then printf '[ ok ] %s\n' "$name"; fi
+    else
+        RESULTS+=("0")
+        FAILED=$((FAILED + 1))
+        if [ "$JSON" -eq 0 ]; then printf '[FAIL] %s: %s\n' "$name" "$detail"; fi
+    fi
+}
+
+file_ok() { [ -s "$ROOT/$1" ]; }
+grep_file() { grep -Eq "$1" "$ROOT/$2"; }
+mode_is() { [ "$(stat -c %a "$ROOT/$1" 2>/dev/null || echo missing)" = "$2" ]; }
+initramfs_has_cryptsetup() {
+    python3 - "$1" <<'PY'
+import gzip
+import sys
+
+try:
+    with gzip.open(sys.argv[1], "rb") as handle:
+        sys.exit(0 if b"cryptsetup" in handle.read() else 1)
+except OSError:
+    sys.exit(1)
+PY
+}
+
+check "os-release" "Grintion-OS identity is missing" \
+    grep_file '^ID=grintion$' etc/os-release
+check "installed marker" "the live-image marker survived" \
+    test ! -e "$ROOT/etc/grintion/live"
+check "hostname" "/etc/hostname is empty" file_ok etc/hostname
+check "machine-id" "machine-id is not 32 hexadecimal characters" \
+    grep_file '^[0-9a-f]{32}$' etc/machine-id
+check "fstab root" "fstab has no $FILESYSTEM root entry" \
+    grep_file "^UUID=[^[:space:]]+[[:space:]]+/[[:space:]]+$FILESYSTEM[[:space:]]" etc/fstab
+check "fstab ESP" "fstab has no vfat /boot/efi entry" \
+    grep_file '/boot/efi[[:space:]]+vfat' etc/fstab
+check "kernel" "kernel is missing from the ESP" \
+    file_ok boot/efi/EFI/grintion/vmlinuz-grintion
+check "initramfs" "installed initramfs is missing" \
+    file_ok boot/efi/EFI/grintion/initramfs-install.img
+check "Limine config" "limine.conf is missing" file_ok boot/efi/limine.conf
+check "Limine root" "limine.conf has no root=UUID entry" \
+    grep_file 'root=UUID=' boot/efi/limine.conf
+check "Limine initramfs" "limine.conf does not load the installed initramfs" \
+    grep_file 'initramfs-install.img' boot/efi/limine.conf
+check "UEFI fallback" "BOOTX64.EFI is missing" \
+    file_ok boot/efi/EFI/BOOT/BOOTX64.EFI
+
+if [ -n "$USER_NAME" ]; then
+    check "user $USER_NAME" "the administrative user is missing" \
+        grep_file "^${USER_NAME}:" etc/passwd
+    check "wheel membership" "$USER_NAME is not in wheel" \
+        awk -F: -v u="$USER_NAME" '$1=="wheel" { n=split($4,a,","); for (i=1;i<=n;i++) if (a[i]==u) found=1 } END { exit !found }' "$ROOT/etc/group"
+    check "password set" "$USER_NAME has no usable password hash" \
+        awk -F: -v u="$USER_NAME" '$1==u && $2 !~ /^[!*]/ { found=1 } END { exit !found }' "$ROOT/etc/shadow"
+fi
+
+if [ "$FILESYSTEM" = "btrfs" ]; then
+    check "Btrfs @ subvolume" "fstab does not mount root with subvol=@" \
+        grep_file 'subvol=@' etc/fstab
+    check "Btrfs @snapshots" "fstab does not mount /.snapshots" \
+        grep_file 'subvol=@snapshots' etc/fstab
+    check "Btrfs boot flags" "limine.conf does not pass rootflags=subvol=@" \
+        grep_file 'rootflags=subvol=@' boot/efi/limine.conf
+    check "snapshot tool" "btrfs is missing from the installed system" \
+        test -x "$ROOT/usr/bin/btrfs"
+fi
+
+if [ "$ENCRYPTED" -eq 1 ]; then
+    check "LUKS2 root" "limine.conf has no grintion cryptdevice" \
+        grep_file 'cryptdevice=UUID=[^ ]+:grintion' boot/efi/limine.conf
+    check "cryptsetup" "cryptsetup is missing from the installed system" \
+        test -x "$ROOT/usr/bin/cryptsetup"
+    check "LUKS2 initramfs" "the initramfs does not contain cryptsetup" \
+        initramfs_has_cryptsetup "$ROOT/boot/efi/EFI/grintion/initramfs-install.img"
+fi
+
+if [ "$ENCRYPTED_SWAP" -eq 1 ]; then
+    check "encrypted swap config" "/etc/grintion/swap.conf is missing" \
+        file_ok etc/grintion/swap.conf
+    check "encrypted swap key" "the swap key is missing" file_ok etc/grintion/swap.key
+    check "swap key mode" "the swap key is not mode 0600" mode_is etc/grintion/swap.key 600
+    check "swap service" "the cryptswap service is not enabled" \
+        test -L "$ROOT/var/service/cryptswap"
+fi
+
+if [ "$JSON" -eq 1 ]; then
+    TABLE="$(mktemp)"
+    for index in "${!NAMES[@]}"; do
+        printf '%s\t%s\t%s\n' "${RESULTS[$index]}" "${NAMES[$index]}" "${DETAILS[$index]}" > "$TABLE.tmp"
+        cat "$TABLE.tmp" >> "$TABLE"
+    done
+    rm -f "$TABLE.tmp"
+    python3 - "$TABLE" "$FAILED" <<'PY'
+import json
+import sys
+
+checks = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        ok, name, detail = line.rstrip("\n").split("\t", 2)
+        checks.append({"name": name, "ok": ok == "1", "detail": detail})
+print(json.dumps({"schema": 1, "ok": int(sys.argv[2]) == 0, "checks": checks}, indent=2))
+PY
+    rm -f "$TABLE"
+else
+    echo
+    if [ "$FAILED" -eq 0 ]; then
+        echo "Structural self-test passed; this does not prove the disk boots."
+    else
+        echo "Structural self-test failed: $FAILED check(s)."
+    fi
+fi
+
+[ "$FAILED" -eq 0 ]

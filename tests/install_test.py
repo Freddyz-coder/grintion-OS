@@ -4,8 +4,8 @@
 1. Boot the live ISO with an empty virtio disk.
 2. Run the unattended installer against /dev/vda.
 3. Power off, boot the disk alone, and log in as the created user.
-4. Assert the installed root is ext4, the hostname and fstab are correct, and
-   the network came up.
+4. Assert the installed root matches the requested filesystem, LUKS2 is active
+   when requested, snapshots work on Btrfs, and the network came up.
 """
 from __future__ import annotations
 
@@ -63,18 +63,31 @@ class VM:
             pass
 
 
-def install(iso: str, disk: str, uefi: bool) -> None:
+def install(iso: str, disk: str, uefi: bool, filesystem: str = "ext4", encrypt: bool = False) -> None:
     vm = VM(iso, disk, boot="d", uefi=uefi, timeout=600)
     try:
         vm.child.expect(LIVE_PROMPT, timeout=120)
         # Passwords go through stdin: command-line arguments are visible in
-        # the process list and shell history.
-        vm.child.sendline(
-            "printf 'grintion\\ngrintion\\n' | grintion-install --unattended "
+        # the process list and shell history. When encrypting, the third line
+        # is the LUKS passphrase and --serial puts the initramfs prompt on the
+        # QEMU serial console.
+        secret_lines = "grintion\\ngrintion\\n"
+        command = (
+            f"printf '{secret_lines}' | grintion-install --unattended "
             "--disk /dev/vda --hostname grintion-test --user grintion "
             "--password-stdin --root-password-stdin"
         )
-        vm.child.expect(r"Grintion-OS [0-9.]+ installed", timeout=600)
+        if filesystem != "ext4":
+            command += f" --filesystem {filesystem}"
+        if encrypt:
+            command = (
+                "printf 'grintion\\ngrintion\\ngrintion\\n' | grintion-install --unattended "
+                "--disk /dev/vda --hostname grintion-test --user grintion "
+                "--password-stdin --root-password-stdin --passphrase-stdin "
+                f"--encrypt --serial --filesystem {filesystem}"
+            )
+        vm.child.sendline(command)
+        vm.child.expect(r"Grintion-OS [0-9.]+ installed", timeout=900)
         vm.child.expect(LIVE_PROMPT, timeout=120)
         vm.child.sendline("sync")
         vm.child.expect(LIVE_PROMPT, timeout=60)
@@ -82,10 +95,13 @@ def install(iso: str, disk: str, uefi: bool) -> None:
         vm.close()
 
 
-def verify(disk: str, uefi: bool) -> None:
+def verify(disk: str, uefi: bool, filesystem: str = "ext4", encrypt: bool = False) -> None:
     vm = VM("", disk, boot="c", uefi=uefi, timeout=120)
     try:
-        vm.child.expect(LOGIN_PROMPT, timeout=120)
+        if encrypt:
+            vm.child.expect(r"Enter LUKS passphrase: ", timeout=180)
+            vm.child.sendline("grintion")
+        vm.child.expect(LOGIN_PROMPT, timeout=180)
         vm.child.sendline("grintion")
         vm.child.expect(r"Password: ", timeout=30)
         vm.child.sendline("grintion")
@@ -97,14 +113,55 @@ def verify(disk: str, uefi: bool) -> None:
             return vm.child.before
 
         output = run("findmnt -n -o FSTYPE /")
-        if "ext4" not in output:
-            raise AssertionError(f"installed root is not ext4:\n{output}")
+        if filesystem not in output:
+            raise AssertionError(f"installed root is not {filesystem}:\n{output}")
         output = run("hostname")
         if "grintion-test" not in output:
             raise AssertionError(f"wrong hostname:\n{output}")
         output = run("cat /etc/fstab")
-        if "UUID=" not in output or "ext4" not in output:
+        if "UUID=" not in output or filesystem not in output:
             raise AssertionError(f"fstab is not UUID based:\n{output}")
+        if encrypt:
+            output = run("echo grintion | sudo -S cryptsetup status grintion 2>/dev/null")
+            if "is active" not in output:
+                raise AssertionError(f"LUKS2 root is not active:\n{output}")
+        if filesystem == "btrfs":
+            output = run("echo grintion | sudo -S grintion-snapshot create test-snapshot 2>&1")
+            if "created /.snapshots/" not in output:
+                raise AssertionError(f"snapshot creation failed:\n{output}")
+            output = run("echo grintion | sudo -S grintion-snapshot list 2>&1")
+            if "test-snapshot" not in output:
+                raise AssertionError(f"snapshot is not listed:\n{output}")
+            output = run(
+                "echo grintion | sudo -S sh -c 'snap=$(grintion-snapshot list | grep test-snapshot | head -1); "
+                "grintion-snapshot boot \"$snap\"' 2>&1"
+            )
+            if "added Limine entry" not in output:
+                raise AssertionError(f"snapshot boot entry failed:\n{output}")
+            output = run(
+                "echo grintion | sudo -S grep -q 'BEGIN grintion snapshot entries' /boot/efi/limine.conf "
+                "&& echo SNAPSHOT_ENTRY"
+            )
+            if "SNAPSHOT_ENTRY" not in output:
+                raise AssertionError(f"Limine snapshot entry is missing:\n{output}")
+        output = run("echo grintion | sudo -S sv status /var/service/seatd 2>&1")
+        if "run:" not in output:
+            raise AssertionError(f"seatd service is not running:\n{output}")
+        output = run("test -S /run/seatd.sock && echo SEATD_SOCKET")
+        if "SEATD_SOCKET" not in output:
+            raise AssertionError(f"seatd socket is missing:\n{output}")
+        output = run("echo grintion | sudo -S sv status /var/service/udev 2>&1")
+        if "run:" not in output:
+            raise AssertionError(f"udev service is not running:\n{output}")
+        output = run("test -S /run/udev/control && echo UDEV_CONTROL")
+        if "UDEV_CONTROL" not in output:
+            raise AssertionError(f"udev control socket is missing:\n{output}")
+        output = run(
+            "echo grintion | sudo -S grintion-session --type wayland "
+            "--desktop sway -- env 2>&1"
+        )
+        if "XDG_SESSION_TYPE=wayland" not in output or "SEATD_SOCK=/run/seatd.sock" not in output:
+            raise AssertionError(f"session wrapper environment is wrong:\n{output}")
         output = run("echo grintion | sudo -S id 2>/dev/null")
         if "uid=0" not in output:
             raise AssertionError(f"sudo failed on the installed system:\n{output}")
@@ -135,15 +192,21 @@ def main() -> int:
     parser.add_argument("--iso", default="output/grintion-os-x86_64.iso")
     parser.add_argument("--disk", default="build/work/install-test.qcow2")
     parser.add_argument("--uefi", action="store_true")
+    parser.add_argument("--filesystem", choices=("ext4", "btrfs"), default="ext4")
+    parser.add_argument("--encrypt", action="store_true")
     parser.add_argument("--reuse", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
 
-    if not args.reuse and os.path.exists(args.disk):
-        os.unlink(args.disk)
-    if not os.path.exists(args.disk):
-        subprocess = __import__("subprocess")
-        subprocess.run(["qemu-img", "create", "-f", "qcow2", args.disk, "8G"], check=True)
+    if args.verify_only:
+        if not os.path.exists(args.disk):
+            parser.error(f"--verify-only requires an existing disk: {args.disk}")
+    else:
+        if not args.reuse and os.path.exists(args.disk):
+            os.unlink(args.disk)
+        if not os.path.exists(args.disk):
+            subprocess = __import__("subprocess")
+            subprocess.run(["qemu-img", "create", "-f", "qcow2", args.disk, "8G"], check=True)
 
     if args.uefi:
         if not os.path.exists("/tmp/grintion-ovmf-vars.fd"):
@@ -151,9 +214,9 @@ def main() -> int:
 
     if not args.verify_only:
         print("[*] installing to", args.disk)
-        install(args.iso, args.disk, args.uefi)
+        install(args.iso, args.disk, args.uefi, args.filesystem, args.encrypt)
     print("[*] rebooting from the installed disk")
-    verify(args.disk, args.uefi)
+    verify(args.disk, args.uefi, args.filesystem, args.encrypt)
     return 0
 
 

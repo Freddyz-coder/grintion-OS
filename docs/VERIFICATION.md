@@ -4,8 +4,14 @@ This document records what was actually executed for Grintion-OS 0.9.0 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**Status: 0.9.0 console, XFCE, i3, desktop audio and five virtual NIC models
-verified; KDE Plasma and the other Wayland profiles unverified.** The 0.9.0 ISO
+**Phase 4 foundation (2026-11-07):** the installed QEMU guest verified the
+`seatd` and standalone `udev` runit services, `/run/seatd.sock`,
+`/run/udev/control`, `seat` group, `grintion-session`'s private
+`XDG_RUNTIME_DIR`, `XDG_SESSION_TYPE=wayland`, `SEATD_SOCK`, and a live session
+D-Bus. No Wayland compositor was rendered; GNOME, KDE Plasma, LXQt and
+Sway remain unverified. **Status: 0.9.0 console, XFCE, i3, desktop audio and
+five virtual NIC models verified; KDE Plasma and the other Wayland profiles
+unverified.** The 0.9.0 ISO
 was built on 2026-11-06 and passed `./build/check.sh` (66 tests), i3 and XFCE
 probes with rendered sessions and end-to-end PipeWire audio, and the five-NIC
 matrix. KDE Plasma is Wayland-only in the current Arch package set and the

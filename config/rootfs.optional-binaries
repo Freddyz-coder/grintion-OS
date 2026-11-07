@@ -10,3 +10,4 @@ updatedb
 parallel
 ping6
 efibootmgr
+smartctl

@@ -1,0 +1,35 @@
+#!/bin/sh
+# Grintion-OS runit service: greetd
+# Minimal, non-systemd greeter daemon for console, Wayland, and X11 sessions.
+
+mkdir -p /var/log
+exec >> /var/log/greetd.log 2>&1
+
+if [ -x /usr/bin/dbus-daemon ] && [ ! -S /run/dbus/system_bus_socket ]; then
+    i=0
+    while [ "$i" -lt 10 ] && [ ! -S /run/dbus/system_bus_socket ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+fi
+
+mkdir -p /etc/greetd
+if [ ! -f /etc/greetd/config.toml ]; then
+    cat > /etc/greetd/config.toml <<'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "agreety --cmd /bin/sh"
+user = "greeter"
+EOF
+fi
+
+if id -u greeter >/dev/null 2>&1; then
+    mkdir -p /var/lib/greeter
+    chown -R greeter:greeter /var/lib/greeter 2>/dev/null || true
+fi
+
+echo "greetd: starting /usr/bin/greetd"
+exec /usr/bin/greetd
+

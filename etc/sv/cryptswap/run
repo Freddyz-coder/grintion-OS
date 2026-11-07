@@ -1,0 +1,25 @@
+#!/bin/sh
+# Open the encrypted swap partition created by grintion-install.
+# The key is root-only and lives on the encrypted root filesystem.
+exec 2>&1
+
+[ -r /etc/grintion/swap.conf ] || exit 0
+# shellcheck disable=SC1091
+. /etc/grintion/swap.conf
+
+[ -n "$LUKS_UUID" ] && [ -n "$NAME" ] && [ -n "$KEY" ] || exit 1
+[ -r "$KEY" ] || exit 1
+
+mkdir -p /dev/mapper
+if [ ! -e /dev/mapper/control ]; then
+    mknod /dev/mapper/control c 10 236 || exit 1
+fi
+
+if [ ! -e "/dev/mapper/$NAME" ]; then
+    device=$(blkid -U "$LUKS_UUID") || exit 1
+    cryptsetup luksOpen --key-file "$KEY" "$device" "$NAME" || exit 1
+fi
+
+# swapon is idempotent enough for runit restarts; ignore an already-active swap.
+swapon "/dev/mapper/$NAME" 2>/dev/null || true
+exec sleep 86400

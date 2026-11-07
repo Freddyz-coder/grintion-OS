@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""grintion-hwinfo - redacted hardware inventory for bug reports.
+
+The default output redacts serial numbers and MAC addresses. Use
+--include-identifiers only when the report is going somewhere you trust.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import time
+from pathlib import Path
+
+PCI_CLASSES = {
+    "0100": "IDE interface",
+    "0101": "Floppy disk controller",
+    "0106": "SATA controller",
+    "0107": "SAS controller",
+    "0108": "NVMe controller",
+    "0200": "Ethernet controller",
+    "0280": "Network controller",
+    "0300": "VGA compatible controller",
+    "0302": "3D controller",
+    "0401": "Multimedia audio controller",
+    "0403": "Audio device",
+    "0c03": "USB controller",
+    "0c05": "SMBus controller",
+    "0600": "Host bridge",
+    "0601": "ISA bridge",
+    "0604": "PCI bridge",
+}
+
+
+def read_text(path: object, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return default
+
+
+def redact(value: str, include: bool) -> str:
+    if not value:
+        return ""
+    return value if include else "<redacted>"
+
+
+def secure_boot_state() -> str:
+    if not Path("/sys/firmware/efi").is_dir():
+        return "not-applicable"
+    for entry in Path("/sys/firmware/efi/efivars").glob("SecureBoot-*"):
+        try:
+            data = entry.read_bytes()
+        except OSError:
+            continue
+        if len(data) >= 5:
+            return "enabled" if data[4] == 1 else "disabled"
+    return "unknown"
+
+
+def pci_devices() -> list[dict]:
+    devices = []
+    for device in sorted(Path("/sys/bus/pci/devices").glob("*")):
+        class_code = read_text(device / "class")
+        normalized = class_code[2:6] if class_code.startswith("0x") else class_code[:4]
+        driver = ""
+        try:
+            driver = (device / "driver").resolve().name
+        except OSError:
+            pass
+        devices.append({
+            "slot": device.name,
+            "class": normalized,
+            "class_name": PCI_CLASSES.get(normalized, "unknown"),
+            "vendor_id": read_text(device / "vendor"),
+            "device_id": read_text(device / "device"),
+            "driver": driver,
+        })
+    return devices
+
+
+def usb_devices() -> list[dict]:
+    devices = []
+    for device in sorted(Path("/sys/bus/usb/devices").glob("*")):
+        vendor = read_text(device / "idVendor")
+        if not vendor:
+            continue
+        devices.append({
+            "bus": read_text(device / "busnum"),
+            "device": read_text(device / "devnum"),
+            "vendor_id": vendor,
+            "product_id": read_text(device / "idProduct"),
+            "manufacturer": read_text(device / "manufacturer"),
+            "product": read_text(device / "product"),
+        })
+    return devices
+
+
+def network_interfaces(include: bool) -> list[dict]:
+    interfaces = []
+    for interface in sorted(Path("/sys/class/net").glob("*")):
+        driver = ""
+        try:
+            driver = (interface / "device" / "driver").resolve().name
+        except OSError:
+            pass
+        interfaces.append({
+            "name": interface.name,
+            "mac": redact(read_text(interface / "address"), include),
+            "state": read_text(interface / "operstate"),
+            "mtu": read_text(interface / "mtu"),
+            "speed": read_text(interface / "speed"),
+            "driver": driver,
+        })
+    return interfaces
+
+
+def storage_devices(include: bool) -> list[dict]:
+    devices = []
+    for device in sorted(Path("/sys/class/block").glob("*")):
+        if (device / "partition").exists():
+            continue
+        try:
+            size = int(read_text(device / "size", "0") or 0) * 512
+        except ValueError:
+            size = 0
+        devices.append({
+            "name": device.name,
+            "size_bytes": size,
+            "model": read_text(device / "device" / "model"),
+            "serial": redact(read_text(device / "device" / "serial"), include),
+            "rotational": read_text(device / "queue" / "rotational"),
+            "removable": read_text(device / "removable"),
+        })
+    return devices
+
+
+def cpu_info() -> dict:
+    model = ""
+    count = 0
+    for line in read_text("/proc/cpuinfo").splitlines():
+        if line.startswith("processor"):
+            count += 1
+        elif line.lower().startswith("model name") and not model:
+            model = line.split(":", 1)[-1].strip()
+    return {"model": model, "logical_cpus": count}
+
+
+def memory_info() -> dict:
+    values = {}
+    for line in read_text("/proc/meminfo").splitlines():
+        key, _, rest = line.partition(":")
+        if key in ("MemTotal", "MemAvailable", "SwapTotal"):
+            values[key] = rest.strip()
+    return values
+
+
+def dmi_info(include: bool) -> dict:
+    return {
+        "vendor": read_text("/sys/class/dmi/id/sys_vendor"),
+        "product": read_text("/sys/class/dmi/id/product_name"),
+        "version": read_text("/sys/class/dmi/id/product_version"),
+        "board": read_text("/sys/class/dmi/id/board_name"),
+        "bios": read_text("/sys/class/dmi/id/bios_version"),
+        "serial": redact(read_text("/sys/class/dmi/id/product_serial"), include),
+    }
+
+
+def os_release() -> dict:
+    values = {}
+    for line in read_text("/etc/os-release").splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            values[key] = value.strip().strip('"')
+    return values
+
+
+def collect(include: bool) -> dict:
+    uname = os.uname()
+    return {
+        "schema": 1,
+        "generated": int(time.time()),
+        "redacted": not include,
+        "os": os_release(),
+        "kernel": {
+            "release": uname.release,
+            "version": uname.version,
+            "arch": uname.machine,
+            "cmdline": read_text("/proc/cmdline"),
+        },
+        "firmware": {
+            "uefi": Path("/sys/firmware/efi").is_dir(),
+            "secure_boot": secure_boot_state(),
+        },
+        "dmi": dmi_info(include),
+        "cpu": cpu_info(),
+        "memory": memory_info(),
+        "pci": pci_devices(),
+        "usb": usb_devices(),
+        "network": network_interfaces(include),
+        "storage": storage_devices(include),
+    }
+
+
+def print_text(payload: dict) -> None:
+    print("Grintion-OS hardware report")
+    print(f"generated: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(payload['generated']))}")
+    os_info = payload["os"]
+    print(f"system:    {os_info.get('PRETTY_NAME', 'unknown')}")
+    dmi = payload["dmi"]
+    print(f"machine:   {dmi['vendor']} {dmi['product']} ({dmi['board']})")
+    print(f"bios:      {dmi['bios']}")
+    firmware = payload["firmware"]
+    print(f"firmware:  {'UEFI' if firmware['uefi'] else 'BIOS'}, Secure Boot {firmware['secure_boot']}")
+    kernel = payload["kernel"]
+    print(f"kernel:    {kernel['release']} ({kernel['arch']})")
+    cpu = payload["cpu"]
+    print(f"cpu:       {cpu['model']} x {cpu['logical_cpus']} logical")
+    print(f"memory:    {payload['memory'].get('MemTotal', 'unknown')}")
+    print(f"redacted:  {payload['redacted']} (use --include-identifiers to disable)")
+    print("pci:")
+    for device in payload["pci"]:
+        suffix = f" driver={device['driver']}" if device["driver"] else ""
+        print(f"  - {device['slot']} {device['class_name']} [{device['vendor_id']}:{device['device_id']}]{suffix}")
+    print("network:")
+    for interface in payload["network"]:
+        suffix = f" driver={interface['driver']}" if interface["driver"] else ""
+        print(f"  - {interface['name']} {interface['state']} mac={interface['mac']} mtu={interface['mtu']}{suffix}")
+    print("storage:")
+    for device in payload["storage"]:
+        print(f"  - {device['name']} {device['size_bytes']} bytes model={device['model']!r} serial={device['serial']}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-hwinfo",
+        description="Collect a hardware inventory for a bug report.",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--include-identifiers", action="store_true",
+                        help="include serial numbers and MAC addresses")
+    args = parser.parse_args()
+
+    payload = collect(args.include_identifiers)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print_text(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

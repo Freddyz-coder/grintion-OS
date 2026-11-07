@@ -1,9 +1,12 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.9.0 installs from the live ISO to a single disk. The installer
-repartitions the **entire** target disk: a 512 MiB EFI system partition and an
-ext4 root partition. There is no dual-boot or custom-partition mode in this
-release.
+Grintion-OS 0.10.0 installs from the live ISO to a target disk or existing
+partitions. The installer supports automatic whole-disk partitioning or custom
+pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
+F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
+dual-boot Limine chainloading, disk secure erase, removable/USB installs,
+preservation of home data across reinstalls, and an interactive guided TUI
+wizard (`--tui`).
 
 If you want to try the system without touching a disk, boot the ISO and stop at
 the live shell. Nothing is written to storage in that mode.
@@ -25,8 +28,8 @@ the Limine bootloader is not signed and there is no shim.
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.9.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.9.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.10.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.10.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -61,7 +64,8 @@ grintion-install --disk /dev/vda
 It will:
 
 1. require an explicit confirmation that the disk will be erased;
-2. create a GPT with a 512 MiB FAT32 ESP and an ext4 root;
+2. create a GPT with a 512 MiB FAT32 ESP and the selected root filesystem
+   (ext4 or Btrfs, optionally inside LUKS2);
 3. mount the new root and copy the live filesystem with `rsync`;
 4. create the user you specify, add it to `wheel`, and copy `/etc/skel`;
 5. write `/etc/fstab`, `/etc/hostname`, the machine ID and the initramfs;
@@ -82,14 +86,132 @@ and shell history. Add `--root-password-stdin` (or `GRINTION_ROOT_PASSWORD`) to
 unlock root; otherwise root stays locked and administration goes through
 `sudo`.
 
+### Guided TUI Wizard
+
+Launch the interactive guided terminal UI installer:
+
+```sh
+grintion-install --tui
+```
+
+The wizard walks through:
+1. Target disk selection
+2. Partitioning mode (Whole disk auto-partitioning or Custom pre-existing partitions)
+3. Root filesystem (`ext4`, `btrfs`, `xfs`, `f2fs`)
+4. Encryption (Root LUKS2 and optional dedicated encrypted `/home`)
+5. Swap configuration (Swap partition or root swapfile)
+6. Optional recovery partition
+7. Desktop environment selection (`none`, `xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`)
+8. Hostname and user account credentials
+9. Confirmation screen with automatic SMART health preflight and summary review
+
+### Custom Partitioning
+
+To install Grintion-OS into existing partitions without repartitioning the entire disk:
+
+```sh
+grintion-install --custom --root-part /dev/vda2 --esp-part /dev/vda1 \
+    --swap-part /dev/vda3 --home-part /dev/vda4 \
+    --hostname box --user grintion
+```
+
+### Encrypted and Multi-Filesystem Installs
+
+```sh
+printf '%s\n' 'user-secret' 'luks-secret' | grintion-install --unattended \
+    --disk /dev/vda --hostname box --user grintion \
+    --password-stdin --encrypt --passphrase-stdin \
+    --filesystem btrfs --separate-home --swap-size 2048
+```
+
+Supported root filesystems:
+- `btrfs`: Subvolume layout (`@`, `@snapshots`, optional `@home`). Default for rollback snapshots.
+- `ext4`: Mature journaling filesystem.
+- `xfs`: High performance and scalability.
+- `f2fs`: Flash-friendly filesystem for solid-state storage.
+
+For dedicated `/home` on non-Btrfs filesystems or dedicated partitions:
+```sh
+grintion-install --disk /dev/vda --home-size 20480 --encrypt-home ...
+```
+With `--encrypt-home`, the home container is formatted with LUKS2 and unlocked automatically at boot using a secure keyfile stored on the encrypted root filesystem (`/etc/grintion/home.key`).
+
+To reuse an existing `/home` partition without reformatting it:
+```sh
+grintion-install --custom --root-part /dev/vda2 --esp-part /dev/vda1 \
+    --home-part /dev/vda4 --keep-home ...
+```
+
+### Swap Partition vs Swap File
+
+- **Swap partition:** `--swap-size 2048` allocates a dedicated partition. With `--encrypt`, it is encrypted via `/etc/sv/cryptswap`.
+- **Swap file on root:** `--swap-file 2048` allocates a swap file directly on the root filesystem. On Btrfs roots, the installer automatically applies `nodatacow` (`chattr +C`) to guarantee safe swap operations.
+
+### Dual-Boot Detection
+
+During installation, `grintion-install` automatically probes all partitions for existing operating systems (Windows Boot Manager, other Linux distributions). When found, corresponding chainload entries are generated in Limine configuration (`/boot/efi/limine.conf`), preserving boot access to existing systems.
+
+### Removable / USB Install
+
+To install to an external USB flash drive or portable hard drive:
+
+```sh
+grintion-install --disk /dev/sdb --removable ...
+```
+
+In removable mode, the installer deploys the UEFI fallback loader (`EFI/BOOT/BOOTX64.EFI`) directly to the EFI partition without invoking `efibootmgr` or modifying the host computer's NVRAM variables.
+
+### Recovery Partition
+
+```sh
+grintion-install --disk /dev/vda --recovery-partition --recovery-size 2048 ...
+```
+
+Provisions a dedicated read-only recovery partition containing a rescue kernel and initramfs, accessible via a recovery boot menu entry in Limine.
+
+### Dry-run and Answer Files
+
+A plan can be inspected without touching the disk or supplying secrets:
+
+```sh
+grintion-install --dry-run --json --disk /dev/vda --hostname box \
+    --user grintion --encrypt --filesystem btrfs --separate-home
+```
+
+The output conforms to schema 2, including partition geometries, mountpoints, encryption modes, and dual-boot chainload plans. Answer files can be saved and supplied with `--config <file>`.
+
 Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--dry-run` | Validate arguments, tools and the disk, then exit. |
-| `--root-password-stdin` | Read a root password from standard input. By default root is locked on the installed system; use `sudo` from the created user. |
-| `--no-bootloader` | Skip Limine, for an externally managed boot setup. |
-| `--swap-size MIB` | Add a linux-swap partition at the end of the disk (default: none). |
+| `--tui`, `--interactive` | Launch the interactive guided TUI installation wizard. |
+| `--custom` | Custom partition mode (requires `--root-part` and `--esp-part`). |
+| `--root-part DEV` | Target root partition for custom installation. |
+| `--esp-part DEV` | Target EFI system partition for custom installation. |
+| `--swap-part DEV` | Target swap partition for custom installation. |
+| `--home-part DEV` | Target `/home` partition for custom installation. |
+| `--home-size MIB` | Allocate a separate `/home` partition (whole-disk mode). |
+| `--encrypt-home` | Encrypt `/home` partition with LUKS2 keyfile at `/etc/grintion/home.key`. |
+| `--keep-home` | Preserve existing `/home` directory contents across reinstallation. |
+| `--swap-size MIB` | Add a swap partition at the end of the disk. Encrypted when `--encrypt` is set. |
+| `--swap-file MIB` | Create a swap file on the root filesystem (nodatacow on Btrfs). |
+| `--encrypt` | Encrypt the root partition with LUKS2 (aes-xts-plain64, argon2id). |
+| `--passphrase-stdin` | Read the LUKS passphrase from standard input. |
+| `--filesystem FS` | Choose root filesystem: `btrfs`, `ext4`, `xfs`, or `f2fs`. |
+| `--separate-home` | Put `/home` on Btrfs `@home` subvolume (requires `--filesystem btrfs`). |
+| `--secure-erase` | Securely erase the target disk with `blkdiscard` or zero-fill prior to partitioning. |
+| `--removable`, `--usb` | Install in removable/USB mode without updating UEFI NVRAM entries. |
+| `--recovery-partition` | Provision a dedicated rescue/recovery partition. |
+| `--recovery-size MIB` | Size of recovery partition (default: 2048 MiB). |
+| `--desktop ENV` | Pre-install a desktop environment (`xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`). |
+| `--dry-run` | Validate arguments, tools and the disk, then emit plan and exit. |
+| `--json` | With `--dry-run`, print the partition plan as JSON (schema 2). |
+| `--config FILE` | Read a JSON answer file. Command-line flags override its values. |
+| `--root-password-stdin` | Read a root password from standard input. |
+| `--skip-smart` | Skip the SMART health preflight. |
+| `--skip-self-test` | Skip `grintion-verify-install` after copying. |
+| `--serial` | Configure serial console on `ttyS0` for LUKS passphrase prompt. |
+| `--no-bootloader` | Skip Limine installation for custom bootloader management. |
 | `--force` | Allow running from a system that is not the live image. |
 
 ### After installation
@@ -134,7 +256,7 @@ and cache; use `pacman -Q` / `pacman -Sc` for pacman-installed packages.
 
 ## Graphical Desktop Environments
 
-Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console. XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input and working PipeWire audio; KDE Plasma, GNOME, LXQt and Sway remain unverified in 0.9.0 (see [VERIFICATION.md](VERIFICATION.md)).
+Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console. XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input and working PipeWire audio; KDE Plasma, GNOME, LXQt and Sway remain unverified in 0.10.0 (see [VERIFICATION.md](VERIFICATION.md)).
 
 ### Pre-installing during disk installation
 
@@ -235,8 +357,11 @@ of space, and no mounted partitions. Unmount anything auto-mounted by the live
 session and retry.
 
 **The installed system drops to a recovery shell.** The message names the
-failing step: root argument, device resolution, `e2fsck` or mount. Check that
-the disk is attached and that the firmware boot order points at it.
+failing step: root argument, LUKS unlock, filesystem check or mount. Check that
+the disk is attached and that the firmware boot order points at it. For an
+encrypted install, the prompt is on the last console listed on the kernel
+command line; use `--serial` if the display is not available. See
+[RECOVERY.md](RECOVERY.md) for snapshot, boot-health and self-test commands.
 
 **UEFI boot does not appear.** Confirm the firmware is in UEFI mode (not CSM),
 Secure Boot is off, and the ESP contains `EFI/BOOT/BOOTX64.EFI`. The installer

@@ -8,9 +8,10 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.9.0 provides signed repository indexes, per-file SHA-256 verification,
-runtime dependency resolution and transactional installs. It does **not** build
-from source, run maintainer scripts, or deliver delta updates.
+Version 0.10.0 provides signed repository indexes, per-file SHA-256 verification,
+runtime dependency resolution, transactional installs, a transaction lock, a
+durable journal and an fsck command. It does **not** build from source, run
+maintainer scripts, or deliver delta updates.
 
 ---
 
@@ -29,6 +30,8 @@ from source, run maintainer scripts, or deliver delta updates.
 | `garb list [--upgradable\|--available]` | List installed packages (default), packages with a newer index version, or repository packages. Native backend only. |
 | `garb info PACKAGE [--installed]` | Show package metadata; `--installed` refuses to fall back to repository data (pacman maps this to `-Qi`). |
 | `garb clean` | Remove cached repository indexes and downloads. Native backend only. Run `garb update` before the next install. |
+| `garb history [--limit N] [--format json]` | Show the durable transaction journal (`started`, `committed`, `rolled-back`). |
+| `garb fsck [--hash] [--format json]` | Check database structure, duplicate ownership, missing/tampered files, incomplete journal records and leftover rollback backups. |
 | `garb build GARBFILE [-o DIR]` | Build one package archive from a `Garbfile`. |
 | `garb repo-build SRCDIR OUTDIR` | Build every `SRCDIR/*/Garbfile` into `OUTDIR`. |
 | `garb repo-index DIR [--key KEY] [--valid-days DAYS] [--index-version N]` | Write `index.json` for the archives in `DIR`, optionally signing it. Indexes expire after 30 days by default. |
@@ -310,6 +313,40 @@ database, unless `--force` is given.
 
 A successful upgrade is not reversible: the previous file set is not kept after
 the transaction commits.
+
+---
+
+## Transaction safety and recovery
+
+Mutating native commands (`install`, `remove`, `upgrade`) take an exclusive
+`flock` on `/var/lib/garb/lock` for the duration of the transaction. A second
+transaction fails immediately and prints the holder's PID and command instead of
+interleaving file moves and database writes.
+
+Every transaction is recorded in `/var/lib/garb/journal.jsonl` (mode 0600) with
+a transaction ID, timestamp, target root, requested packages and one of three
+states: `started`, `committed` or `rolled-back`. The record is fsynced before the
+command proceeds, so a crash leaves a visible `started` entry rather than a
+silent half-install. The journal never contains file contents or passwords.
+
+`garb fsck` separates errors from warnings:
+
+- **Errors:** corrupt or structurally invalid database, duplicate file
+ownership, unsafe paths, missing files or symlinks, changed symlink targets,
+and (with `--hash`) modified file contents.
+- **Warnings:** a dependency supplied by the base image and therefore absent
+from the native database, a journal transaction with no result, and a leftover
+`garb-backup-*` directory from an interrupted rollback.
+
+`garb fsck` exits 1 only when an error is present. `--format json` emits the
+full issue list for a bug report. A corrupt database is no longer replaced with
+an empty one: `garb` fails closed because the database is the only record of
+which files belong to which package.
+
+`garb history` prints the last 20 records by default; `--limit 0` prints all of
+them. This is an audit trail, not a rollback mechanism. Filesystem snapshots and
+versioned package generations are Phase 3 and Phase 7 work in
+[ROADMAP.md](ROADMAP.md).
 
 ---
 

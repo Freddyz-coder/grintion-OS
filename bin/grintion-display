@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# grintion-display - Multi-monitor, resolution, and HiDPI scaling helper.
+#
+# Supports both X11 (xrandr) and Wayland (wlr-randr) environments with
+# non-systemd seat and session configurations.
+
+set -Eeuo pipefail
+export LC_ALL=C
+
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
+log() { printf '[*] %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-display COMMAND [OPTIONS]
+
+Commands:
+  status [--json]       Show connected displays, resolutions, and scaling
+  scale FACTOR          Set HiDPI scaling factor (1.0, 1.25, 1.5, 2.0)
+  resolutions           List supported resolutions for connected displays
+  layout MODE           Set multi-monitor layout (mirror, extend-left, extend-right, single)
+  -h, --help            Show this help
+EOF
+}
+
+detect_server() {
+    if [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+        echo "wayland"
+    elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        echo "wayland"
+    elif [ -n "${DISPLAY:-}" ]; then
+        echo "x11"
+    else
+        echo "tty"
+    fi
+}
+
+cmd_status() {
+    local json=0
+    [ "${1:-}" = "--json" ] && json=1
+    local server
+    server="$(detect_server)"
+
+    local displays=()
+    if [ "$server" = "x11" ] && command -v xrandr >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            displays+=("$line")
+        done < <(xrandr --query 2>/dev/null | awk '/ connected/ {print $1, ($3 == "primary" ? $4 : $3)}')
+    elif [ "$server" = "wayland" ] && command -v wlr-randr >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            displays+=("$line")
+        done < <(wlr-randr 2>/dev/null | awk '/^[A-Za-z0-9]/ {print $1}')
+    fi
+
+    if [ "$json" -eq 1 ]; then
+        python3 - "$server" "${displays[@]}" <<'PY'
+import json
+import sys
+
+server = sys.argv[1]
+displays = sys.argv[2:]
+print(json.dumps({
+    "schema": 1,
+    "display_server": server,
+    "displays": displays,
+    "count": len(displays),
+}, indent=2))
+PY
+    else
+        echo "Display Server: $server"
+        echo "Connected Displays: ${#displays[@]}"
+        for d in "${displays[@]}"; do
+            echo "  - $d"
+        done
+    fi
+}
+
+cmd_scale() {
+    local factor="${1:-1.0}"
+    local server
+    server="$(detect_server)"
+
+    log "applying scale factor $factor on $server"
+    case "$server" in
+        x11)
+            if command -v xrandr >/dev/null 2>&1; then
+                local primary
+                primary=$(xrandr --query | awk '/ connected primary/ {print $1; exit}')
+                [ -n "$primary" ] || primary=$(xrandr --query | awk '/ connected/ {print $1; exit}')
+                if [ -n "$primary" ]; then
+                    # Invert scaling factor for xrandr framebuffer scaling
+                    local inv
+                    inv=$(python3 -c "print(f'{1.0 / float($factor):.4f}')")
+                    xrandr --output "$primary" --scale "${inv}x${inv}" 2>/dev/null || true
+                fi
+            fi
+            # Set Xft.dpi in Xresources if xrdb is available
+            local dpi
+            dpi=$(python3 -c "print(int(96 * float('$factor')))")
+            if command -v xrdb >/dev/null 2>&1; then
+                printf 'Xft.dpi: %s\n' "$dpi" | xrdb -merge 2>/dev/null || true
+            fi
+            export GDK_SCALE="$factor"
+            export QT_SCALE_FACTOR="$factor"
+            log "X11 scale set to $factor (DPI: $dpi)"
+            ;;
+        wayland)
+            if command -v wlr-randr >/dev/null 2>&1; then
+                local output
+                output=$(wlr-randr | awk '/^[A-Za-z0-9]/ {print $1; exit}')
+                if [ -n "$output" ]; then
+                    wlr-randr --output "$output" --scale "$factor" 2>/dev/null || true
+                fi
+            fi
+            export GDK_SCALE="$factor"
+            export QT_SCALE_FACTOR="$factor"
+            log "Wayland scale set to $factor"
+            ;;
+        *)
+            warn "no graphical display server detected (tty mode); export GDK_SCALE=$factor"
+            ;;
+    esac
+}
+
+cmd_resolutions() {
+    local server
+    server="$(detect_server)"
+    if [ "$server" = "x11" ] && command -v xrandr >/dev/null 2>&1; then
+        xrandr --query | grep -E '^\s+[0-9]+x[0-9]+' | awk '{print $1}' | sort -u
+    elif [ "$server" = "wayland" ] && command -v wlr-randr >/dev/null 2>&1; then
+        wlr-randr | grep -E '^\s+[0-9]+x[0-9]+' | awk '{print $1}' | sort -u
+    else
+        echo "1920x1080"
+        echo "1280x800"
+        echo "1024x768"
+    fi
+}
+
+cmd_layout() {
+    local mode="${1:-single}"
+    local server
+    server="$(detect_server)"
+    log "configuring monitor layout: $mode on $server"
+    if [ "$server" = "x11" ] && command -v xrandr >/dev/null 2>&1; then
+        local outputs=()
+        while IFS= read -r out; do
+            outputs+=("$out")
+        done < <(xrandr --query | awk '/ connected/ {print $1}')
+        if [ ${#outputs[@]} -ge 2 ]; then
+            case "$mode" in
+                mirror)
+                    xrandr --output "${outputs[1]}" --same-as "${outputs[0]}" --auto 2>/dev/null || true
+                    ;;
+                extend-right)
+                    xrandr --output "${outputs[1]}" --right-of "${outputs[0]}" --auto 2>/dev/null || true
+                    ;;
+                extend-left)
+                    xrandr --output "${outputs[1]}" --left-of "${outputs[0]}" --auto 2>/dev/null || true
+                    ;;
+                single)
+                    xrandr --output "${outputs[0]}" --auto --output "${outputs[1]}" --off 2>/dev/null || true
+                    ;;
+            esac
+        fi
+    fi
+    log "layout applied"
+}
+
+[ $# -gt 0 ] || { usage; exit 2; }
+COMMAND=$1
+shift
+case "$COMMAND" in
+    status)      cmd_status "$@" ;;
+    scale)       cmd_scale "${1:-1.0}" ;;
+    resolutions) cmd_resolutions ;;
+    layout)      cmd_layout "${1:-single}" ;;
+    -h|--help)   usage ;;
+    *) die "unknown command: $COMMAND (see --help)" ;;
+esac
+

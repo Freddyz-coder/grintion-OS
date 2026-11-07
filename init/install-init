@@ -1,10 +1,10 @@
 #!/bin/sh
 # /init - Grintion-OS installed-system initramfs
 #
-# This image is deliberately tiny. It mounts the installed root filesystem
-# from the kernel command line (root=UUID=..., root=LABEL=... or /dev/...),
-# optionally repairs it, and switches root. The kernel has ext4, virtio, AHCI,
-# NVMe and overlayfs built in, so no storage modules are required here.
+# This image is deliberately small. It resolves root=, optionally unlocks a
+# LUKS2 cryptdevice, repairs an ext4 root, mounts rootflags= (including Btrfs
+# subvol=), and switches root. Device-mapper, dm-crypt, XTS, ext4 and Btrfs are
+# built into the kernel, so no storage modules are required here.
 
 set -eu
 
@@ -14,7 +14,6 @@ export PATH
 [ -r /recovery.sh ] || { echo "[-] /recovery.sh is missing from the initramfs" >&2; exec /bin/sh -i; }
 . /recovery.sh
 trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
-
 
 mkdir -p /proc /sys /dev /run /newroot
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
@@ -28,32 +27,97 @@ mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
 mountpoint -q /run || mount -t tmpfs -o mode=0755 tmpfs /run
 
 ROOTARG=""
+ROOTFLAGS=""
+CRYPTARG=""
+CRYPT_CONSOLE=""
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
-        root=*) ROOTARG=${arg#root=} ;;
+        root=*)                    ROOTARG=${arg#root=} ;;
+        rootflags=*)               ROOTFLAGS=${arg#rootflags=} ;;
+        cryptdevice=*)             CRYPTARG=${arg#cryptdevice=} ;;
+        grintion.cryptconsole=*)   CRYPT_CONSOLE=${arg#grintion.cryptconsole=} ;;
     esac
 done
 [ -n "$ROOTARG" ] || rescue "no root= parameter on the kernel command line"
 
-case "$ROOTARG" in
-    UUID=*|LABEL=*) ROOTDEV="$(findfs "$ROOTARG" 2>/dev/null || true)" ;;
-    *)              ROOTDEV="$ROOTARG" ;;
-esac
-[ -n "$ROOTDEV" ] || rescue "cannot resolve $ROOTARG"
+ROOTDEV=""
+if [ -n "$CRYPTARG" ]; then
+    CRYPT_REST=${CRYPTARG#cryptdevice=}
+    # The form is cryptdevice=UUID=<uuid>:<name>. Split at the last colon so
+    # labels containing a colon are not confused with the mapper name.
+    case "$CRYPT_REST" in
+        *:*) CRYPT_SOURCE=${CRYPT_REST%:*}; CRYPT_NAME=${CRYPT_REST##*:} ;;
+        *)   CRYPT_SOURCE=$CRYPT_REST; CRYPT_NAME=cryptroot ;;
+    esac
+    [ -n "$CRYPT_NAME" ] || CRYPT_NAME=cryptroot
+    case "$CRYPT_SOURCE" in
+        UUID=*|LABEL=*) CRYPT_DEV="$(findfs "$CRYPT_SOURCE" 2>/dev/null || true)" ;;
+        *)              CRYPT_DEV=$CRYPT_SOURCE ;;
+    esac
+    [ -b "$CRYPT_DEV" ] || rescue "cannot resolve cryptdevice source $CRYPT_SOURCE"
+
+    # devtmpfs does not create the device-mapper control node; cryptsetup and
+    # dmsetup need it before the first ioctl.
+    mkdir -p /dev/mapper /run/cryptsetup /run/lock
+    if [ ! -e /dev/mapper/control ]; then
+        mknod /dev/mapper/control c 10 236 || rescue "cannot create /dev/mapper/control"
+    fi
+
+    CONSOLE=${CRYPT_CONSOLE:-/dev/console}
+    [ -c "$CONSOLE" ] || CONSOLE=/dev/console
+    msg "unlocking LUKS2 device $CRYPT_NAME"
+    tries=3
+    while [ "$tries" -gt 0 ]; do
+        stty -echo <"$CONSOLE" 2>/dev/null || true
+        printf 'Enter LUKS passphrase: ' >"$CONSOLE"
+        if IFS= read -r passphrase <"$CONSOLE"; then
+            stty echo <"$CONSOLE" 2>/dev/null || true
+            printf '\n' >"$CONSOLE"
+            if printf '%s' "$passphrase" | cryptsetup luksOpen --key-file - \
+                "$CRYPT_DEV" "$CRYPT_NAME" >"$CONSOLE" 2>&1; then
+                passphrase=""
+                ROOTDEV="/dev/mapper/$CRYPT_NAME"
+                break
+            fi
+            passphrase=""
+            msg "the passphrase was not accepted ($tries attempts left)"
+        else
+            stty echo <"$CONSOLE" 2>/dev/null || true
+            rescue "could not read the LUKS passphrase"
+        fi
+        tries=$((tries - 1))
+    done
+    [ -n "$ROOTDEV" ] || rescue "could not unlock $CRYPT_DEV"
+else
+    case "$ROOTARG" in
+        UUID=*|LABEL=*) ROOTDEV="$(findfs "$ROOTARG" 2>/dev/null || true)" ;;
+        *)              ROOTDEV=$ROOTARG ;;
+    esac
+fi
 [ -b "$ROOTDEV" ] || rescue "root device is not a block device: $ROOTDEV"
 
-msg "checking $ROOTDEV"
-if [ -x /bin/e2fsck ]; then
-    e2fsck -p "$ROOTDEV" || {
-        rc=$?
-        if [ "$rc" -gt 1 ]; then
-            rescue "filesystem check failed (e2fsck rc=$rc)"
+ROOTFSTYPE="$(blkid -o value -s TYPE "$ROOTDEV" 2>/dev/null || true)"
+case "$ROOTFSTYPE" in
+    ext2|ext3|ext4)
+        msg "checking $ROOTDEV ($ROOTFSTYPE)"
+        if [ -x /bin/e2fsck ]; then
+            e2fsck -p "$ROOTDEV" || {
+                rc=$?
+                if [ "$rc" -gt 1 ]; then
+                    rescue "filesystem check failed (e2fsck rc=$rc)"
+                fi
+            }
         fi
-    }
-fi
+        ;;
+    *)
+        msg "skipping e2fsck for ${ROOTFSTYPE:-unknown} root"
+        ;;
+esac
 
 msg "mounting $ROOTDEV"
-mount -o rw,noatime "$ROOTDEV" /newroot || rescue "failed to mount $ROOTDEV"
+MOUNT_OPTS="rw,noatime"
+[ -n "$ROOTFLAGS" ] && MOUNT_OPTS="$MOUNT_OPTS,$ROOTFLAGS"
+mount -o "$MOUNT_OPTS" "$ROOTDEV" /newroot || rescue "failed to mount $ROOTDEV with $MOUNT_OPTS"
 
 [ -x /newroot/sbin/init ] || rescue "/newroot/sbin/init is missing"
 
