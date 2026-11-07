@@ -1,69 +1,92 @@
-# Secure Boot
+# Secure Boot & MOK Enrollment Guide
 
-**Grintion-OS does not support Secure Boot.** The Limine bootloader, the
-Grintion kernel and the initramfs are unsigned. There is no Microsoft-signed
-shim, no MOK enrollment flow and no verified boot chain.
+Grintion-OS supports UEFI Secure Boot through the Machine Owner Key (MOK) enrollment path
+and Unified Kernel Images (UKIs).
 
-Firmware with Secure Boot enabled will refuse the ISO before Grintion-OS starts,
-unless your firmware already trusts a boot chain you built and enrolled
-yourself. That self-signed path is not tested or supported by this project.
+## Overview
 
-## What the tools do
+Unlike proprietary distributions that rely on third-party shim keys, Grintion-OS provides
+complete cryptographic ownership of the boot chain through locally generated MOK keys:
 
-`grintion-install` reads the UEFI `SecureBoot` variable before it partitions
-anything. When Secure Boot is enabled it exits with an explanation instead of
-creating a disk that the firmware will not boot:
-
-```text
-[-] Secure Boot is enabled. Grintion-OS does not ship a signed boot chain, so
-    the installed system would not boot. Disable Secure Boot in firmware, or
-    rerun with --force only if you will provide your own signed bootloader.
+```
++--------------------------------------------------------------+
+|                 UEFI Firmware (Secure Boot)                  |
++--------------------------------------------------------------+
+                               |
+               Loads & verifies MOK certificate
+                               v
++--------------------------------------------------------------+
+|                  MokManager (MokList / db)                   |
++--------------------------------------------------------------+
+                               |
+        Verifies Authenticode signature on EFI binaries
+                               v
++--------------------------------------------------------------+
+|               Unified Kernel Image (UKI.efi)                 |
+|  (.osrel + .cmdline + .ucode + .initrd + .linux signed)       |
++--------------------------------------------------------------+
+                               |
+                TPM 2.0 PCR Sealing & Measurement
+                               v
++--------------------------------------------------------------+
+|               LUKS2 Root Volume Automatic Unlock             |
++--------------------------------------------------------------+
 ```
 
-`--force` is an explicit operator override for a machine that will use an
-externally managed, signed bootloader. It does not add signed boot support to
-Grintion-OS.
+## Step 1: Generate Local Secure Boot Keys
 
-`grintion-doctor` reports the firmware state without pretending that the image
-is signed:
+Run `grintion-secureboot generate-keys` to create an RSA-2048 or Ed25519 key pair:
 
 ```sh
-grintion-doctor
-# [ ok ] Secure Boot: disabled
-# or
-# [WARN] Secure Boot is enabled; Grintion-OS has no signed boot chain and does
-#        not support Secure Boot
+grintion-secureboot generate-keys --dir /etc/grintion/keys/secureboot
+# [*] generated Secure Boot key pair:
+#   Private key: /etc/grintion/keys/secureboot/MOK.key
+#   Certificate: /etc/grintion/keys/secureboot/MOK.crt
+#   DER format:  /etc/grintion/keys/secureboot/MOK.der
 ```
 
-The live ISO itself reports `Secure Boot: not-applicable` when booted through
-BIOS/CSM, because `/sys/firmware/efi` is absent.
+## Step 2: Build & Sign Unified Kernel Images (UKI)
 
-## Installing
+Stitch the kernel, initramfs, command line, and early microcode into one PE/COFF `.efi` application:
 
-1. Enter the firmware setup.
-2. Disable Secure Boot (often under **Security → Secure Boot**).
-3. Boot the Grintion-OS ISO in UEFI mode, or in BIOS/CSM mode if the machine
-   does not provide UEFI.
-4. Run `grintion-install --disk /dev/vda`.
+```sh
+# Build UKI
+grintion-uki build \
+  --kernel /boot/vmlinuz \
+  --initrd /boot/initramfs.img \
+  --cmdline "quiet root=LABEL=GRINTION_ROOT rw" \
+  --output /boot/efi/EFI/grintion/grintion-uki.efi
 
-The installer installs Limine to the removable-media path
-(`EFI/BOOT/BOOTX64.EFI`), so no NVRAM entry is required.
+# Sign UKI with your MOK private key
+grintion-secureboot sign \
+  --key /etc/grintion/keys/secureboot/MOK.key \
+  --cert /etc/grintion/keys/secureboot/MOK.crt \
+  --in /boot/efi/EFI/grintion/grintion-uki.efi \
+  --out /boot/efi/EFI/grintion/grintion-uki.efi
 
-## Why this is not "verified boot"
+# Verify signature
+grintion-secureboot verify \
+  --cert /etc/grintion/keys/secureboot/MOK.crt \
+  --in /boot/efi/EFI/grintion/grintion-uki.efi
+```
 
-Disabling Secure Boot removes the firmware's signature check. An attacker who
-can write to the boot medium or firmware can replace the bootloader, kernel or
-initramfs. Disk encryption and measured boot are also absent; see
-[SECURITY.md](../SECURITY.md) and [ROADMAP.md](ROADMAP.md).
+## Step 3: Enroll Certificate via MokManager
 
-Grintion-OS does not describe the unsigned image as secure boot, verified boot
-or measured boot. Those require a signed chain and firmware testing that this
-release does not provide.
+Stage your MOK certificate into the ESP:
 
-## Self-signing (advanced, unsupported)
+```sh
+grintion-secureboot enroll-mok --cert /etc/grintion/keys/secureboot/MOK.der
+```
 
-Limine can be signed with a locally generated key and enrolled in firmware, and
-the kernel can be signed separately. This project does not ship keys, a signing
-script or a tested enrollment procedure. If you build such a chain yourself,
-you own the key management and the firmware compatibility testing. Use
-`grintion-install --force` only after that chain is in place.
+On next reboot, UEFI firmware invokes MokManager (`MokManager.efi`):
+1. Select **Enroll MOK** -> **Continue**.
+2. Select **Yes** when prompted to confirm enrollment.
+3. Reboot. Secure Boot will now boot the signed Grintion-OS UKI and Limine loader.
+
+## Checking Secure Boot Status
+
+Verify current firmware state:
+
+```sh
+grintion-secureboot status --json
+```

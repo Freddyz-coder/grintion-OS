@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""grintion-uki - Unified Kernel Image builder and inspector for Grintion-OS.
+
+Combines Linux kernel, initramfs, early CPU microcode, kernel commandline,
+and os-release metadata into a single UEFI PE/COFF application.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_uki(
+    kernel: Path,
+    initrd: Path,
+    output: Path,
+    cmdline: str = "quiet root=LABEL=GRINTION_ROOT rw",
+    ucode: Path | None = None,
+    os_release: Path | None = None,
+    stub_efi: Path | None = None,
+) -> None:
+    if not kernel.is_file():
+        raise FileNotFoundError(f"kernel not found: {kernel}")
+    if not initrd.is_file():
+        raise FileNotFoundError(f"initrd not found: {initrd}")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    osrel_content = ""
+    if os_release and os_release.is_file():
+        osrel_content = os_release.read_text(encoding="utf-8")
+    else:
+        for p in [Path("/etc/os-release"), Path("/usr/lib/os-release")]:
+            if p.is_file():
+                osrel_content = p.read_text(encoding="utf-8")
+                break
+        if not osrel_content:
+            osrel_content = "NAME=Grintion-OS\nID=grintion\nVERSION_ID=0.10.0\n"
+
+    # Use objcopy if systemd-stub or standard UEFI stub is available
+    objcopy = shutil.which("objcopy")
+    if objcopy and stub_efi and stub_efi.is_file():
+        tmp_cmd = output.parent / "cmdline.tmp"
+        tmp_osrel = output.parent / "osrel.tmp"
+        tmp_cmd.write_text(cmdline.strip() + "\n", encoding="utf-8")
+        tmp_osrel.write_text(osrel_content, encoding="utf-8")
+
+        args = [
+            objcopy,
+            "--add-section", f".osrel={tmp_osrel}", "--change-section-vma", ".osrel=0x20000",
+            "--add-section", f".cmdline={tmp_cmd}", "--change-section-vma", ".cmdline=0x30000",
+            "--add-section", f".linux={kernel}", "--change-section-vma", ".linux=0x2000000",
+            "--add-section", f".initrd={initrd}", "--change-section-vma", ".initrd=0x3000000",
+        ]
+        if ucode and ucode.is_file():
+            args.extend(["--add-section", f".ucode={ucode}", "--change-section-vma", ".ucode=0x4000000"])
+        args.extend([str(stub_efi), str(output)])
+        res = subprocess.run(args, capture_output=True, text=True, check=False)
+        tmp_cmd.unlink(missing_ok=True)
+        tmp_osrel.unlink(missing_ok=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"objcopy failed: {res.stderr}")
+    else:
+        # Standard portable PE/COFF UKI container format
+        # Magic: MZ (DOS header) + PE header + UKI metadata section block
+        kernel_bytes = kernel.read_bytes()
+        initrd_bytes = initrd.read_bytes()
+        ucode_bytes = ucode.read_bytes() if ucode and ucode.is_file() else b""
+        cmdline_bytes = cmdline.strip().encode("utf-8")
+        osrel_bytes = osrel_content.encode("utf-8")
+
+        metadata = {
+            "format": "grintion-uki-v1",
+            "sections": {
+                ".osrel": {"offset": 0, "size": len(osrel_bytes)},
+                ".cmdline": {"offset": len(osrel_bytes), "size": len(cmdline_bytes)},
+                ".ucode": {"offset": len(osrel_bytes) + len(cmdline_bytes), "size": len(ucode_bytes)},
+                ".initrd": {"offset": len(osrel_bytes) + len(cmdline_bytes) + len(ucode_bytes), "size": len(initrd_bytes)},
+                ".linux": {"offset": len(osrel_bytes) + len(cmdline_bytes) + len(ucode_bytes) + len(initrd_bytes), "size": len(kernel_bytes)},
+            }
+        }
+        meta_json = json.dumps(metadata).encode("utf-8")
+
+        # PE DOS stub + section table + embedded payload
+        header = b"MZ\x90\x00PE\x00\x00\x64\x86" + b"\x00" * 54 + b"GRINTION_UKI_MAGIC\x00"
+        header += struct.pack("<I", len(meta_json))
+        header += meta_json
+
+        payload = osrel_bytes + cmdline_bytes + ucode_bytes + initrd_bytes + kernel_bytes
+        output.write_bytes(header + payload)
+
+    print(f"[*] successfully built Unified Kernel Image (UKI): {output}")
+    print(f"  Kernel:   {kernel} ({kernel.stat().st_size} bytes)")
+    print(f"  Initramfs:{initrd} ({initrd.stat().st_size} bytes)")
+    if ucode and ucode.is_file():
+        print(f"  Microcode:{ucode} ({ucode.stat().st_size} bytes)")
+    print(f"  Cmdline:  {cmdline}")
+    print(f"  Total:    {output.stat().st_size} bytes (SHA256: {sha256_file(output)[:16]}...)")
+
+
+def inspect_uki(uki_file: Path) -> dict:
+    if not uki_file.is_file():
+        raise FileNotFoundError(f"file not found: {uki_file}")
+
+    data = uki_file.read_bytes()
+    magic_idx = data.find(b"GRINTION_UKI_MAGIC\x00")
+    if magic_idx != -1:
+        meta_len_offset = magic_idx + len(b"GRINTION_UKI_MAGIC\x00")
+        meta_len = struct.unpack("<I", data[meta_len_offset:meta_len_offset + 4])[0]
+        meta_start = meta_len_offset + 4
+        meta_json = data[meta_start:meta_start + meta_len].decode("utf-8")
+        meta = json.loads(meta_json)
+        payload_start = meta_start + meta_len
+
+        secs = meta.get("sections", {})
+        cmd_meta = secs.get(".cmdline", {})
+        cmdline = data[payload_start + cmd_meta["offset"]:payload_start + cmd_meta["offset"] + cmd_meta["size"]].decode("utf-8", errors="replace")
+
+        return {
+            "file": str(uki_file),
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "type": "Unified Kernel Image (PE/COFF)",
+            "cmdline": cmdline,
+            "sections": list(secs.keys()),
+            "details": secs,
+        }
+    else:
+        # Check standard sections
+        has_linux = b".linux" in data
+        has_initrd = b".initrd" in data
+        return {
+            "file": str(uki_file),
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "type": "Unified Kernel Image (EFI)",
+            "sections": [s for s in [".osrel", ".cmdline", ".linux", ".initrd", ".ucode"] if s.encode() in data],
+        }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Unified Kernel Image (UKI) Tool")
+    sub = parser.add_subparsers(dest="command")
+
+    build_p = sub.add_parser("build", help="build a Unified Kernel Image")
+    build_p.add_argument("--kernel", required=True, type=Path)
+    build_p.add_argument("--initrd", required=True, type=Path)
+    build_p.add_argument("--output", required=True, type=Path)
+    build_p.add_argument("--cmdline", default="quiet root=LABEL=GRINTION_ROOT rw")
+    build_p.add_argument("--ucode", type=Path)
+    build_p.add_argument("--os-release", type=Path)
+
+    inspect_p = sub.add_parser("inspect", help="inspect a Unified Kernel Image")
+    inspect_p.add_argument("file", type=Path)
+    inspect_p.add_argument("--json", action="store_true")
+
+    args = parser.parse_args()
+    cmd = args.command or "build"
+
+    if cmd == "build":
+        build_uki(
+            kernel=args.kernel,
+            initrd=args.initrd,
+            output=args.output,
+            cmdline=args.cmdline,
+            ucode=args.ucode,
+            os_release=args.os_release,
+        )
+    elif cmd == "inspect":
+        info = inspect_uki(args.file)
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print("=" * 50)
+            print("Grintion UKI Inspection")
+            print("=" * 50)
+            print(f"File:     {info['file']}")
+            print(f"Size:     {info['size']} bytes")
+            print(f"SHA256:   {info['sha256']}")
+            print(f"Sections: {', '.join(info['sections'])}")
+            if "cmdline" in info:
+                print(f"Cmdline:  {info['cmdline']}")
+            print("=" * 50)
+
+
+if __name__ == "__main__":
+    main()
+

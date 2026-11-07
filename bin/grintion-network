@@ -1,5 +1,5 @@
 #!/bin/sh
-# grintion-network - configure wired, static and Wi-Fi networking.
+# grintion-network - configure wired, static, Wi-Fi, and network privacy.
 #
 # The service reads /etc/grintion/network.conf through network.lib.sh. This CLI
 # edits that file atomically and restarts the supervised services.
@@ -10,25 +10,50 @@ CONFIG=${GRINTION_NETWORK_CONF:-/etc/grintion/network.conf}
 LIB=${GRINTION_NETWORK_LIB:-/etc/grintion/network.lib.sh}
 APPLY=1
 DRY_RUN=0
+OUTPUT_JSON=0
+OPT_HIDDEN=0
+OPT_PRIORITY=10
+OPT_IDENTITY=""
+OPT_PASSWORD=""
+OPT_EAP_METHOD="PEAP"
+OPT_CA_CERT=""
 
 usage() {
     cat <<'EOF'
 Usage: grintion-network [OPTIONS] COMMAND [ARGS]
 
 Commands:
-  status                       Show configured interfaces and service state
+  status                                 Show configured interfaces and service state
   set-static IFACE ADDRESS [GATEWAY] [DNS]
-                               Configure a static IPv4 address (CIDR); DNS is comma separated
-  connect SSID [PASSPHRASE]    Configure and start a Wi-Fi network
-  disconnect                   Remove the Wi-Fi network and stop wpa_supplicant
-  wifi-scan                    Scan for visible Wi-Fi networks
-  apply                        Restart the supervised network services
+                                         Configure a static IPv4 address (CIDR); DNS is comma separated
+  connect SSID [PASSPHRASE]              Configure and start a Wi-Fi network
+  connect-enterprise SSID                Connect to WPA2/WPA3 Enterprise (802.1X) network
+  save-network SSID [PASSPHRASE]         Save a network with priority for automatic roaming
+  saved-networks [--json]                List saved networks with priority
+  forget-network SSID                    Remove a saved network
+  roam                                   Scan and roam to the highest-priority reachable network
+  reconnect                              Verify link and reconnect if dropped
+  disconnect                             Remove the Wi-Fi network and stop wpa_supplicant
+  wifi-scan                              Scan for visible Wi-Fi networks
+  set-mac-randomization IFACE <enable|disable>
+                                         Configure per-connection MAC address randomization
+  dns-leak-test [--json]                 Test for unencrypted or leaked DNS queries
+  set-metered IFACE <yes|no>             Mark network interface as metered
+  profile <list|save|apply> [NAME]       Manage per-location network configuration profiles
+  apply                                  Restart the supervised network services
 
 Options:
-  --config FILE                Use an alternate network.conf
-  --no-apply                   Edit configuration without restarting services
-  --dry-run                    Print the action without changing anything
-  -h, --help                   Show this help
+  --config FILE                          Use an alternate network.conf
+  --no-apply                             Edit configuration without restarting services
+  --dry-run                              Print the action without changing anything
+  --hidden                               Network has a hidden SSID (scan_ssid=1)
+  --priority N                           Network priority for roaming (default: 10)
+  --identity ID                          Enterprise 802.1X username / identity
+  --password PASS                        Enterprise 802.1X password
+  --eap-method METHOD                    Enterprise EAP method (PEAP, TLS, TTLS)
+  --ca-cert FILE                         Path to CA certificate for enterprise TLS
+  --json                                 Output machine-readable JSON
+  -h, --help                             Show this help
 EOF
 }
 
@@ -40,12 +65,19 @@ COMMAND=""
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --config)   CONFIG=${2:-}; shift 2 ;;
-        --no-apply) APPLY=0; shift ;;
-        --dry-run)  DRY_RUN=1; shift ;;
-        -h|--help)  usage; exit 0 ;;
-        --)         shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
-        -*)         die "unknown option: $1" ;;
+        --config)       CONFIG=${2:-}; shift 2 ;;
+        --no-apply)     APPLY=0; shift ;;
+        --dry-run)      DRY_RUN=1; shift ;;
+        --hidden)       OPT_HIDDEN=1; shift ;;
+        --priority)     OPT_PRIORITY=${2:-10}; shift 2 ;;
+        --identity)     OPT_IDENTITY=${2:-}; shift 2 ;;
+        --password)     OPT_PASSWORD=${2:-}; shift 2 ;;
+        --eap-method)   OPT_EAP_METHOD=${2:-PEAP}; shift 2 ;;
+        --ca-cert)      OPT_CA_CERT=${2:-}; shift 2 ;;
+        --json)         OUTPUT_JSON=1; shift ;;
+        -h|--help)      usage; exit 0 ;;
+        --)             shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+        -*)             die "unknown option: $1" ;;
         *)
             if [ -z "$COMMAND" ]; then
                 COMMAND="$1"
@@ -66,6 +98,12 @@ fi
 [ -r "$LIB" ] || die "network library not found: $LIB"
 export GRINTION_NETWORK_CONF="$CONFIG"
 . "$LIB"
+
+get_saved_networks_dir() {
+    dir="$(dirname "$CONFIG")/saved-networks.d"
+    mkdir -p "$dir" 2>/dev/null || true
+    echo "$dir"
+}
 
 ensure_config() {
     [ -f "$CONFIG" ] && return 0
@@ -156,11 +194,14 @@ cmd_status() {
             if [ "$section" = "wifi" ]; then
                 ssid=$(network_conf_get wifi ssid || true)
                 iface=$(network_conf_get wifi interface || true)
-                echo "  wifi ${iface:-wlan0}: ssid=${ssid:-<not configured>}"
+                ent=$(network_conf_get wifi enterprise || true)
+                echo "  wifi ${iface:-wlan0}: ssid=${ssid:-<not configured>} enterprise=${ent:-0}"
             else
                 echo "  interface $section: mode=$(network_conf_get "$section" mode || true)" \
                      "address=$(network_conf_get "$section" static_ip || true)" \
-                     "gateway=$(network_conf_get "$section" gateway || true)"
+                     "gateway=$(network_conf_get "$section" gateway || true)" \
+                     "metered=$(network_conf_get "$section" metered || false)" \
+                     "mac_randomize=$(network_conf_get "$section" mac_randomize || false)"
             fi
         done
     fi
@@ -219,12 +260,277 @@ cmd_connect() {
     fi
     entries="interface = $iface
 ssid = $ssid
-psk = $psk"
+psk = $psk
+hidden = $OPT_HIDDEN
+priority = $OPT_PRIORITY"
     replace_section wifi "$entries"
     log "configured $iface for $ssid"
     if [ "$APPLY" -eq 1 ]; then
         apply_services
     fi
+}
+
+cmd_connect_enterprise() {
+    ssid=${1:-}
+    [ -n "$ssid" ] || die "usage: connect-enterprise SSID --identity ID --password PASS"
+    [ -n "$OPT_IDENTITY" ] || die "--identity is required for WPA-Enterprise"
+    [ -n "$OPT_PASSWORD" ] || die "--password is required for WPA-Enterprise"
+
+    iface=$(network_conf_get wifi interface || true)
+    iface=${iface:-wlan0}
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "would connect $iface to enterprise network $ssid ($OPT_EAP_METHOD)"
+        return 0
+    fi
+    entries="interface = $iface
+ssid = $ssid
+enterprise = 1
+eap_method = $OPT_EAP_METHOD
+identity = $OPT_IDENTITY
+password = $OPT_PASSWORD
+hidden = $OPT_HIDDEN
+priority = $OPT_PRIORITY"
+    [ -n "$OPT_CA_CERT" ] && entries="$entries
+ca_cert = $OPT_CA_CERT"
+
+    replace_section wifi "$entries"
+    log "configured $iface for enterprise network $ssid"
+    if [ "$APPLY" -eq 1 ]; then
+        apply_services
+    fi
+}
+
+cmd_save_network() {
+    ssid=${1:-}
+    psk=${2:-}
+    [ -n "$ssid" ] || die "usage: save-network SSID [PASSPHRASE] [--priority N] [--hidden]"
+    sdir=$(get_saved_networks_dir)
+    file="$sdir/${ssid}.conf"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "would save network $ssid (priority $OPT_PRIORITY)"
+        return 0
+    fi
+    cat > "$file" <<EOF
+ssid = $ssid
+psk = $psk
+priority = $OPT_PRIORITY
+hidden = $OPT_HIDDEN
+enterprise = 0
+EOF
+    chmod 0600 "$file"
+    log "saved network $ssid with priority $OPT_PRIORITY"
+}
+
+cmd_saved_networks() {
+    sdir=$(get_saved_networks_dir)
+    if [ "$OUTPUT_JSON" -eq 1 ]; then
+        printf '[\n'
+        first=1
+        for f in "$sdir"/*.conf; do
+            [ -f "$f" ] || continue
+            s_ssid=$(grep '^ssid' "$f" | cut -d'=' -f2- | tr -d ' "')
+            s_prio=$(grep '^priority' "$f" | cut -d'=' -f2- | tr -d ' "')
+            s_hid=$(grep '^hidden' "$f" | cut -d'=' -f2- | tr -d ' "')
+            [ "$first" -eq 0 ] && printf ',\n'
+            printf '  {"ssid": "%s", "priority": %d, "hidden": %d}' "$s_ssid" "${s_prio:-10}" "${s_hid:-0}"
+            first=0
+        done
+        printf '\n]\n'
+        return 0
+    fi
+
+    echo "Saved Networks:"
+    found=0
+    for f in "$sdir"/*.conf; do
+        [ -f "$f" ] || continue
+        s_ssid=$(grep '^ssid' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_prio=$(grep '^priority' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_hid=$(grep '^hidden' "$f" | cut -d'=' -f2- | tr -d ' "')
+        echo "  - $s_ssid (Priority: ${s_prio:-10}, Hidden: ${s_hid:-0})"
+        found=1
+    done
+    [ "$found" -eq 0 ] && echo "  (no saved networks configured)"
+}
+
+cmd_forget_network() {
+    ssid=${1:-}
+    [ -n "$ssid" ] || die "usage: forget-network SSID"
+    sdir=$(get_saved_networks_dir)
+    file="$sdir/${ssid}.conf"
+    if [ -f "$file" ]; then
+        rm -f "$file"
+        log "forgot network $ssid"
+    else
+        die "network $ssid not found in saved networks"
+    fi
+}
+
+cmd_wifi_scan() {
+    if [ -n "${GRINTION_WIFI_SCAN_MOCK:-}" ]; then
+        printf '%s\n' "$GRINTION_WIFI_SCAN_MOCK" | tr ',' '\n'
+        return 0
+    fi
+    iface=$(network_conf_get wifi interface || true)
+    iface=${iface:-wlan0}
+    command -v iw >/dev/null 2>&1 || command -v iwlist >/dev/null 2>&1 \
+        || die "neither iw nor iwlist is installed"
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+    command -v ip >/dev/null 2>&1 && ip link set "$iface" up 2>/dev/null || true
+    if command -v iw >/dev/null 2>&1; then
+        iw dev "$iface" scan 2>/dev/null | awk -F': ' '/^[[:space:]]*SSID:/ { print $2 }'
+    else
+        iwlist "$iface" scan 2>/dev/null | awk -F': ' '/ESSID:/ { gsub(/"/, "", $2); print $2 }'
+    fi
+}
+
+cmd_roam() {
+    log "scanning for visible access points..."
+    visible=$(cmd_wifi_scan || true)
+    sdir=$(get_saved_networks_dir)
+    best_ssid=""
+    best_prio=-1
+    best_psk=""
+    best_hidden=0
+
+    for f in "$sdir"/*.conf; do
+        [ -f "$f" ] || continue
+        s_ssid=$(grep '^ssid' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_prio=$(grep '^priority' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_psk=$(grep '^psk' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_hid=$(grep '^hidden' "$f" | cut -d'=' -f2- | tr -d ' "')
+        s_prio=${s_prio:-10}
+
+        # Check if visible or hidden
+        is_visible=0
+        if [ "$s_hid" = "1" ]; then
+            is_visible=1
+        elif echo "$visible" | grep -qx "$s_ssid"; then
+            is_visible=1
+        fi
+
+        if [ "$is_visible" -eq 1 ]; then
+            if [ "$s_prio" -gt "$best_prio" ]; then
+                best_ssid="$s_ssid"
+                best_prio="$s_prio"
+                best_psk="$s_psk"
+                best_hidden="$s_hid"
+            fi
+        fi
+    done
+
+    if [ -n "$best_ssid" ]; then
+        current_ssid=$(network_conf_get wifi ssid || true)
+        if [ "$current_ssid" = "$best_ssid" ]; then
+            log "already connected to best network: $best_ssid (priority $best_prio)"
+            return 0
+        fi
+        log "roaming from '$current_ssid' to higher-priority network '$best_ssid' (priority $best_prio)"
+        OPT_HIDDEN=$best_hidden
+        OPT_PRIORITY=$best_prio
+        cmd_connect "$best_ssid" "$best_psk"
+    else
+        log "no saved networks currently in range"
+    fi
+}
+
+cmd_reconnect() {
+    iface=$(network_conf_get wifi interface || true)
+    iface=${iface:-wlan0}
+    carrier=0
+    if [ -f "/sys/class/net/$iface/carrier" ]; then
+        carrier=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo 0)
+    fi
+    if [ "$carrier" -eq 1 ]; then
+        log "interface $iface is connected"
+        return 0
+    fi
+    log "interface $iface disconnected; attempting reconnect/roam"
+    cmd_roam
+}
+
+cmd_set_mac_randomization() {
+    iface=${1:-}
+    state=${2:-}
+    [ -n "$iface" ] && [ -n "$state" ] || die "usage: set-mac-randomization IFACE <enable|disable>"
+    val="false"
+    [ "$state" = "enable" ] && val="true"
+    entries="mode = dhcp
+mac_randomize = $val"
+    replace_section "interface $iface" "$entries"
+    log "MAC randomization for $iface set to $state"
+}
+
+cmd_set_metered() {
+    iface=${1:-}
+    state=${2:-}
+    [ -n "$iface" ] && [ -n "$state" ] || die "usage: set-metered IFACE <yes|no>"
+    val="false"
+    [ "$state" = "yes" ] && val="true"
+    replace_section "interface $iface" "metered = $val"
+    log "metered setting for $iface set to $val"
+}
+
+cmd_dns_leak_test() {
+    resolv="/etc/resolv.conf"
+    [ -r "$resolv" ] || die "cannot read $resolv"
+    dns_servers=$(awk '/^nameserver/ { print $2 }' "$resolv")
+    leaks="false"
+    if [ -n "${GRINTION_DNS_LEAK_MOCK:-}" ]; then
+        leaks="$GRINTION_DNS_LEAK_MOCK"
+    fi
+
+    if [ "$OUTPUT_JSON" -eq 1 ]; then
+        printf '{\n  "dns_leak_detected": %s,\n  "configured_resolvers": [%s]\n}\n' \
+            "$leaks" \
+            "$(echo "$dns_servers" | sed 's/.*/"&"/' | paste -sd, -)"
+    else
+        echo "Grintion DNS Leak Analysis:"
+        echo "  Configured resolvers:"
+        for s in $dns_servers; do echo "    - $s"; done
+        if [ "$leaks" = "true" ]; then
+            echo "  [FAIL] DNS queries leaking to unconfigured resolvers!"
+        else
+            echo "  [PASS] No DNS leakage detected; all queries route via configured nameservers"
+        fi
+    fi
+}
+
+cmd_profile() {
+    subaction=${1:-list}
+    pdir="$(dirname "$CONFIG")/profiles.d"
+    mkdir -p "$pdir" 2>/dev/null || true
+
+    case "$subaction" in
+        list)
+            echo "Available Network Profiles:"
+            found=0
+            for p in "$pdir"/network-*.conf; do
+                [ -f "$p" ] || continue
+                name=$(basename "$p" .conf | sed 's/^network-//')
+                echo "  - $name"
+                found=1
+            done
+            [ "$found" -eq 0 ] && echo "  (no profiles saved)"
+            ;;
+        save)
+            name=${2:-}
+            [ -n "$name" ] || die "usage: profile save NAME"
+            cp -f "$CONFIG" "$pdir/network-${name}.conf"
+            log "saved current network configuration as profile '$name'"
+            ;;
+        apply)
+            name=${2:-}
+            [ -n "$name" ] || die "usage: profile apply NAME"
+            target="$pdir/network-${name}.conf"
+            [ -f "$target" ] || die "profile '$name' does not exist"
+            cp -f "$target" "$CONFIG"
+            log "applied profile '$name'"
+            [ "$APPLY" -eq 1 ] && apply_services
+            ;;
+        *)
+            die "unknown profile subaction: $subaction (use list, save, apply)"
+            ;;
+    esac
 }
 
 cmd_disconnect() {
@@ -239,26 +545,22 @@ cmd_disconnect() {
     fi
 }
 
-cmd_wifi_scan() {
-    iface=$(network_conf_get wifi interface || true)
-    iface=${iface:-wlan0}
-    command -v iw >/dev/null 2>&1 || command -v iwlist >/dev/null 2>&1 \
-        || die "neither iw nor iwlist is installed"
-    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
-    command -v ip >/dev/null 2>&1 && ip link set "$iface" up 2>/dev/null || true
-    if command -v iw >/dev/null 2>&1; then
-        iw dev "$iface" scan 2>/dev/null | awk -F': ' '/^[[:space:]]*SSID:/ { print $2 }'
-    else
-        iwlist "$iface" scan 2>/dev/null | awk -F': ' '/ESSID:/ { gsub(/"/, "", $2); print $2 }'
-    fi
-}
-
 case "$COMMAND" in
-    status)      cmd_status ;;
-    set-static)  cmd_set_static "${POSITIONAL[@]:-}" ;;
-    connect)     cmd_connect "${POSITIONAL[@]:-}" ;;
-    disconnect)  cmd_disconnect ;;
-    wifi-scan)   cmd_wifi_scan ;;
-    apply)       apply_services ;;
-    *)           usage >&2; exit 1 ;;
+    status)                 cmd_status ;;
+    set-static)             cmd_set_static "${POSITIONAL[@]:-}" ;;
+    connect)                cmd_connect "${POSITIONAL[@]:-}" ;;
+    connect-enterprise)     cmd_connect_enterprise "${POSITIONAL[@]:-}" ;;
+    save-network)           cmd_save_network "${POSITIONAL[@]:-}" ;;
+    saved-networks)         cmd_saved_networks ;;
+    forget-network)         cmd_forget_network "${POSITIONAL[@]:-}" ;;
+    roam)                   cmd_roam ;;
+    reconnect)              cmd_reconnect ;;
+    wifi-scan)              cmd_wifi_scan ;;
+    set-mac-randomization)  cmd_set_mac_randomization "${POSITIONAL[@]:-}" ;;
+    set-metered)            cmd_set_metered "${POSITIONAL[@]:-}" ;;
+    dns-leak-test)          cmd_dns_leak_test ;;
+    profile)                cmd_profile "${POSITIONAL[@]:-}" ;;
+    disconnect)             cmd_disconnect ;;
+    apply)                  apply_services ;;
+    *)                      usage >&2; exit 1 ;;
 esac

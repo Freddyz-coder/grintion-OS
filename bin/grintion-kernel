@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""grintion-kernel - multi-kernel manager and bootloader entry coordinator.
+
+Discovers installed kernel versions (e.g. linux-grintion, linux-lts, linux-hardened),
+inspects bootloader entries, and updates default boot kernels in Limine.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def list_installed_kernels(boot_dir: Path | None = None) -> list[dict]:
+    boot = boot_dir or root_path("/boot")
+    kernels = []
+    if not boot.is_dir():
+        return kernels
+
+    limine_conf = boot / "limine.conf"
+    default_entry = ""
+    if limine_conf.is_file():
+        content = limine_conf.read_text(encoding="utf-8")
+        m = re.search(r"^\s*default_entry:\s*(\d+)", content, re.MULTILINE)
+        if m:
+            default_entry = m.group(1)
+
+    kernel_files = sorted(boot.glob("vmlinuz*"))
+    for idx, kf in enumerate(kernel_files):
+        name = kf.name
+        version_str = name.removeprefix("vmlinuz-").removeprefix("vmlinuz") or "default"
+        # Check matching initramfs
+        initramfs_file = boot / f"initramfs-{version_str}.img"
+        if not initramfs_file.exists():
+            fallback_init = boot / "initramfs.img"
+            if fallback_init.exists():
+                initramfs_file = fallback_init
+
+        is_default = (str(idx + 1) == default_entry) or (idx == 0 and not default_entry)
+
+        kernels.append({
+            "index": idx + 1,
+            "name": name,
+            "version": version_str,
+            "path": str(kf),
+            "initramfs": str(initramfs_file) if initramfs_file.exists() else None,
+            "is_default": is_default,
+            "size_bytes": kf.stat().st_size,
+        })
+
+    return kernels
+
+
+def set_default_kernel(index: int, boot_dir: Path | None = None) -> None:
+    boot = boot_dir or root_path("/boot")
+    limine_conf = boot / "limine.conf"
+    if not limine_conf.is_file():
+        limine_conf.parent.mkdir(parents=True, exist_ok=True)
+        limine_conf.write_text(f"timeout: 3\ndefault_entry: {index}\n")
+        print(f"[*] created {limine_conf} with default_entry {index}")
+        return
+
+    content = limine_conf.read_text(encoding="utf-8")
+    if "default_entry:" in content:
+        new_content = re.sub(r"default_entry:\s*\d+", f"default_entry: {index}", content)
+    else:
+        new_content = f"default_entry: {index}\n" + content
+    limine_conf.write_text(new_content, encoding="utf-8")
+    print(f"[*] set Limine default_entry to {index}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Multi-Kernel Manager")
+    sub = parser.add_subparsers(dest="command")
+
+    list_p = sub.add_parser("list", help="list installed kernels")
+    list_p.add_argument("--json", action="store_true")
+    list_p.add_argument("--boot", type=Path)
+
+    set_p = sub.add_parser("set-default", help="set default boot kernel index")
+    set_p.add_argument("index", type=int)
+    set_p.add_argument("--boot", type=Path)
+
+    args = parser.parse_args()
+    cmd = args.command or "list"
+
+    if cmd == "list":
+        kernels = list_installed_kernels(args.boot)
+        if getattr(args, "json", False):
+            print(json.dumps(kernels, indent=2))
+        else:
+            print("=" * 60)
+            print("Installed Grintion-OS Kernels")
+            print("=" * 60)
+            for k in kernels:
+                def_str = " [DEFAULT]" if k["is_default"] else ""
+                print(f"[{k['index']}] {k['name']}{def_str} (initramfs: {k['initramfs'] or 'MISSING'})")
+            print("=" * 60)
+    elif cmd == "set-default":
+        set_default_kernel(args.index, args.boot)
+
+
+if __name__ == "__main__":
+    main()
+

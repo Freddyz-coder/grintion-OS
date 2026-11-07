@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "description": "Grintion-OS Hardware Compatibility List (HCL) Database",
+  "updated": "2026-11-07",
+  "vendors": {
+    "system": [
+      {
+        "vendor": "QEMU",
+        "product": "Standard PC (Q35 + ICH9, 2009)",
+        "status": "verified",
+        "notes": "Verified test baseline for UEFI and BIOS virtualization"
+      },
+      {
+        "vendor": "QEMU",
+        "product": "Standard PC (i440FX + PIIX, 1996)",
+        "status": "verified",
+        "notes": "Verified legacy BIOS and SeaBIOS guest environment"
+      },
+      {
+        "vendor": "Dell Inc.",
+        "product": "Latitude 5420",
+        "status": "verified",
+        "notes": "Verified physical reference machine (Intel 11th Gen Tiger Lake, NVMe, Wi-Fi 6 AX201)"
+      },
+      {
+        "vendor": "LENOVO",
+        "product": "ThinkPad T480",
+        "status": "verified",
+        "notes": "Verified physical reference machine (Intel 8th Gen Kaby Lake R, Dual Battery, e1000e)"
+      },
+      {
+        "vendor": "LENOVO",
+        "product": "ThinkPad T14 Gen 2",
+        "status": "verified",
+        "notes": "Verified physical reference machine (AMD Ryzen 5 Pro 5650U, Realtek Wi-Fi, NVMe)"
+      },
+      {
+        "vendor": "HP",
+        "product": "ProBook 450 G8",
+        "status": "compatible",
+        "notes": "Compatible workstation hardware (Intel Core i5-1135G7, Intel Iris Xe)"
+      }
+    ],
+    "cpu": [
+      {
+        "vendor": "GenuineIntel",
+        "family": "x86_64",
+        "status": "verified",
+        "microcode": "intel-ucode"
+      },
+      {
+        "vendor": "AuthenticAMD",
+        "family": "x86_64",
+        "status": "verified",
+        "microcode": "amd-ucode"
+      }
+    ],
+    "pci": [
+      {
+        "device_id": "8086:100e",
+        "class": "0200",
+        "name": "Intel 82540EM Gigabit Ethernet (e1000)",
+        "status": "verified",
+        "driver": "e1000"
+      },
+      {
+        "device_id": "8086:10d3",
+        "class": "0200",
+        "name": "Intel 82574L Gigabit Network Connection (e1000e)",
+        "status": "verified",
+        "driver": "e1000e"
+      },
+      {
+        "device_id": "1af4:1000",
+        "class": "0200",
+        "name": "Red Hat Virtio Network Device",
+        "status": "verified",
+        "driver": "virtio_net"
+      },
+      {
+        "device_id": "10ec:8139",
+        "class": "0200",
+        "name": "Realtek RTL-8139/8139C/8139C+",
+        "status": "verified",
+        "driver": "8139cp"
+      },
+      {
+        "device_id": "10ec:8168",
+        "class": "0200",
+        "name": "Realtek RTL8111/8168/8411 PCI Express Gigabit Ethernet",
+        "status": "verified",
+        "driver": "r8169"
+      },
+      {
+        "device_id": "8086:0085",
+        "class": "0280",
+        "name": "Intel Centrino Advanced-N 6205",
+        "status": "verified",
+        "driver": "iwlwifi",
+        "firmware": "iwlwifi-6000g2a-firmware"
+      },
+      {
+        "device_id": "8086:095a",
+        "class": "0280",
+        "name": "Intel Dual Band Wireless-AC 7265",
+        "status": "verified",
+        "driver": "iwlwifi",
+        "firmware": "iwlwifi-7265D-firmware"
+      },
+      {
+        "device_id": "8086:2723",
+        "class": "0280",
+        "name": "Intel Wi-Fi 6 AX200",
+        "status": "verified",
+        "driver": "iwlwifi",
+        "firmware": "iwlwifi-cc-a0-firmware"
+      },
+      {
+        "device_id": "8086:4070",
+        "class": "0280",
+        "name": "Intel Wi-Fi 6 AX201",
+        "status": "verified",
+        "driver": "iwlwifi",
+        "firmware": "iwlwifi-so-a0-hr-b0-firmware"
+      },
+      {
+        "device_id": "168c:002b",
+        "class": "0280",
+        "name": "Qualcomm Atheros AR9285 Wireless Network Adapter",
+        "status": "verified",
+        "driver": "ath9k",
+        "firmware": "open-source (in-tree)"
+      },
+      {
+        "device_id": "168c:003e",
+        "class": "0280",
+        "name": "Qualcomm Atheros QCA6174 802.11ac Wireless Adapter",
+        "status": "compatible",
+        "driver": "ath10k_pci",
+        "firmware": "ath10k-qca6174-firmware"
+      },
+      {
+        "device_id": "10ec:c821",
+        "class": "0280",
+        "name": "Realtek RTL8821CE 802.11ac PCIe Wireless Adapter",
+        "status": "compatible",
+        "driver": "rtw88_8821ce",
+        "firmware": "rtw88-firmware"
+      },
+      {
+        "device_id": "1af4:1050",
+        "class": "0300",
+        "name": "Red Hat Virtio GPU",
+        "status": "verified",
+        "driver": "virtio-gpu"
+      },
+      {
+        "device_id": "8086:9a49",
+        "class": "0300",
+        "name": "Intel TigerLake-LP GT2 [Iris Xe Graphics]",
+        "status": "verified",
+        "driver": "i915",
+        "firmware": "i915-firmware"
+      },
+      {
+        "device_id": "1002:1636",
+        "class": "0300",
+        "name": "AMD Cezanne [Radeon Vega Series]",
+        "status": "verified",
+        "driver": "amdgpu",
+        "firmware": "amdgpu-firmware"
+      },
+      {
+        "device_id": "10de:1c82",
+        "class": "0300",
+        "name": "NVIDIA GeForce GTX 1050 Ti (GP107)",
+        "status": "compatible",
+        "driver": "nouveau",
+        "firmware": "nouveau-firmware"
+      },
+      {
+        "device_id": "8086:293e",
+        "class": "0403",
+        "name": "Intel 82801I (ICH9 Family) HD Audio",
+        "status": "verified",
+        "driver": "snd_hda_intel"
+      },
+      {
+        "device_id": "1af4:1001",
+        "class": "0100",
+        "name": "Red Hat Virtio Block Device",
+        "status": "verified",
+        "driver": "virtio_blk"
+      },
+      {
+        "device_id": "8086:2922",
+        "class": "0106",
+        "name": "Intel ICH9 6-port SATA Controller [AHCI mode]",
+        "status": "verified",
+        "driver": "ahci"
+      },
+      {
+        "device_id": "144d:a808",
+        "class": "0108",
+        "name": "Samsung NVMe SSD Controller 970 EVO/EVO Plus",
+        "status": "verified",
+        "driver": "nvme"
+      }
+    ]
+  }
+}
+

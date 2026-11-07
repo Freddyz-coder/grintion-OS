@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""grintion-hcl - Grintion-OS Hardware Compatibility List inspector and reporter.
+
+Evaluates detected system hardware (DMI, CPU, PCI, Network, Storage, TPM) against
+the Grintion Hardware Compatibility List (HCL) database.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+def read_text(path: Path | str, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return default
+
+
+def load_hcl_database(db_path: str | None = None) -> dict:
+    paths = []
+    if db_path:
+        paths.append(Path(db_path))
+    if os.environ.get("GRINTION_HCL_DB"):
+        paths.append(Path(os.environ["GRINTION_HCL_DB"]))
+    repo_root = Path(__file__).resolve().parent.parent
+    paths.extend([
+        repo_root / "etc" / "grintion" / "hcl.json",
+        Path("/etc/grintion/hcl.json"),
+        Path("/usr/share/grintion/hcl.json"),
+    ])
+    for p in paths:
+        if p.is_file():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+    return {"version": 1, "vendors": {"system": [], "cpu": [], "pci": []}}
+
+
+def detect_dmi(sysfs_dmi: Path | None = None) -> dict:
+    dmi_dir = sysfs_dmi or Path(os.environ.get("GRINTION_SYSFS_DMI", "/sys/class/dmi/id"))
+    return {
+        "sys_vendor": read_text(dmi_dir / "sys_vendor", "Generic"),
+        "product_name": read_text(dmi_dir / "product_name", "PC"),
+        "product_version": read_text(dmi_dir / "product_version", ""),
+        "board_name": read_text(dmi_dir / "board_name", ""),
+        "bios_version": read_text(dmi_dir / "bios_version", ""),
+        "chassis_type": read_text(dmi_dir / "chassis_type", ""),
+    }
+
+
+def detect_cpu(cpuinfo_path: Path | None = None) -> dict:
+    path = cpuinfo_path or Path(os.environ.get("GRINTION_CPUINFO", "/proc/cpuinfo"))
+    text = read_text(path)
+    model_name = "Unknown x86_64 CPU"
+    vendor_id = "Generic"
+    cores = 1
+    if text:
+        models = re.findall(r"^model name\s*:\s*(.+)$", text, re.MULTILINE)
+        if models:
+            model_name = models[0]
+        vendors = re.findall(r"^vendor_id\s*:\s*(.+)$", text, re.MULTILINE)
+        if vendors:
+            vendor_id = vendors[0]
+        processors = re.findall(r"^processor\s*:\s*\d+$", text, re.MULTILINE)
+        if processors:
+            cores = len(processors)
+    return {
+        "vendor": vendor_id,
+        "model": model_name,
+        "cores": cores,
+        "arch": "x86_64",
+    }
+
+
+def detect_pci(sysfs_pci: Path | None = None) -> list[dict]:
+    pci_dir = sysfs_pci or Path(os.environ.get("GRINTION_SYSFS_PCI", "/sys/bus/pci/devices"))
+    devices = []
+    if not pci_dir.is_dir():
+        return devices
+
+    for dev in sorted(pci_dir.iterdir()):
+        if not dev.is_dir():
+            continue
+        vendor_raw = read_text(dev / "vendor")
+        device_raw = read_text(dev / "device")
+        class_raw = read_text(dev / "class")
+        if not vendor_raw or not device_raw:
+            continue
+        vendor_hex = vendor_raw.removeprefix("0x").lower().zfill(4)
+        device_hex = device_raw.removeprefix("0x").lower().zfill(4)
+        class_hex = class_raw.removeprefix("0x").lower().zfill(6)[:4]
+        dev_id = f"{vendor_hex}:{device_hex}"
+
+        driver = ""
+        driver_link = dev / "driver"
+        if driver_link.is_symlink():
+            try:
+                driver = driver_link.resolve().name
+            except OSError:
+                pass
+
+        devices.append({
+            "slot": dev.name,
+            "device_id": dev_id,
+            "class": class_hex,
+            "driver": driver,
+        })
+    return devices
+
+
+def detect_network(sysfs_net: Path | None = None) -> list[dict]:
+    net_dir = sysfs_net or Path(os.environ.get("GRINTION_SYSFS_NET", "/sys/class/net"))
+    interfaces = []
+    if not net_dir.is_dir():
+        return interfaces
+
+    for iface in sorted(net_dir.iterdir()):
+        if not iface.is_dir() or iface.name == "lo":
+            continue
+        is_wireless = (iface / "wireless").exists() or (iface / "phy80211").exists()
+        operstate = read_text(iface / "operstate", "unknown")
+        interfaces.append({
+            "name": iface.name,
+            "type": "wireless" if is_wireless else "ethernet",
+            "operstate": operstate,
+        })
+    return interfaces
+
+
+def detect_tpm() -> dict:
+    tpm_dir = Path(os.environ.get("GRINTION_SYSFS_TPM", "/sys/class/tpm"))
+    present = False
+    version = "none"
+    if tpm_dir.is_dir() and any(tpm_dir.iterdir()):
+        present = True
+        version = "2.0"
+    elif Path("/dev/tpmrm0").exists():
+        present = True
+        version = "2.0"
+    return {"present": present, "version": version}
+
+
+def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) -> dict:
+    system_entries = hcl_db.get("vendors", {}).get("system", [])
+    cpu_entries = hcl_db.get("vendors", {}).get("cpu", [])
+    pci_entries = {entry["device_id"].lower(): entry for entry in hcl_db.get("vendors", {}).get("pci", [])}
+
+    # Evaluate system / platform
+    sys_status = "untested"
+    sys_note = ""
+    for entry in system_entries:
+        if entry.get("vendor", "").lower() in dmi.get("sys_vendor", "").lower() and \
+           entry.get("product", "").lower() in dmi.get("product_name", "").lower():
+            sys_status = entry.get("status", "compatible")
+            sys_note = entry.get("notes", "")
+            break
+
+    # Evaluate CPU
+    cpu_status = "untested"
+    for entry in cpu_entries:
+        if entry.get("vendor", "").lower() in cpu.get("vendor", "").lower():
+            cpu_status = entry.get("status", "compatible")
+            break
+
+    # Evaluate PCI components
+    evaluated_pci = []
+    has_verified_pci = False
+    has_incompatible = False
+    for dev in pci:
+        dev_id = dev["device_id"]
+        matched = pci_entries.get(dev_id)
+        if matched:
+            status = matched.get("status", "compatible")
+            name = matched.get("name", f"PCI device {dev_id}")
+            notes = matched.get("notes", "")
+            if status == "verified":
+                has_verified_pci = True
+            elif status == "incompatible":
+                has_incompatible = True
+        else:
+            status = "untested"
+            name = f"PCI device {dev_id} (class {dev['class']})"
+            notes = ""
+
+        evaluated_pci.append({
+            "slot": dev["slot"],
+            "device_id": dev_id,
+            "name": name,
+            "status": status,
+            "driver": dev["driver"],
+            "notes": notes,
+        })
+
+    # Overall compatibility assessment
+    if has_incompatible:
+        overall = "incompatible"
+    elif sys_status == "verified" or (cpu_status == "verified" and has_verified_pci):
+        overall = "verified"
+    elif sys_status == "compatible" or cpu_status == "compatible":
+        overall = "compatible"
+    else:
+        overall = "untested"
+
+    return {
+        "overall": overall,
+        "system": {
+            "vendor": dmi.get("sys_vendor", ""),
+            "product": dmi.get("product_name", ""),
+            "board": dmi.get("board_name", ""),
+            "bios": dmi.get("bios_version", ""),
+            "status": sys_status,
+            "notes": sys_note,
+        },
+        "cpu": {
+            "model": cpu.get("model", ""),
+            "vendor": cpu.get("vendor", ""),
+            "cores": cpu.get("cores", 1),
+            "status": cpu_status,
+        },
+        "devices": evaluated_pci,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Hardware Compatibility Inspector")
+    parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+    parser.add_argument("--database", help="alternate HCL database file")
+    parser.add_argument("--machine", action="store_true", help="print only identified machine summary")
+    args = parser.parse_args()
+
+    hcl_db = load_hcl_database(args.database)
+    dmi = detect_dmi()
+    cpu = detect_cpu()
+    pci = detect_pci()
+    net = detect_network()
+    tpm = detect_tpm()
+    eval_result = evaluate_compatibility(hcl_db, dmi, cpu, pci)
+
+    report = {
+        "machine": f"{dmi['sys_vendor']} {dmi['product_name']}".strip(),
+        "compatibility": eval_result["overall"],
+        "system": eval_result["system"],
+        "cpu": eval_result["cpu"],
+        "network": net,
+        "tpm": tpm,
+        "pci_devices": eval_result["devices"],
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    if args.machine:
+        print(f"Machine: {report['machine']} [{report['compatibility']}]")
+        return
+
+    print("=" * 60)
+    print("Grintion-OS Hardware Compatibility Report (HCL)")
+    print("=" * 60)
+    print(f"Machine:        {report['machine']}")
+    print(f"Platform:       {report['system']['status'].upper()}")
+    if report['system']['notes']:
+        print(f"Notes:          {report['system']['notes']}")
+    print(f"BIOS/Firmware:  {report['system']['bios'] or 'N/A'}")
+    print(f"CPU:            {report['cpu']['model']} ({report['cpu']['cores']} cores) [{report['cpu']['status']}]")
+    print(f"TPM 2.0:        {'Available' if tpm['present'] else 'Not detected'}")
+    print(f"Overall Rating: {report['compatibility'].upper()}")
+    print("-" * 60)
+    print("Detected Peripherals:")
+    for dev in report["pci_devices"]:
+        print(f"  [{dev['status']:<10}] {dev['device_id']} {dev['name']}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+

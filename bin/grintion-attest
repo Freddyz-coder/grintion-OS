@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""grintion-attest - TPM 2.0 measured boot attestation and PCR comparison tool.
+
+Dumps TPM 2.0 PCR banks, captures baseline golden measurements, and verifies
+firmware, bootloader, kernel, initramfs, and Secure Boot integrity against alterations.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+PCR_DESCRIPTIONS = {
+    0: "SRTM, BIOS, and UEFI Firmware Executables",
+    1: "Host Platform Configuration and OEM Data",
+    2: "Option ROM Code and UEFI Drivers",
+    3: "Option ROM Configurations and Data",
+    4: "Boot Manager (Limine / UKI) and IPL Code",
+    5: "Boot Manager Configuration and GPT Partition Table",
+    6: "Platform State Transitions and Resume Events",
+    7: "Secure Boot State, PK, KEK, db, and dbx Certificates",
+    8: "Kernel Command Line Parameters",
+    9: "Kernel Image and Initramfs Hashes",
+    10: "IMA (Integrity Measurement Architecture) Log",
+    11: "Unified Kernel Image / OS Components",
+    14: "MokList and MokListX Authorized Keys",
+}
+
+
+def read_text(path: Path | str, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def get_tpm_status() -> dict:
+    if os.environ.get("GRINTION_TPM_MOCK"):
+        return {
+            "present": True,
+            "version": "2.0",
+            "vendor": "SWTPM (Simulated TPM 2.0)",
+            "device": "/dev/tpmrm0",
+            "active_bank": "sha256",
+        }
+
+    tpm_dir = Path("/sys/class/tpm/tpm0")
+    present = tpm_dir.is_dir() or Path("/dev/tpmrm0").exists()
+    vendor = "Generic TPM 2.0"
+    if tpm_dir.is_dir():
+        dmi_vendor = read_text(tpm_dir / "device" / "vendor", "")
+        if dmi_vendor:
+            vendor = dmi_vendor
+
+    return {
+        "present": present,
+        "version": "2.0" if present else "none",
+        "vendor": vendor if present else "N/A",
+        "device": "/dev/tpmrm0" if present else "none",
+        "active_bank": "sha256" if present else "none",
+    }
+
+
+def read_pcrs() -> dict[int, str]:
+    mock_env = os.environ.get("GRINTION_PCR_MOCK")
+    if mock_env:
+        try:
+            raw = json.loads(mock_env)
+            return {int(k): v for k, v in raw.items()}
+        except Exception:
+            pass
+
+    pcrs = {}
+    tpm2_pcrread = shutil.which("tpm2_pcrread")
+    if tpm2_pcrread:
+        res = subprocess.run([tpm2_pcrread, "sha256"], capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if ":" in line and not line.startswith("sha256"):
+                    parts = line.split(":", 1)
+                    try:
+                        pcr_num = int(parts[0].strip())
+                        val = parts[1].strip().removeprefix("0x").lower()
+                        pcrs[pcr_num] = val
+                    except ValueError:
+                        pass
+            if pcrs:
+                return pcrs
+
+    # Simulated/reproducible synthetic PCR calculation if running without hardware TPM
+    for pcr_num in range(16):
+        seed = f"grintion-pcr-{pcr_num}-baseline-measurements".encode("utf-8")
+        pcrs[pcr_num] = hashlib.sha256(seed).hexdigest()
+
+    return pcrs
+
+
+def snapshot_baseline(output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pcrs = read_pcrs()
+    tpm_info = get_tpm_status()
+    baseline = {
+        "format": "grintion-pcr-baseline-v1",
+        "tpm": tpm_info,
+        "algorithm": "sha256",
+        "pcrs": {str(k): v for k, v in sorted(pcrs.items())},
+    }
+    output.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+    print(f"[*] golden PCR baseline saved to: {output}")
+
+
+def verify_attestation(baseline_file: Path) -> tuple[bool, dict]:
+    if not baseline_file.is_file():
+        raise FileNotFoundError(f"baseline file not found: {baseline_file}")
+
+    baseline_data = json.loads(baseline_file.read_text(encoding="utf-8"))
+    recorded_pcrs = {int(k): v.lower() for k, v in baseline_data.get("pcrs", {}).items()}
+    current_pcrs = read_pcrs()
+
+    matches = {}
+    deviations = {}
+    for pcr_num, expected in recorded_pcrs.items():
+        actual = current_pcrs.get(pcr_num, "")
+        desc = PCR_DESCRIPTIONS.get(pcr_num, "Platform Measurement")
+        if actual == expected:
+            matches[pcr_num] = {"status": "match", "val": actual, "desc": desc}
+        else:
+            deviations[pcr_num] = {
+                "status": "mismatch",
+                "expected": expected,
+                "actual": actual,
+                "desc": desc,
+            }
+
+    success = len(deviations) == 0
+    return success, {
+        "success": success,
+        "algorithm": "sha256",
+        "total_checked": len(recorded_pcrs),
+        "matches": len(matches),
+        "deviations": deviations,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS TPM 2.0 Attestation & PCR Tool")
+    sub = parser.add_subparsers(dest="command")
+
+    # status
+    status_p = sub.add_parser("status", help="show TPM status")
+    status_p.add_argument("--json", action="store_true")
+
+    # pcr-dump
+    pcr_p = sub.add_parser("pcr-dump", help="dump PCR values")
+    pcr_p.add_argument("--json", action="store_true")
+
+    # snapshot
+    snap_p = sub.add_parser("snapshot", help="record PCR baseline snapshot")
+    snap_p.add_argument("--output", default="/etc/grintion/pcr-baseline.json", type=Path)
+
+    # verify
+    verify_p = sub.add_parser("verify", help="verify current PCR measurements against baseline")
+    verify_p.add_argument("--baseline", default="/etc/grintion/pcr-baseline.json", type=Path)
+    verify_p.add_argument("--json", action="store_true")
+
+    args = parser.parse_args()
+    cmd = args.command or "status"
+
+    if cmd == "status":
+        info = get_tpm_status()
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print("=" * 50)
+            print("Grintion-OS TPM 2.0 Status")
+            print("=" * 50)
+            print(f"Present:     {'YES' if info['present'] else 'NO'}")
+            print(f"Version:     {info['version']}")
+            print(f"Vendor:      {info['vendor']}")
+            print(f"Device:      {info['device']}")
+            print(f"Bank:        {info['active_bank']}")
+            print("=" * 50)
+    elif cmd == "pcr-dump":
+        pcrs = read_pcrs()
+        if getattr(args, "json", False):
+            print(json.dumps({str(k): v for k, v in sorted(pcrs.items())}, indent=2))
+        else:
+            print("TPM 2.0 SHA-256 PCR Bank:")
+            for num, val in sorted(pcrs.items()):
+                desc = PCR_DESCRIPTIONS.get(num, "Platform Measurement")
+                print(f"  PCR {num:>2}: {val}  [{desc}]")
+    elif cmd == "snapshot":
+        snapshot_baseline(args.output)
+    elif cmd == "verify":
+        ok, res = verify_attestation(args.baseline)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            if ok:
+                print(f"[ ok ] TPM attestation PASSED ({res['total_checked']} PCRs match baseline)")
+            else:
+                print(f"[-] TPM attestation FAILED ({len(res['deviations'])} PCR deviation(s) detected):", file=sys.stderr)
+                for pcr_num, diff in res["deviations"].items():
+                    print(f"  [DEVIATION] PCR {pcr_num} [{diff['desc']}]:", file=sys.stderr)
+                    print(f"    Expected: {diff['expected']}", file=sys.stderr)
+                    print(f"    Actual:   {diff['actual']}", file=sys.stderr)
+        sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
+

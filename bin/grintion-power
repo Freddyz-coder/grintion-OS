@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""grintion-power - power, battery and thermal management for Grintion-OS.
+
+Controls CPU frequency scaling governors, platform thermal profiles, battery
+charge longevity thresholds, lid-switch behaviors, and sleep states.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def get_power_conf() -> Path:
+    custom = os.environ.get("GRINTION_POWER_CONF")
+    if custom:
+        return Path(custom)
+    return root_path("/etc/grintion/power.conf")
+
+
+def load_config() -> dict[str, str]:
+    conf_path = get_power_conf()
+    cfg = {
+        "governor": "schedutil",
+        "thermal_profile": "balanced",
+        "charge_threshold": "100",
+        "lid_action": "suspend",
+    }
+    if conf_path.is_file():
+        try:
+            for line in conf_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip().strip('"\'')
+        except OSError:
+            pass
+    return cfg
+
+
+def save_config(cfg: dict[str, str]) -> None:
+    conf_path = get_power_conf()
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# /etc/grintion/power.conf - Power and thermal management defaults",
+        f"governor = {cfg.get('governor', 'schedutil')}",
+        f"thermal_profile = {cfg.get('thermal_profile', 'balanced')}",
+        f"charge_threshold = {cfg.get('charge_threshold', '100')}",
+        f"lid_action = {cfg.get('lid_action', 'suspend')}",
+    ]
+    conf_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_sysfs(path: Path | str, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def write_sysfs(path: Path | str, value: str) -> bool:
+    try:
+        Path(path).write_text(value.strip() + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def get_power_status() -> dict:
+    sysfs_prefix = os.environ.get("GRINTION_SYSFS_POWER", "")
+    if not sysfs_prefix and os.environ.get("GRINTION_ROOT"):
+        sysfs_prefix = os.environ.get("GRINTION_ROOT", "")
+    cfg = load_config()
+
+    # CPU governor
+    gov_paths = glob.glob(f"{sysfs_prefix}/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
+    current_gov = cfg["governor"]
+    if gov_paths and sysfs_prefix:
+        current_gov = read_sysfs(gov_paths[0], cfg["governor"])
+    avail_govs = ["performance", "powersave", "schedutil"]
+    avail_gov_path = Path(f"{sysfs_prefix}/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+    if avail_gov_path.is_file():
+        avail_govs = read_sysfs(avail_gov_path).split()
+
+    # Thermal profile
+    thermal_path = Path(f"{sysfs_prefix}/sys/firmware/acpi/platform_profile")
+    current_thermal = cfg["thermal_profile"]
+    if thermal_path.is_file() and sysfs_prefix:
+        current_thermal = read_sysfs(thermal_path, cfg["thermal_profile"])
+    avail_thermal = ["balanced", "performance", "quiet", "power-saver"]
+    avail_thermal_path = Path(f"{sysfs_prefix}/sys/firmware/acpi/platform_profile_choices")
+    if avail_thermal_path.is_file():
+        avail_thermal = read_sysfs(avail_thermal_path).split()
+
+    # Batteries
+    batteries = []
+    bat_dirs = glob.glob(f"{sysfs_prefix}/sys/class/power_supply/BAT*")
+    for bdir in sorted(bat_dirs):
+        bp = Path(bdir)
+        cap = read_sysfs(bp / "capacity", "100")
+        stat = read_sysfs(bp / "status", "Unknown")
+        limit = read_sysfs(bp / "charge_control_limit_max", cfg["charge_threshold"])
+        batteries.append({
+            "name": bp.name,
+            "capacity": int(cap) if cap.isdigit() else 100,
+            "status": stat,
+            "charge_limit": int(limit) if limit.isdigit() else 100,
+        })
+
+    # Lid
+    lid_state = "open"
+    lid_files = glob.glob(f"{sysfs_prefix}/proc/acpi/button/lid/*/state")
+    if lid_files:
+        line = read_sysfs(lid_files[0])
+        if "closed" in line.lower():
+            lid_state = "closed"
+
+    return {
+        "governor": current_gov,
+        "available_governors": avail_govs,
+        "thermal_profile": current_thermal,
+        "available_thermal_profiles": avail_thermal,
+        "charge_threshold": int(cfg.get("charge_threshold", "100")),
+        "lid_action": cfg.get("lid_action", "suspend"),
+        "lid_state": lid_state,
+        "batteries": batteries,
+    }
+
+
+def set_governor(gov: str) -> None:
+    cfg = load_config()
+    cfg["governor"] = gov
+    save_config(cfg)
+    sysfs_prefix = os.environ.get("GRINTION_SYSFS_POWER", "")
+    for p in glob.glob(f"{sysfs_prefix}/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"):
+        write_sysfs(p, gov)
+    print(f"[*] CPU frequency governor set to: {gov}")
+
+
+def set_thermal(profile: str) -> None:
+    cfg = load_config()
+    cfg["thermal_profile"] = profile
+    save_config(cfg)
+    sysfs_prefix = os.environ.get("GRINTION_SYSFS_POWER", "")
+    thermal_path = Path(f"{sysfs_prefix}/sys/firmware/acpi/platform_profile")
+    if thermal_path.exists():
+        write_sysfs(thermal_path, profile)
+    print(f"[*] Platform thermal profile set to: {profile}")
+
+
+def set_charge_limit(limit: int) -> None:
+    cfg = load_config()
+    cfg["charge_threshold"] = str(limit)
+    save_config(cfg)
+    sysfs_prefix = os.environ.get("GRINTION_SYSFS_POWER", "")
+    for p in glob.glob(f"{sysfs_prefix}/sys/class/power_supply/BAT*/charge_control_limit_max"):
+        write_sysfs(p, str(limit))
+    print(f"[*] Battery charge limit set to: {limit}%")
+
+
+def set_lid_action(action: str) -> None:
+    cfg = load_config()
+    cfg["lid_action"] = action
+    save_config(cfg)
+    print(f"[*] Lid switch action set to: {action}")
+
+
+def trigger_sleep(mode: str) -> None:
+    sysfs_prefix = os.environ.get("GRINTION_SYSFS_POWER", "")
+    state_file = Path(f"{sysfs_prefix}/sys/power/state")
+    if state_file.exists():
+        write_sysfs(state_file, mode)
+        print(f"[*] triggered system {mode}")
+    else:
+        print(f"[*] simulated system {mode}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Power Management")
+    sub = parser.add_subparsers(dest="command")
+
+    status_p = sub.add_parser("status", help="show power, battery and thermal status")
+    status_p.add_argument("--json", action="store_true")
+
+    gov_p = sub.add_parser("set-governor", help="set CPU scaling governor")
+    gov_p.add_argument("governor", choices=["performance", "powersave", "schedutil", "ondemand"])
+
+    therm_p = sub.add_parser("set-thermal", help="set platform thermal profile")
+    therm_p.add_argument("profile", choices=["balanced", "performance", "quiet", "power-saver"])
+
+    charge_p = sub.add_parser("set-charge-limit", help="set battery charge limit threshold (1-100)")
+    charge_p.add_argument("limit", type=int)
+
+    lid_p = sub.add_parser("set-lid-action", help="set lid close behavior")
+    lid_p.add_argument("action", choices=["suspend", "ignore", "lock", "hibernate"])
+
+    sub.add_parser("suspend", help="suspend system to RAM (mem)")
+    sub.add_parser("hibernate", help="hibernate system to swap (disk)")
+
+    args = parser.parse_args()
+    cmd = args.command or "status"
+
+    if cmd == "status":
+        info = get_power_status()
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print("=" * 50)
+            print("Grintion-OS Power & Thermal Status")
+            print("=" * 50)
+            print(f"CPU Governor:     {info['governor']}")
+            print(f"Thermal Profile:  {info['thermal_profile']}")
+            print(f"Charge Threshold: {info['charge_threshold']}%")
+            print(f"Lid Action:       {info['lid_action']} (current: {info['lid_state']})")
+            if info["batteries"]:
+                for b in info["batteries"]:
+                    print(f"Battery {b['name']}:   {b['capacity']}% [{b['status']}] (Limit: {b['charge_limit']}%)")
+            else:
+                print("Battery:          AC Power / No battery detected")
+            print("=" * 50)
+    elif cmd == "set-governor":
+        set_governor(args.governor)
+    elif cmd == "set-thermal":
+        set_thermal(args.profile)
+    elif cmd == "set-charge-limit":
+        if not (1 <= args.limit <= 100):
+            print("[-] limit must be between 1 and 100", file=sys.stderr)
+            sys.exit(1)
+        set_charge_limit(args.limit)
+    elif cmd == "set-lid-action":
+        set_lid_action(args.action)
+    elif cmd == "suspend":
+        trigger_sleep("mem")
+    elif cmd == "hibernate":
+        trigger_sleep("disk")
+
+
+if __name__ == "__main__":
+    main()

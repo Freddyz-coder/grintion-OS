@@ -10,6 +10,138 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 FAILED=0
+ROOT=${GRINTION_ROOT:-}
+FIX_MODE=0
+DRY_RUN=0
+
+case "${1-}" in
+    --security)
+        shift
+        SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+        if [ -x "$SELF_DIR/grintion-security-report" ]; then
+            exec "$SELF_DIR/grintion-security-report" "$@"
+        fi
+        if command -v grintion-security-report >/dev/null 2>&1; then
+            exec grintion-security-report "$@"
+        fi
+        printf '[-] grintion-security-report is missing\n' >&2
+        exit 1
+        ;;
+    --fix)
+        FIX_MODE=1
+        shift
+        if [ "${1-}" = "--dry-run" ]; then
+            DRY_RUN=1
+            shift
+        fi
+        ;;
+    -h|--help)
+        cat <<'EOF'
+Usage: grintion-doctor [--security [REPORT OPTIONS]] [--fix [--dry-run]]
+
+With no options, check that the required runtime components are present.
+--security delegates to grintion-security-report; --json and --strict are
+passed through to that report.
+--fix applies safe, reversible repairs to system state (permissions, loopback,
+broken service symlinks, stale locks, DNS configuration).
+EOF
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        printf '[-] unknown option: %s (see --help)\n' "$1" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$FIX_MODE" -eq 1 ]; then
+    FIXES_APPLIED=0
+    LOG_FILE="${ROOT}/var/log/grintion-doctor-fix.json"
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date)
+
+    # 1. Check & fix permissions on /tmp and /var/tmp (must be 1777)
+    for tmpdir in "${ROOT}/tmp" "${ROOT}/var/tmp"; do
+        if [ -d "$tmpdir" ]; then
+            perm=$(stat -c "%a" "$tmpdir" 2>/dev/null || stat -f "%OLp" "$tmpdir" 2>/dev/null || true)
+            if [ "$perm" != "1777" ]; then
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    printf '[DRY-RUN] would chmod 1777 %s (current: %s)\n' "$tmpdir" "$perm"
+                else
+                    chmod 1777 "$tmpdir" 2>/dev/null && printf '[FIXED] permissions on %s restored to 1777 (was %s)\n' "$tmpdir" "$perm" || true
+                fi
+                FIXES_APPLIED=$((FIXES_APPLIED + 1))
+            fi
+        fi
+    done
+
+    # 2. Check & fix loopback interface if down
+    if command -v ip >/dev/null 2>&1 && [ -z "$ROOT" ]; then
+        if ! ip -o link show lo 2>/dev/null | grep -q 'LOOPBACK,UP'; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                printf '[DRY-RUN] would bring up loopback interface lo\n'
+            else
+                ip link set lo up 2>/dev/null && printf '[FIXED] loopback interface lo brought UP\n' || true
+            fi
+            FIXES_APPLIED=$((FIXES_APPLIED + 1))
+        fi
+    fi
+
+    # 3. Clean up broken/dangling symlinks in /var/service
+    if [ -d "${ROOT}/var/service" ]; then
+        for link in "${ROOT}/var/service"/*; do
+            [ -L "$link" ] || continue
+            if [ ! -e "$link" ]; then
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    printf '[DRY-RUN] would remove broken symlink: %s\n' "$link"
+                else
+                    rm -f "$link" && printf '[FIXED] removed broken service symlink: %s\n' "$link"
+                fi
+                FIXES_APPLIED=$((FIXES_APPLIED + 1))
+            fi
+        done
+    fi
+
+    # 4. Remove stale garb locks if holding process is dead
+    GARB_LOCK="${ROOT}/var/lib/garb/lock"
+    if [ -f "$GARB_LOCK" ]; then
+        holder_pid=$(head -n 1 "$GARB_LOCK" 2>/dev/null | tr -cd '0-9')
+        if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                printf '[DRY-RUN] would remove stale garb lock (pid %s dead)\n' "$holder_pid"
+            else
+                rm -f "$GARB_LOCK" && printf '[FIXED] removed stale garb lock (pid %s not running)\n' "$holder_pid"
+            fi
+            FIXES_APPLIED=$((FIXES_APPLIED + 1))
+        fi
+    fi
+
+    # 5. Check and repair /etc/resolv.conf if missing or broken symlink
+    RESOLV="${ROOT}/etc/resolv.conf"
+    if [ ! -f "$RESOLV" ] || [ ! -s "$RESOLV" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '[DRY-RUN] would repair %s with fallback nameservers\n' "$RESOLV"
+        else
+            mkdir -p "$(dirname "$RESOLV")"
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$RESOLV"
+            printf '[FIXED] restored fallback nameservers in %s\n' "$RESOLV"
+        fi
+        FIXES_APPLIED=$((FIXES_APPLIED + 1))
+    fi
+
+    if [ "$DRY_RUN" -eq 0 ] && [ -w "$(dirname "$LOG_FILE")" ]; then
+        printf '{"timestamp": "%s", "fixes_applied": %d}\n' "$TIMESTAMP" "$FIXES_APPLIED" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+
+    if [ "$FIXES_APPLIED" -eq 0 ]; then
+        printf '[ ok ] system state clean; no fixes needed\n'
+    else
+        printf '[ ok ] applied %d repair(s)\n' "$FIXES_APPLIED"
+    fi
+    exit 0
+fi
+
 report() {
     printf '[CRITICAL] %s\n' "$*" >&2
     FAILED=1

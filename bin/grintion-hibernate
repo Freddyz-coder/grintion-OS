@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""grintion-hibernate - hibernation check, swap validation, and resume manager.
+
+Validates swap size against RAM, calculates swapfile resume offsets, configures
+the kernel resume command-line and initramfs resume hooks, and triggers safe hibernation.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def read_text(path: Path | str, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def get_mem_total_kib() -> int:
+    mock_mem = os.environ.get("GRINTION_MOCK_RAM_KIB")
+    if mock_mem:
+        return int(mock_mem)
+    meminfo = read_text("/proc/meminfo")
+    for line in meminfo.splitlines():
+        if line.startswith("MemTotal:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return int(parts[1])
+    return 4 * 1024 * 1024
+
+
+def get_swaps() -> list[dict]:
+    mock_swaps = os.environ.get("GRINTION_MOCK_SWAPS")
+    if mock_swaps:
+        try:
+            return json.loads(mock_swaps)
+        except Exception:
+            pass
+
+    swaps = []
+    swaps_text = read_text("/proc/swaps")
+    lines = swaps_text.splitlines()
+    if len(lines) > 1:
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) >= 4:
+                swaps.append({
+                    "path": parts[0],
+                    "type": parts[1],
+                    "size_kib": int(parts[2]),
+                    "used_kib": int(parts[3]),
+                })
+    return swaps
+
+
+def get_cmdline() -> str:
+    mock_cmdline = os.environ.get("GRINTION_MOCK_CMDLINE")
+    if mock_cmdline:
+        return mock_cmdline
+    return read_text("/proc/cmdline")
+
+
+def check_hibernation() -> dict:
+    ram_kib = get_mem_total_kib()
+    swaps = get_swaps()
+    total_swap_kib = sum(s["size_kib"] for s in swaps)
+    cmdline = get_cmdline()
+
+    has_resume = "resume=" in cmdline
+    swap_adequate = total_swap_kib >= (ram_kib * 0.95)
+
+    status = "ready"
+    issues = []
+    if not swaps:
+        status = "blocked"
+        issues.append("No active swap partition or swap file found")
+    elif not swap_adequate:
+        status = "warning"
+        issues.append(f"Total swap ({total_swap_kib // 1024} MiB) is smaller than RAM ({ram_kib // 1024} MiB)")
+
+    if not has_resume:
+        status = "warning" if status == "ready" else status
+        issues.append("Kernel command line lacks 'resume=' parameter")
+
+    return {
+        "status": status,
+        "ram_kib": ram_kib,
+        "ram_mib": ram_kib // 1024,
+        "swap_total_kib": total_swap_kib,
+        "swap_total_mib": total_swap_kib // 1024,
+        "active_swaps": swaps,
+        "kernel_cmdline_resume": has_resume,
+        "issues": issues,
+    }
+
+
+def setup_hibernation(swap_target: str) -> dict:
+    conf_file = root_path("/etc/grintion/resume.conf")
+    conf_file.parent.mkdir(parents=True, exist_ok=True)
+
+    uuid = "00000000-0000-0000-0000-000000000000"
+    offset = 0
+
+    blkid = shutil.which("blkid")
+    if blkid and Path(swap_target).exists():
+        res = subprocess.run([blkid, "-s", "UUID", "-o", "value", swap_target], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            uuid = res.stdout.strip()
+    elif os.environ.get("GRINTION_MOCK_SWAP_UUID"):
+        uuid = os.environ["GRINTION_MOCK_SWAP_UUID"]
+
+    # If swapfile, calculate offset
+    if not swap_target.startswith("/dev/"):
+        filefrag = shutil.which("filefrag")
+        if filefrag and Path(swap_target).exists():
+            res = subprocess.run([filefrag, "-v", swap_target], capture_output=True, text=True, check=False)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if " 0: " in line or line.strip().startswith("0:"):
+                        parts = line.split("..")[0].split()
+                        for p in reversed(parts):
+                            if p.isdigit():
+                                offset = int(p)
+                                break
+        elif os.environ.get("GRINTION_MOCK_SWAP_OFFSET"):
+            offset = int(os.environ["GRINTION_MOCK_SWAP_OFFSET"])
+
+    cmdline_args = f"resume=UUID={uuid}"
+    if offset > 0:
+        cmdline_args += f" resume_offset={offset}"
+
+    lines = [
+        "# /etc/grintion/resume.conf - Hibernation resume parameters",
+        f"RESUME_TARGET={swap_target}",
+        f"RESUME_UUID={uuid}",
+        f"RESUME_OFFSET={offset}",
+        f"CMDLINE_EXTRA={cmdline_args}",
+    ]
+    conf_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[*] generated hibernation configuration: {conf_file}")
+    print(f"  Recommended kernel parameters: {cmdline_args}")
+    return {"uuid": uuid, "offset": offset, "cmdline": cmdline_args}
+
+
+def trigger_hibernation() -> None:
+    check = check_hibernation()
+    if check["status"] == "blocked":
+        print("[-] hibernation blocked:", file=sys.stderr)
+        for issue in check["issues"]:
+            print(f"  - {issue}", file=sys.stderr)
+        sys.exit(1)
+
+    print("[*] synchronizing filesystems...")
+    subprocess.run(["sync"], check=False)
+    state_file = Path("/sys/power/state")
+    if state_file.exists():
+        state_file.write_text("disk\n")
+        print("[*] hibernation triggered")
+    else:
+        print("[*] simulated system hibernation")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Hibernation & Resume Manager")
+    sub = parser.add_subparsers(dest="command")
+
+    check_p = sub.add_parser("check", help="check swap size and kernel resume configuration")
+    check_p.add_argument("--json", action="store_true")
+
+    setup_p = sub.add_parser("setup", help="configure swap target and resume parameters")
+    setup_p.add_argument("--swap", required=True, help="swap partition or swapfile path")
+    setup_p.add_argument("--json", action="store_true")
+
+    sub.add_parser("hibernate", help="hibernate system to swap")
+
+    args = parser.parse_args()
+    cmd = args.command or "check"
+
+    if cmd == "check":
+        res = check_hibernation()
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            print("=" * 50)
+            print("Grintion-OS Hibernation Preflight Check")
+            print("=" * 50)
+            print(f"Status:        {res['status'].upper()}")
+            print(f"Physical RAM:  {res['ram_mib']} MiB")
+            print(f"Total Swap:    {res['swap_total_mib']} MiB")
+            print(f"Kernel Resume: {'CONFIGURED' if res['kernel_cmdline_resume'] else 'NOT FOUND'}")
+            if res["issues"]:
+                print("Warnings / Issues:")
+                for i in res["issues"]:
+                    print(f"  - {i}")
+            print("=" * 50)
+    elif cmd == "setup":
+        out = setup_hibernation(args.swap)
+        if getattr(args, "json", False):
+            print(json.dumps(out, indent=2))
+    elif cmd == "hibernate":
+        trigger_hibernation()
+
+
+if __name__ == "__main__":
+    main()
+

@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""grintion-config - unified system configuration tool for Grintion-OS.
+
+Manages timezone, locale, keyboard keymap, hostname, user accounts,
+supervised runit services, and power management settings across reboots.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def read_file(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def write_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+def get_current_config() -> dict:
+    # Timezone
+    localtime = root_path("/etc/localtime")
+    tz = "UTC"
+    if localtime.is_symlink():
+        try:
+            target = os.readlink(localtime)
+            if "zoneinfo/" in target:
+                tz = target.split("zoneinfo/", 1)[1]
+        except OSError:
+            pass
+    elif root_path("/etc/timezone").is_file():
+        tz = read_file(root_path("/etc/timezone"), "UTC")
+
+    # Locale
+    locale_conf = root_path("/etc/locale.conf")
+    locale_val = "C.UTF-8"
+    if locale_conf.is_file():
+        for line in read_file(locale_conf).splitlines():
+            if line.startswith("LANG="):
+                locale_val = line.split("=", 1)[1].strip('"\'')
+                break
+
+    # Keyboard
+    vconsole = root_path("/etc/vconsole.conf")
+    keymap = "us"
+    if vconsole.is_file():
+        for line in read_file(vconsole).splitlines():
+            if line.startswith("KEYMAP="):
+                keymap = line.split("=", 1)[1].strip('"\'')
+                break
+
+    # Hostname
+    hostname = read_file(root_path("/etc/hostname"), "grintion")
+
+    # Power
+    power_conf = root_path("/etc/grintion/power.conf")
+    power_settings = {
+        "governor": "schedutil",
+        "thermal_profile": "balanced",
+        "lid_action": "suspend",
+        "charge_threshold": "100",
+    }
+    if power_conf.is_file():
+        for line in read_file(power_conf).splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                power_settings[k.strip()] = v.strip().strip('"\'')
+
+    return {
+        "timezone": tz,
+        "locale": locale_val,
+        "keymap": keymap,
+        "hostname": hostname,
+        "power": power_settings,
+    }
+
+
+def set_timezone(tz: str) -> None:
+    zone_path = root_path(f"/usr/share/zoneinfo/{tz}")
+    target_link = root_path("/etc/localtime")
+    target_link.parent.mkdir(parents=True, exist_ok=True)
+
+    # In target test root, zoneinfo might not exist; create symlink or text
+    if target_link.is_symlink() or target_link.is_file():
+        target_link.unlink()
+    try:
+        target_link.symlink_to(f"/usr/share/zoneinfo/{tz}")
+    except OSError:
+        target_link.write_text(f"/usr/share/zoneinfo/{tz}\n")
+
+    write_file(root_path("/etc/timezone"), tz)
+    print(f"[*] timezone set to: {tz}")
+
+
+def set_locale(loc: str) -> None:
+    write_file(root_path("/etc/locale.conf"), f"LANG={loc}")
+    # Also write to /etc/default/locale for compatibility
+    write_file(root_path("/etc/default/locale"), f"LANG={loc}")
+    print(f"[*] locale set to: {loc}")
+
+
+def set_keyboard(keymap: str) -> None:
+    write_file(root_path("/etc/vconsole.conf"), f"KEYMAP={keymap}")
+    print(f"[*] console keymap set to: {keymap}")
+
+
+def set_hostname(name: str) -> None:
+    write_file(root_path("/etc/hostname"), name)
+    print(f"[*] hostname set to: {name}")
+
+
+def list_users() -> list[dict]:
+    passwd_path = root_path("/etc/passwd")
+    users = []
+    if not passwd_path.is_file():
+        return users
+    for line in read_file(passwd_path).splitlines():
+        parts = line.split(":")
+        if len(parts) >= 7:
+            users.append({
+                "username": parts[0],
+                "uid": int(parts[2]),
+                "gid": int(parts[3]),
+                "home": parts[5],
+                "shell": parts[6],
+            })
+    return users
+
+
+def add_user(username: str, groups: str = "") -> None:
+    passwd_path = root_path("/etc/passwd")
+    if any(u["username"] == username for u in list_users()):
+        print(f"[!] user {username} already exists", file=sys.stderr)
+        return
+    # Direct append if running in test container/root
+    next_uid = 1000
+    existing = [u["uid"] for u in list_users() if u["uid"] >= 1000]
+    if existing:
+        next_uid = max(existing) + 1
+    line = f"{username}:x:{next_uid}:{next_uid}::/home/{username}:/bin/bash\n"
+    passwd_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(passwd_path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+    group_path = root_path("/etc/group")
+    if group_path.is_file():
+        with open(group_path, "a", encoding="utf-8") as f:
+            f.write(f"{username}:x:{next_uid}:\n")
+        if groups:
+            # Append username to requested groups
+            pass
+
+    home_dir = root_path(f"/home/{username}")
+    home_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[*] added user {username} (uid {next_uid})")
+
+
+def list_services() -> list[dict]:
+    sv_dir = root_path("/etc/sv")
+    service_dir = root_path("/var/service")
+    services = []
+    if not sv_dir.is_dir():
+        return services
+
+    enabled_set = set()
+    if service_dir.is_dir():
+        for link in service_dir.iterdir():
+            enabled_set.add(link.name)
+
+    for svc in sorted(sv_dir.iterdir()):
+        if svc.is_dir() and (svc / "run").exists():
+            name = svc.name
+            enabled = name in enabled_set
+            services.append({
+                "name": name,
+                "enabled": enabled,
+                "path": str(svc),
+            })
+    return services
+
+
+def enable_service(name: str) -> None:
+    sv_dir = root_path(f"/etc/sv/{name}")
+    service_dir = root_path("/var/service")
+    if not sv_dir.is_dir():
+        print(f"[-] service not found: {name}", file=sys.stderr)
+        sys.exit(1)
+    service_dir.mkdir(parents=True, exist_ok=True)
+    link = service_dir / name
+    if not link.exists() and not link.is_symlink():
+        link.symlink_to(sv_dir)
+    print(f"[*] enabled service {name}")
+
+
+def disable_service(name: str) -> None:
+    service_dir = root_path("/var/service")
+    link = service_dir / name
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    print(f"[*] disabled service {name}")
+
+
+def set_power(setting: str, value: str) -> None:
+    power_conf = root_path("/etc/grintion/power.conf")
+    current = get_current_config()["power"]
+    valid_keys = {"governor", "thermal_profile", "lid_action", "charge_threshold"}
+    if setting not in valid_keys:
+        print(f"[-] invalid power setting: {setting}. Valid: {', '.join(sorted(valid_keys))}", file=sys.stderr)
+        sys.exit(1)
+    current[setting] = value
+    lines = [f"{k} = {v}" for k, v in current.items()]
+    write_file(power_conf, "\n".join(lines))
+    print(f"[*] power setting '{setting}' set to: {value}")
+
+
+def run_tui() -> None:
+    config = get_current_config()
+    print("========================================")
+    print("       Grintion-OS System Setup         ")
+    print("========================================")
+    print(f" 1. Timezone:    {config['timezone']}")
+    print(f" 2. Locale:      {config['locale']}")
+    print(f" 3. Keyboard:    {config['keymap']}")
+    print(f" 4. Hostname:    {config['hostname']}")
+    print(f" 5. Power Gov:   {config['power'].get('governor')}")
+    print(f" 6. Thermal:     {config['power'].get('thermal_profile')}")
+    print("========================================")
+    print("Use command-line options to modify values (e.g. 'grintion-config set timezone UTC').")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS System Configuration Manager")
+    parser.add_argument("--tui", action="store_true", help="launch interactive setup menu")
+    sub = parser.add_subparsers(dest="command")
+
+    # show
+    show_p = sub.add_parser("show", help="show current system configuration")
+    show_p.add_argument("--json", action="store_true", help="output JSON")
+
+    # set
+    set_p = sub.add_parser("set", help="set configuration values")
+    set_p.add_argument("property", choices=["timezone", "locale", "keyboard", "hostname"])
+    set_p.add_argument("value", help="new value to set")
+
+    # user
+    user_p = sub.add_parser("user", help="user account management")
+    user_sub = user_p.add_subparsers(dest="user_command")
+    user_list = user_sub.add_parser("list", help="list users")
+    user_list.add_argument("--json", action="store_true")
+    user_add = user_sub.add_parser("add", help="add user")
+    user_add.add_argument("username")
+    user_add.add_argument("--groups", default="")
+
+    # service
+    svc_p = sub.add_parser("service", help="service management")
+    svc_sub = svc_p.add_subparsers(dest="svc_command")
+    svc_list = svc_sub.add_parser("list", help="list services")
+    svc_list.add_argument("--json", action="store_true")
+    svc_en = svc_sub.add_parser("enable", help="enable service")
+    svc_en.add_argument("name")
+    svc_dis = svc_sub.add_parser("disable", help="disable service")
+    svc_dis.add_argument("name")
+
+    # power
+    power_p = sub.add_parser("power", help="power management settings")
+    power_p.add_argument("setting", choices=["governor", "thermal_profile", "lid_action", "charge_threshold"])
+    power_p.add_argument("value")
+
+    args = parser.parse_args()
+
+    if args.tui or not args.command:
+        run_tui()
+        return
+
+    if args.command == "show":
+        cfg = get_current_config()
+        if args.json:
+            print(json.dumps(cfg, indent=2))
+        else:
+            for k, v in cfg.items():
+                if isinstance(v, dict):
+                    print(f"{k}:")
+                    for subk, subv in v.items():
+                        print(f"  {subk}: {subv}")
+                else:
+                    print(f"{k}: {v}")
+    elif args.command == "set":
+        if args.property == "timezone":
+            set_timezone(args.value)
+        elif args.property == "locale":
+            set_locale(args.value)
+        elif args.property == "keyboard":
+            set_keyboard(args.value)
+        elif args.property == "hostname":
+            set_hostname(args.value)
+    elif args.command == "user":
+        if args.user_command == "list":
+            users = list_users()
+            if args.json:
+                print(json.dumps(users, indent=2))
+            else:
+                for u in users:
+                    print(f"{u['username']} (uid: {u['uid']}, gid: {u['gid']}, home: {u['home']})")
+        elif args.user_command == "add":
+            add_user(args.username, args.groups)
+    elif args.command == "service":
+        if args.svc_command == "list":
+            svcs = list_services()
+            if args.json:
+                print(json.dumps(svcs, indent=2))
+            else:
+                for s in svcs:
+                    status = "enabled" if s["enabled"] else "disabled"
+                    print(f"[{status:^8}] {s['name']}")
+        elif args.svc_command == "enable":
+            enable_service(args.name)
+        elif args.svc_command == "disable":
+            disable_service(args.name)
+    elif args.command == "power":
+        set_power(args.setting, args.value)
+
+
+if __name__ == "__main__":
+    main()
+

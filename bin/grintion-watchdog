@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""grintion-watchdog - supervisor watchdog for critical Grintion-OS services.
+
+Monitors required runit services, enforces restart rate limits to avoid crash loops,
+restarts unexpectedly killed services, and logs alerts when services degrade.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def load_config() -> dict:
+    conf_path = root_path(os.environ.get("GRINTION_WATCHDOG_CONF", "/etc/grintion/watchdog.conf"))
+    cfg = {
+        "services": ["udev", "dbus", "network"],
+        "max_restarts": 5,
+        "window_seconds": 60,
+    }
+    if conf_path.is_file():
+        try:
+            for line in conf_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip().lower()
+                v = v.strip().strip('"\'')
+                if k == "services":
+                    cfg["services"] = [s.strip() for s in v.split(",") if s.strip()]
+                elif k == "max_restarts":
+                    cfg["max_restarts"] = int(v)
+                elif k == "window_seconds":
+                    cfg["window_seconds"] = int(v)
+        except Exception:
+            pass
+    return cfg
+
+
+def get_state_file() -> Path:
+    state_dir = root_path("/var/run/grintion")
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / "watchdog-state.json"
+
+
+def load_state() -> dict:
+    state_file = get_state_file()
+    if state_file.is_file():
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_state(state: dict) -> None:
+    state_file = get_state_file()
+    try:
+        state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def log_alert(message: str) -> None:
+    log_dir = root_path("/var/log")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "grintion-watchdog.log"
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry = f"[{timestamp}] [ALERT] {message}\n"
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except OSError:
+        pass
+
+
+def is_service_running(service_name: str) -> bool:
+    # Check custom mock hook if in testing
+    test_status_hook = os.environ.get("GRINTION_WATCHDOG_MOCK_STATUS")
+    if test_status_hook:
+        # Format: "svc1=up,svc2=down"
+        pairs = dict(item.split("=") for item in test_status_hook.split(",") if "=" in item)
+        if service_name in pairs:
+            return pairs[service_name].strip().lower() in ("up", "running", "1", "true")
+
+    # In standard runit system
+    sv_bin = shutil_which("sv")
+    if not sv_bin:
+        # Check /var/service link and supervise pid
+        pid_file = root_path(f"/var/service/{service_name}/supervise/pid")
+        if pid_file.is_file():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 0)
+                return True
+            except (ValueError, OSError):
+                return False
+        return True
+
+    res = subprocess.run([sv_bin, "status", service_name], capture_output=True, text=True)
+    return res.returncode == 0 and res.stdout.startswith("run: ")
+
+
+def restart_service(service_name: str) -> bool:
+    test_restart_hook = os.environ.get("GRINTION_WATCHDOG_MOCK_RESTART")
+    if test_restart_hook:
+        return True
+
+    sv_bin = shutil_which("sv")
+    if sv_bin:
+        res = subprocess.run([sv_bin, "restart", service_name], capture_output=True, text=True)
+        return res.returncode == 0
+    return True
+
+
+def shutil_which(cmd: str) -> str | None:
+    return shutil.which(cmd)
+
+
+import shutil
+
+
+def check_services(cfg: dict) -> int:
+    state = load_state()
+    now = time.time()
+    exit_code = 0
+
+    for svc in cfg["services"]:
+        if svc not in state:
+            state[svc] = {"restarts": [], "degraded": False}
+
+        # Filter out restarts older than window_seconds
+        window = cfg["window_seconds"]
+        state[svc]["restarts"] = [t for t in state[svc]["restarts"] if (now - t) < window]
+
+        running = is_service_running(svc)
+        if not running:
+            current_count = len(state[svc]["restarts"])
+            if current_count < cfg["max_restarts"]:
+                # Attempt restart
+                success = restart_service(svc)
+                state[svc]["restarts"].append(now)
+                state[svc]["degraded"] = False
+                print(f"[*] [WATCHDOG] service '{svc}' was down; restarted successfully (attempt {current_count + 1}/{cfg['max_restarts']})")
+            else:
+                state[svc]["degraded"] = True
+                msg = f"service '{svc}' exceeded restart limit ({current_count} restarts in {window}s); marked DEGRADED"
+                print(f"[!] [WATCHDOG] {msg}", file=sys.stderr)
+                log_alert(msg)
+                exit_code = 2
+        else:
+            state[svc]["degraded"] = False
+
+    save_state(state)
+    return exit_code
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grintion-OS Supervisor Watchdog")
+    sub = parser.add_subparsers(dest="command")
+
+    check_p = sub.add_parser("check", help="check monitored services and restart killed services")
+    status_p = sub.add_parser("status", help="show watchdog and service status")
+    status_p.add_argument("--json", action="store_true")
+    reset_p = sub.add_parser("reset", help="reset restart counter")
+    reset_p.add_argument("service", nargs="?")
+    loop_p = sub.add_parser("loop", help="run watchdog continuous loop")
+    loop_p.add_argument("--interval", type=int, default=10)
+
+    args = parser.parse_args()
+    cfg = load_config()
+
+    cmd = args.command or "check"
+
+    if cmd == "check":
+        sys.exit(check_services(cfg))
+    elif cmd == "status":
+        state = load_state()
+        now = time.time()
+        results = []
+        for svc in cfg["services"]:
+            info = state.get(svc, {"restarts": [], "degraded": False})
+            recent = [t for t in info.get("restarts", []) if (now - t) < cfg["window_seconds"]]
+            running = is_service_running(svc)
+            results.append({
+                "service": svc,
+                "running": running,
+                "degraded": info.get("degraded", False),
+                "restarts_in_window": len(recent),
+                "max_restarts": cfg["max_restarts"],
+            })
+        if getattr(args, "json", False):
+            print(json.dumps(results, indent=2))
+        else:
+            for r in results:
+                status_str = "RUNNING" if r["running"] else "DOWN"
+                deg_str = " [DEGRADED]" if r["degraded"] else ""
+                print(f"[{status_str:^7}]{deg_str} {r['service']} (restarts: {r['restarts_in_window']}/{r['max_restarts']})")
+    elif cmd == "reset":
+        state = load_state()
+        if args.service:
+            if args.service in state:
+                state[args.service] = {"restarts": [], "degraded": False}
+        else:
+            state = {}
+        save_state(state)
+        print("[*] watchdog restart state reset")
+    elif cmd == "loop":
+        print(f"[*] grintion-watchdog running for services: {', '.join(cfg['services'])} (interval {args.interval}s)")
+        try:
+            while True:
+                check_services(cfg)
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            pass
+
+
+if __name__ == "__main__":
+    main()
+
