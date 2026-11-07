@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""grintion-report - collect sanitized diagnostic and bug-report bundle."""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from pathlib import Path
+
+# Privacy redaction regexes
+RE_IPV4 = re.compile(r"\b(?!127\.\d+\.\d+\.\d+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
+RE_MAC = re.compile(r"\b([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})\b")
+RE_PASS = re.compile(r"(?i)(password|psk|passphrase|token|secret|key)\s*[:=]\s*\S+")
+
+
+def sanitize_text(text: str) -> str:
+    cleaned = RE_PASS.sub(r"\1=[REDACTED_SECRET]", text)
+    cleaned = RE_MAC.sub("[REDACTED_MAC]", cleaned)
+    cleaned = RE_IPV4.sub("[REDACTED_IP]", cleaned)
+    return cleaned
+
+
+def collect_command_output(cmd: list[str]) -> str:
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+        return res.stdout + (f"\nSTDERR:\n{res.stderr}" if res.stderr else "")
+    except Exception as e:
+        return f"Error executing {cmd}: {e}"
+
+
+def collect_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"Unable to read {path}: {e}"
+
+
+def build_report_bundle(out_path: Path | None = None) -> Path:
+    ts = int(time.time())
+    nodename = os.uname().nodename
+    filename = f"grintion-report-{nodename}-{ts}.tar.gz"
+    dest = out_path or (Path.cwd() / filename)
+
+    with tempfile.TemporaryDirectory() as td:
+        bundle_dir = Path(td) / "bundle"
+        bundle_dir.mkdir()
+
+        # System info
+        sys_info = [
+            f"Host: {nodename}",
+            f"Kernel: {os.uname().release} {os.uname().version}",
+            f"Timestamp: {ts}",
+        ]
+        (bundle_dir / "system.txt").write_text(sanitize_text("\n".join(sys_info) + "\n"), encoding="utf-8")
+
+        # OS Release
+        os_rel = collect_file(Path("/etc/os-release"))
+        (bundle_dir / "os-release.txt").write_text(sanitize_text(os_rel), encoding="utf-8")
+
+        # Cmdline
+        cmdline = collect_file(Path("/proc/cmdline"))
+        (bundle_dir / "cmdline.txt").write_text(sanitize_text(cmdline), encoding="utf-8")
+
+        # Hardware & Disks
+        lsblk_out = collect_command_output(["lsblk", "-f"])
+        (bundle_dir / "lsblk.txt").write_text(sanitize_text(lsblk_out), encoding="utf-8")
+
+        df_out = collect_command_output(["df", "-h"])
+        (bundle_dir / "df.txt").write_text(sanitize_text(df_out), encoding="utf-8")
+
+        # Runit services
+        sv_dir = Path("/var/service")
+        if sv_dir.is_dir():
+            services = [s.name for s in sv_dir.iterdir() if not s.name.startswith(".")]
+            (bundle_dir / "services.txt").write_text("\n".join(services) + "\n", encoding="utf-8")
+
+        # Dmesg preview
+        dmesg_out = collect_command_output(["dmesg"])
+        (bundle_dir / "dmesg.txt").write_text(sanitize_text(dmesg_out[:10000]), encoding="utf-8")
+
+        # Build tarball
+        with tarfile.open(dest, "w:gz") as tar:
+            tar.add(bundle_dir, arcname=f"grintion-report-{ts}")
+
+    return dest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-report",
+        description="Generate a sanitized bug-report and diagnostic bundle.",
+    )
+    parser.add_argument("--out", help="Output path for the .tar.gz bundle")
+    parser.add_argument("--json", action="store_true", help="Output path in JSON")
+    args = parser.parse_args()
+
+    out_file = Path(args.out) if args.out else None
+    bundle_path = build_report_bundle(out_file)
+
+    if args.json:
+        import json
+        print(json.dumps({"status": "created", "path": str(bundle_path), "size_bytes": bundle_path.stat().st_size}, indent=2))
+        return 0
+
+    print("==================================================")
+    print("        GRINTION-OS DIAGNOSTIC REPORT BUNDLE      ")
+    print("==================================================")
+    print(f"Bundle Created: {bundle_path}")
+    print(f"Size:           {bundle_path.stat().st_size} bytes")
+    print("\nData Sanitization Applied:")
+    print("  • IP addresses redacted")
+    print("  • MAC addresses masked")
+    print("  • Passwords, tokens, and keys stripped")
+    print("\nAttach this bundle to your GitHub issue or support report.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

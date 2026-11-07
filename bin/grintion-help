@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""grintion-help - error code catalog, troubleshooting assistant, and documentation lookup."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+ERRORS_FILE = Path(os.environ.get("GRINTION_ERRORS_JSON", "/etc/grintion/errors.json"))
+
+TOPICS = {
+    "packages": "Manage software via 'garb': garb search, install, upgrade, generations, and rollback-generation.",
+    "services": "Manage background daemons with runit: sv status /var/service/*, sv up/down <svc>, or grintion-watchdog.",
+    "network": "Wi-Fi, roaming, and privacy via 'grintion-network': scan, connect, saved-networks, roam, dns-leak-test.",
+    "security": "System hardening profiles via 'grintion-security': workstation, server, kiosk, air-gapped.",
+    "diagnostics": "Health checks via 'grintion-doctor --fix', 'grintion-hcl', and 'grintion-report'.",
+}
+
+
+def load_errors() -> dict[str, dict]:
+    # Look in local repo etc/grintion/errors.json if root not installed
+    local_err = Path(__file__).resolve().parent.parent / "etc/grintion/errors.json"
+    target = ERRORS_FILE if ERRORS_FILE.is_file() else local_err
+    if not target.is_file():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        return data.get("errors", {})
+    except Exception:
+        return {}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-help",
+        description="Grintion-OS error catalog and troubleshooting help helper.",
+    )
+    parser.add_argument("query", nargs="?", help="Error code (e.g. E-BOOT-001) or topic name")
+    parser.add_argument("--list", action="store_true", help="List all cataloged error codes")
+    parser.add_argument("--search", help="Search error causes and descriptions by keyword")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON")
+    args = parser.parse_args()
+
+    errors = load_errors()
+
+    if args.list:
+        if args.json:
+            print(json.dumps(errors, indent=2))
+        else:
+            print(f"{'CODE':12} {'TITLE'}")
+            print("-" * 50)
+            for code, info in sorted(errors.items()):
+                print(f"{code:12} {info['title']}")
+        return 0
+
+    if args.search:
+        term = args.search.lower()
+        matches = {c: i for c, i in errors.items() if term in i['title'].lower() or term in i['cause'].lower() or term in i['fix'].lower()}
+        if args.json:
+            print(json.dumps(matches, indent=2))
+        else:
+            print(f"Search results for '{args.search}' ({len(matches)} matches):")
+            for code, info in matches.items():
+                print(f"  [{code}] {info['title']}")
+                print(f"         Cause: {info['cause']}")
+                print(f"         Fix:   {info['fix']}")
+        return 0
+
+    if not args.query:
+        print("Grintion-OS Help System")
+        print("Usage: grintion-help <ERROR_CODE|TOPIC> or grintion-help --list")
+        print("\nAvailable Topics:")
+        for t, desc in TOPICS.items():
+            print(f"  • {t:12} : {desc}")
+        return 0
+
+    q = args.query.upper()
+    if q in errors:
+        item = errors[q]
+        if args.json:
+            print(json.dumps({q: item}, indent=2))
+        else:
+            print(f"==================================================")
+            print(f" ERROR: {q} - {item['title']}")
+            print(f"==================================================")
+            print(f"\nCause:\n  {item['cause']}")
+            print(f"\nRecommended Remediation:\n  {item['fix']}")
+        return 0
+
+    # Check topic
+    t_key = args.query.lower()
+    if t_key in TOPICS:
+        if args.json:
+            print(json.dumps({"topic": t_key, "summary": TOPICS[t_key]}, indent=2))
+        else:
+            print(f"Topic '{t_key}':")
+            print(f"  {TOPICS[t_key]}")
+        return 0
+
+    print(f"No error code or topic found matching '{args.query}'. Run 'grintion-help --list' to view all codes.", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

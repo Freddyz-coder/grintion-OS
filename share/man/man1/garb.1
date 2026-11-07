@@ -1,0 +1,37 @@
+.TH GARB 1 "November 2026" "Grintion-OS" "User Commands"
+.SH NAME
+garb \- Grintion Archive and Package Manager
+.SH SYNOPSIS
+.B garb
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIARGS\fR...]
+.SH DESCRIPTION
+.B garb
+is the native package management utility for Grintion-OS. It provides atomic transactions, rollback generations, binary package delta archives, mirror ranking, and cryptographically verified package installations.
+.SH COMMANDS
+.TP
+\fBinstall\fR \fIPKG\fR
+Install one or more packages.
+.TP
+\fBremove\fR \fIPKG\fR
+Remove installed packages.
+.TP
+\fBupgrade\fR
+Upgrade all packages, creating a new atomic rollback generation.
+.TP
+\fBgenerations\fR
+List recorded package generation snapshots.
+.TP
+\fBrollback-generation\fR \fIID\fR
+Roll back package files and database state to a previous generation.
+.TP
+\fBhold\fR \fIPKG\fR / \fBunhold\fR \fIPKG\fR
+Prevent or permit package upgrades.
+.TP
+\fBdelta-create\fR \fIOLD\fR \fINEW\fR \fIOUT\fR
+Generate a binary delta archive between two package versions.
+.TP
+\fBmirror-rank\fR
+Benchmark and sort repository mirrors by network response speed.
+.SH AUTHORS
+Grintion-OS Core Team.
+

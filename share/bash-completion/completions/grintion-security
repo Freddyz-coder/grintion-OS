@@ -1,0 +1,20 @@
+# Bash completion for grintion-security
+_grintion_security() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="status list set verify"
+    local profiles="workstation server kiosk air-gapped"
+
+    if [ $cword -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
+
+    if [ "${words[1]}" = "set" ]; then
+        COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
+        return 0
+    fi
+}
+complete -F _grintion_security grintion-security
+

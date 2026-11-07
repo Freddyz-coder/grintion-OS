@@ -1,0 +1,45 @@
+#!/bin/sh
+exec 2>&1
+echo "Configuring in-memory ZRAM swap device"
+
+if [ -f /etc/grintion/zram.conf ]; then
+    . /etc/grintion/zram.conf
+fi
+
+if [ "${ZRAM_ENABLED:-1}" -ne 1 ]; then
+    echo "ZRAM disabled by configuration"
+    pause
+fi
+
+# Load zram module if not built-in
+modprobe zram 2>/dev/null || true
+
+if [ ! -b /dev/zram0 ]; then
+    echo "zram block device /dev/zram0 not available; idling"
+    pause
+fi
+
+# Compute total memory in MiB
+TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TARGET_MEM_KB=$(( TOTAL_MEM_KB * ${ZRAM_SIZE_PERCENT:-50} / 100 ))
+
+# Set compression algorithm if sysfs attribute exists
+if [ -w /sys/block/zram0/comp_algorithm ]; then
+    echo "${ZRAM_ALGO:-zstd}" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+fi
+
+# Set disksize
+if [ -w /sys/block/zram0/disksize ]; then
+    echo "${TARGET_MEM_KB}K" > /sys/block/zram0/disksize 2>/dev/null || true
+fi
+
+# Initialize swap and turn on
+if command -v mkswap >/dev/null 2>&1 && command -v swapon >/dev/null 2>&1; then
+    mkswap -L zram0 /dev/zram0 >/dev/null 2>&1 || true
+    swapon -p "${ZRAM_PRIORITY:-100}" /dev/zram0 2>/dev/null || true
+    echo "ZRAM swap active (${TARGET_MEM_KB} KiB, ${ZRAM_ALGO:-zstd})"
+fi
+
+# Supervise daemon loop
+exec pause
+

@@ -1,0 +1,22 @@
+#compdef garb
+
+_garb() {
+    local -a commands
+    commands=(
+        'install:Install packages'
+        'remove:Remove packages'
+        'upgrade:Upgrade all packages'
+        'sync:Synchronize repository metadata'
+        'search:Search available packages'
+        'generations:List package generations'
+        'rollback-generation:Rollback to previous generation'
+        'hold:Hold package at current version'
+        'unhold:Unhold package'
+        'mirror-rank:Rank fastest mirrors'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' commands
+    fi
+}
+_garb "$@"

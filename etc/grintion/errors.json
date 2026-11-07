@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "errors": {
+    "E-BOOT-001": {
+      "title": "Limine Bootloader Config Missing",
+      "cause": "The boot configuration /boot/limine.conf could not be found or is corrupted.",
+      "fix": "Boot into live recovery media, chroot via grintion-chroot, and run 'grintion-boot fix'."
+    },
+    "E-BOOT-002": {
+      "title": "TPM PCR Measurement Mismatch",
+      "cause": "PCR 0 or 7 deviated from the baseline snapshot, preventing automatic LUKS unsealing.",
+      "fix": "Enter manual recovery passphrase, inspect firmware changes, and run 'grintion-attest snapshot' to accept new measurements."
+    },
+    "E-PKG-001": {
+      "title": "Garb Lockfile Stale",
+      "cause": "A previous package operation was interrupted, leaving /var/lib/garb/lock active.",
+      "fix": "Run 'grintion-doctor --fix' or verify no garb processes are running and remove /var/lib/garb/lock."
+    },
+    "E-PKG-002": {
+      "title": "Package Signature Verification Failed",
+      "cause": "Downloaded package archive checksum or signature does not match repository index.",
+      "fix": "Verify network connection, refresh repository metadata with 'garb sync', and check signing keys in /etc/garb/keys."
+    },
+    "E-NET-001": {
+      "title": "No Network Carrier Detected",
+      "cause": "Ethernet cable unplugged or Wi-Fi radio powered off.",
+      "fix": "Check physical connection or toggle Wi-Fi radio on with 'grintion-network reconnect'."
+    },
+    "E-NET-002": {
+      "title": "DNS Leak Detected",
+      "cause": "DNS queries are resolving to non-encrypted or unapproved public upstream resolvers.",
+      "fix": "Run 'grintion-network dns-leak-test' and enforce secure DNS profile via 'grintion-config'."
+    },
+    "E-SEC-001": {
+      "title": "File Integrity Tampering Detected",
+      "cause": "One or more critical system binaries differed from the cryptographic baseline.",
+      "fix": "Run 'grintion-integrity check' to identify modified paths, inspect audit logs, and restore official binaries via 'garb reinstall'."
+    },
+    "E-SEC-002": {
+      "title": "USB Storage Device Blocked",
+      "cause": "USB data-block mode or USBGuard policy prevented mounting untrusted mass storage.",
+      "fix": "Authorize device explicitly with 'grintion-usb authorize <DEV>' or switch mode with 'grintion-usb allow-data'."
+    },
+    "E-FS-001": {
+      "title": "Filesystem Dirty or Mount Incomplete",
+      "cause": "Unclean shutdown caused journal replay or dangling mount state.",
+      "fix": "Run fsck or snapshot rollback via 'grintion-snapshot rollback <ID>'."
+    }
+  }
+}
+

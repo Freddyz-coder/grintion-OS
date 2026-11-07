@@ -1,0 +1,25 @@
+.TH GRINTION-CONFIG 1 "November 2026" "Grintion-OS" "System Administration"
+.SH NAME
+grintion-config \- Unified Grintion-OS system configuration tool
+.SH SYNOPSIS
+.B grintion-config
+[\fIOPTIONS\fR] [\fICOMMAND\fR]
+.SH DESCRIPTION
+.B grintion-config
+provides both an interactive terminal menu and a command-line interface for managing timezones, keyboard keymaps, system locales, hostnames, user credentials, power profiles, and runit background services.
+.SH OPTIONS
+.TP
+\fB--tui\fR
+Launch interactive dialog/ncurses configuration menu.
+.TP
+\fB--set-timezone\fR \fITZ\fR
+Update system timezone (/etc/localtime).
+.TP
+\fB--set-hostname\fR \fINAME\fR
+Update system hostname.
+.TP
+\fB--json\fR
+Output current configuration state in JSON.
+.SH AUTHORS
+Grintion-OS Core Team.
+

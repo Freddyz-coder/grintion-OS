@@ -1,0 +1,25 @@
+.TH GRINTION-SECURITY 1 "November 2026" "Grintion-OS" "Security Administration"
+.SH NAME
+grintion-security \- Security hardening profile manager
+.SH SYNOPSIS
+.B grintion-security
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIARGS\fR...]
+.SH DESCRIPTION
+.B grintion-security
+manages and applies defense-in-depth system security profiles for Grintion-OS, orchestrating firewall policies, AppArmor enforcement modes, USB data-blocking, and audit logging.
+.SH COMMANDS
+.TP
+\fBstatus\fR
+Show active profile and compliance state.
+.TP
+\fBlist\fR
+List available security profiles (workstation, server, kiosk, air-gapped).
+.TP
+\fBset\fR \fIPROFILE\fR
+Apply specified profile rules to the system.
+.TP
+\fBverify\fR
+Validate system compliance against active profile constraints.
+.SH AUTHORS
+Grintion-OS Core Team.
+

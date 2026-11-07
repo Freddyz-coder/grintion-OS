@@ -1,0 +1,22 @@
+# Bash completion for garb
+_garb() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="install remove upgrade sync search info list clean generations rollback-generation hold unhold pin downgrade delta-create delta-apply mirror-rank"
+
+    if [ $cword -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
+
+    case "${words[1]}" in
+        rollback-generation|pin|hold|unhold)
+            # Subcommand completion
+            ;;
+        *)
+            ;;
+    esac
+}
+complete -F _garb garb
+
