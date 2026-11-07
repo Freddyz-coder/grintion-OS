@@ -10,8 +10,9 @@ garb --root /mnt install demo-hello
 
 Version 0.10.0 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
-durable journal and an fsck command. It does **not** build from source, run
-maintainer scripts, or deliver delta updates.
+durable journal, package generations and rollback (`garb generations`), binary delta
+updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
+ranking, and an fsck command.
 
 ---
 
@@ -30,6 +31,15 @@ maintainer scripts, or deliver delta updates.
 | `garb list [--upgradable\|--available]` | List installed packages (default), packages with a newer index version, or repository packages. Native backend only. |
 | `garb info PACKAGE [--installed]` | Show package metadata; `--installed` refuses to fall back to repository data (pacman maps this to `-Qi`). |
 | `garb clean` | Remove cached repository indexes and downloads. Native backend only. Run `garb update` before the next install. |
+| `garb generations` | List historical system package generations. |
+| `garb rollback-generation ID` | Roll back system package state to a previous generation snapshot. |
+| `garb hold [PACKAGE...]` | Hold packages to prevent automatic upgrades. |
+| `garb unhold [PACKAGE...]` | Remove hold on packages. |
+| `garb pin SPEC` | Pin package to specific version (e.g. `openssl=3.0.12`). |
+| `garb downgrade PKG VER` | Downgrade a package to a specific version. |
+| `garb mirror-rank` | Measure and rank repository mirror latencies. |
+| `garb delta-create --old A --new B --out D` | Create a binary delta patch between two package versions. |
+| `garb delta-apply --old A --delta D --out B` | Reconstruct a target package from an old package and a delta patch. |
 | `garb history [--limit N] [--format json]` | Show the durable transaction journal (`started`, `committed`, `rolled-back`). |
 | `garb fsck [--hash] [--format json]` | Check database structure, duplicate ownership, missing/tampered files, incomplete journal records and leftover rollback backups. |
 | `garb build GARBFILE [-o DIR]` | Build one package archive from a `Garbfile`. |

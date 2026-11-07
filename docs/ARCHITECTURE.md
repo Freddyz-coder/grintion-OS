@@ -3,7 +3,7 @@
 Grintion-OS is an x86_64 Linux operating system built around a source-built
 Linux kernel, a runit userland, a read-only live root that can be overlaid
 with RAM or persistent storage, and full support for graphical desktop
-environments (XFCE, GNOME, KDE Plasma, Sway, LXQt) via garb and grintion-desktop.
+environments (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) via garb and grintion-desktop.
 This document describes the moving parts and the reasoning behind them.
 
 ```text
@@ -284,13 +284,13 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 
 | Boundary | Implementation |
 | --- | --- |
-| Boot chain | Limine loads an unsigned kernel and initramfs. **No Secure Boot, no signature, no measured boot.** |
+| Boot chain | Live ISO boots via Limine. Installed systems support Unified Kernel Images (UKI) and Secure Boot with locally enrolled MOK keys (`grintion-secureboot`), plus TPM 2.0 PCR attestation (`grintion-attest`). |
 | Kernel | BPF syscall, kexec, hibernation, binfmt_misc and `/dev/mem` are disabled at build time; io_uring is disabled at runtime by sysctl; only build-signed modules load. |
-| Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. |
-| Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set. |
-| Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default. |
-| Packages | Native `garb` uses Ed25519-signed, expiring indexes and refuses setuid packages. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseOptional` (Arch publishes no database signatures) and `/etc/mtab` tracking `/proc/self/mounts`. |
-| Storage | No encryption, no integrity measurement, no verified boot. The persistence partition is plain ext4. |
+| Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. AppArmor profiles enforce daemon isolation; Bubblewrap sandboxing (`grintion-sandbox`) isolates applications. |
+| Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set; auditd trails and sudo I/O logging active (`grintion-audit-log`). |
+| Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default; `grintion-network` manages roaming, enterprise 802.1X, and MAC randomization. |
+| Packages | Native `garb` uses Ed25519-signed, expiring indexes, atomic generations, and rollback. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseOptional` (Arch publishes no database signatures) and `/etc/mtab` tracking `/proc/self/mounts`. |
+| Storage | Installed systems support LUKS2 full-disk root encryption, encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home`. TPM sealing (`grintion-tpm-luks`) and file integrity checks (`grintion-integrity`) are built in. The live persistence partition remains plain ext4. |
 
 The live image intentionally grants passwordless root on the console. That is a
 property of the medium, not of installed systems.
@@ -317,6 +317,6 @@ Vendored binaries:
 
 - Limine 8.7.0 bootloader assets.
 
-This split is the main architectural compromise of 0.8.0. See
+This split is the main architectural compromise of 0.10.0. See
 [BUILDING.md](BUILDING.md) and the "What independent means" section in the
 README.

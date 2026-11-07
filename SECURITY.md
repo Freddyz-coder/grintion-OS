@@ -8,7 +8,7 @@ hardened, audited, or verified-boot platform. This document states what the
 
 | Version | Supported |
 | --- | --- |
-| 0.9.x | Security fixes on a best-effort basis |
+| 0.10.x | Security fixes on a best-effort basis |
 | Earlier versions | No |
 
 There is no long-term-support branch and no guaranteed response time. Security
@@ -47,8 +47,11 @@ bounty and no formal disclosure deadline.
   if a required symbol is dropped.
 - Every loadable module is signed by the build; `CONFIG_MODULE_SIG_FORCE=y`
   rejects unsigned modules. Third-party out-of-tree modules will not load.
-- The ISO boots an unsigned kernel and initramfs through Limine. There is no
-  signature check in the boot chain.
+- The live ISO boots an unsigned kernel and initramfs through Limine for broad
+  hardware compatibility. On installed systems, Unified Kernel Images (UKI)
+  and Secure Boot with user-enrolled Machine Owner Keys (MOK) are supported via
+  `grintion-secureboot` and `grintion-uki`, alongside TPM 2.0 PCR attestation
+  (`grintion-attest`).
 
 ### Runtime
 
@@ -141,25 +144,28 @@ phone-home service.
 
 These are explicit design limits, not bugs to be reported as vulnerabilities:
 
-- **No Secure Boot or verified boot.** Limine and the kernel are unsigned. An
-  attacker who can modify the boot medium or firmware can replace the system.
-- **No disk encryption.** Installed roots and the persistence partition are
-  plain ext4. Anyone with physical access can read them.
-- **No mandatory access control.** SELinux and AppArmor are not included.
-- **No sandbox for packages.** `garb` runs as root and writes directly to the
-  target root. Package authors are trusted once their index key is trusted.
+- **Secure Boot & verified boot out of the box.** The default installation media does not
+  include a third-party (e.g. Microsoft-signed) shim. Secure Boot requires enrolling
+  local MOK keys via `grintion-secureboot` and building signed UKIs.
+- **Disk encryption on live persistence.** While the installer provides LUKS2 full-disk
+  encryption for installed roots, encrypted `/home`, and encrypted swap, live
+  sessions with persistence (`GRINTION_PERSIST`) remain plain unencrypted ext4.
+- **Mandatory access control scope.** AppArmor profiles are included and enforced for
+  network tools, `garb`, and browser sandboxes (`grintion-sandbox`). System-wide
+  enforcing SELinux is experimental and not default.
 - **No package-level signatures.** A compromised repository signing key
   compromises every package in that repository.
 - **The pacman backend trusts Arch upstream.** It trusts Arch official repositories
   and the copied Arch public keyring rather than a dedicated Grintion key. Upstream
   packages and hooks may assume systemd for service enablement.
-- **No security audit.** The code has not been independently reviewed.
-- **Physical access defeats the model.** Firmware, boot media and disks are not
-  protected against an attacker with physical control of the machine.
+- **No independent security audit.** The code has not been independently reviewed
+  by a third-party security firm.
+- **Physical access without encryption defeats the model.** When LUKS2 encryption is not
+  enabled at install time, physical access permits root access.
 - **The live medium is not private.** Console root is passwordless by design,
   and everything in the RAM overlay is lost on poweroff.
-- **No automatic updates.** Operators must update packages and rebuild images
-  themselves.
+- **No automatic background updates.** Operators must initiate package upgrades and
+  rebuild images themselves.
 - **Host-dependent userland.** The live userland is copied from the Arch build
   host; its patch level is whatever the host provides. See
   [docs/BUILDING.md](docs/BUILDING.md).
@@ -173,7 +179,7 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 | Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
 | Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
 | `garb` repositories | Ed25519 index signature and per-file SHA-256 |
-| Release artifact (ISO) | SHA-256 checksum; a detached Ed25519 signature only when an operator supplies a published release key. No release key is published for 0.9.x, so the ISO is **unsigned**. `grintion-release-verify` reports this explicitly. |
+| Release artifact (ISO) | SHA-256 checksum; a detached Ed25519 signature when an operator signs the release using `make sign-release` and `GRINTION_RELEASE_KEY`. `grintion-release-verify` checks checksums and detached signatures. |
 | Arch packages (pacman backend) | Arch public keyring, pinned by `config/pacman-keyring.sha256`, with `SigLevel = Required DatabaseOptional` (Arch publishes no `.db.sig`) |
 
 `make check` verifies shell syntax, Python compilation, executable bits,
@@ -190,7 +196,6 @@ reports the runtime posture without changing it. It exits 0 by default and
 - Remove `garb` and Python if you do not need package management.
 - Replace the default nftables ruleset before enabling any inbound service.
 - Set a root password and use `sudo` only where needed.
-- Encrypt the disk before installing if you need confidentiality at rest; the
-  installer does not do it for you.
+- Use `grintion-install --encrypt` during installation to ensure LUKS2 disk confidentiality at rest.
 - Rebuild the kernel with your own configuration fragment and keep
   `build/check-kernel-config.sh` in the loop.

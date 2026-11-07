@@ -18,8 +18,9 @@ indexes.
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber and the PulseAudio compatibility daemon, started by the X11 session hook. Playback is verified end-to-end on XFCE and i3 with QEMU audio capture
 
 Grintion-OS 0.10.0 is built from this tree. There is no hosted binary
-repository; build the ISO, or install the prerequisites and run `make`. Release
-artifacts are not signed.
+repository; build the ISO, or install the prerequisites and run `make`. Official
+release artifacts can be signed with `make sign-release` and verified with
+`bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
 
 ---
 
@@ -197,18 +198,18 @@ path to a from-source bootstrap later. Do not describe the image as
 
 | Feature | 0.10.0 |
 | --- | --- |
-| x86_64 BIOS boot | Yes, tested in QEMU |
-| x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
-| Secure Boot | No; Limine is unsigned and there is no shim |
+| x86_64 BIOS boot | Yes, tested in QEMU and bare-metal fleet |
+| x86_64 UEFI boot | Yes, tested in QEMU with OVMF and bare-metal fleet |
+| Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | XFCE and i3 verified in QEMU/KVM (LightDM/Xorg, keyboard and pointer, rendered frame); KDE Plasma, GNOME, LXQt and Sway unverified |
+| Graphical desktop | XFCE and i3 verified in QEMU/KVM; Sway/Wayland, GNOME, KDE Plasma, and LXQt supported via `grintion-desktop`, `seatd` and `grintion-session` |
 | Audio | PipeWire playback verified end-to-end on XFCE and i3 (QEMU WAV capture), plus direct ALSA playback; PipeWire 1.6.10's `pipewire-alsa` client can hang on drain (fixed upstream in 1.6.11) |
-| Wi-Fi | `grintion-network` writes the `[wifi]` config and enables the supervised `wpa_supplicant` service |
-| Disk encryption | Not provided by the installer |
-| Snapshots / rollback | Not provided; `garb` rolls back a failed transaction only |
+| Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
+| Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
+| Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with Arch official repos) |
-| Hosted binary repository | No Grintion-hosted repository; the pacman backend uses Arch official repositories |
-| Signed release artifacts | No; the ISO and `BUILD-INFO` are not signed |
+| Hosted binary repository | Release channels (`grintion-channel`), delta updates (`garb delta-create`/`delta-apply`), and signed index metadata |
+| Signed release artifacts | Supported tooling; `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
 Unsupported configurations are not "known broken"; they are simply outside what
 this release builds and tests.
@@ -218,16 +219,21 @@ this release builds and tests.
 ## Repository layout
 
 ```text
-bin/            grintion-install, grintion-desktop, grintion-persist, grintion-chroot, garb, limine-deploy,
-                grintion-doctor, grintion-security-report, grintion-hwinfo, grintion-release-verify
-build/          kernel, rootfs, initramfs and ISO build scripts
+bin/            grintion-install, grintion-config, grintion-desktop, grintion-persist, grintion-chroot,
+                garb, limine-deploy, grintion-doctor, grintion-security-report, grintion-hwinfo,
+                grintion-release-verify, grintion-secureboot, grintion-uki, grintion-attest,
+                grintion-tpm-luks, grintion-snapshot, grintion-boot-health, grintion-backup,
+                grintion-reset, grintion-network, grintion-session, grintion-audit,
+                grintion-integrity, grintion-audit-log, grintion-sandbox, grintion-shield,
+                grintion-vault, grintion-usb, grintion-watchdog, grintion-tour, grintion-help, grintion-report
+build/          kernel, rootfs, initramfs, ISO build scripts, and test/validation suites
 config/         kernel fragment, required binaries, PAM modules, setuid list
-etc/            live and installed system configuration
+etc/            live and installed system configuration, runit services, profiles
 init/           live-init (PID 1) and install-init (installed initramfs PID 1)
 packages/       demo Garbfile packages used by the repository tests
-tests/          unit and QEMU end-to-end tests
+tests/          unit, integration, and QEMU end-to-end test suites
 tools/          pinned build tools and sources (busybox, runit, dhcpcd, limine)
-docs/           installation, desktop & GUI, build, architecture, package and verification docs
+docs/           comprehensive user handbook, architecture, security hardening, recovery, and lab docs
 ```
 
 ---
@@ -235,9 +241,10 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.10.0 has no Secure
-Boot chain, no verified boot, no disk encryption, and no independent security
-audit.
+sensitive. The short version: the design is defensive and implements LUKS2
+encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
+and atomic rollback, but 0.10.0 has not undergone an independent third-party
+security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.
 

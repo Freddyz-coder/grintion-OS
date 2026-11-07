@@ -83,11 +83,14 @@ cat /var/log/dhcpcd.log  # View DHCP daemon logs
 # 1. Identify target drive (e.g. /dev/sda, /dev/vda, /dev/nvme0n1)
 lsblk
 
-# 2. Run installer (formats disk, copies system, creates user)
+# 2. Interactive guided TUI installer (Recommended):
+grintion-install --tui
+
+# 3. Direct automated install:
 grintion-install --disk /dev/sda --user grintion --desktop xfce
 
-# Or interactive mode:
-grintion-install --disk /dev/sda
+# 4. Install with full disk encryption (LUKS2):
+grintion-install --disk /dev/sda --encrypt --user grintion
 ```
 
 ---

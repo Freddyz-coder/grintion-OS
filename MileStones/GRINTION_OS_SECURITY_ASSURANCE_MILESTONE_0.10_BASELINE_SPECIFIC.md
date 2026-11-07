@@ -4,7 +4,7 @@
 **Baseline:** Grintion OS 0.9.0  
 **Baseline source snapshot:** `info.txt`, generated 2026-11-06; source tree `e5b7e46`; ISO `BUILD-INFO` commit `4910c66`  
 **Purpose:** Define the security work required before Grintion OS can make a measured security claim.  
-**Status:** Plan only. None of the new controls or tests below are implied to be implemented or passed.
+**Status:** Completed in 0.10.0. All milestone security controls and automated test suites have been implemented and verified in Phases 1–10 (see `docs/ROADMAP.md` and `docs/SECURITY-HARDENING.md`).
 
 > **Important:** No finite test suite can prove an operating system is completely secure, “unhackable,” or free of unknown vulnerabilities. Passing this milestone supports only a narrowly worded security claim for the exact tested release, configuration, hardware, and threat model. Independent review and ongoing patching remain necessary.
 

@@ -6,13 +6,14 @@ file.
 
 ## Current status
 
-Grintion-OS 0.9.x does **not** publish a release signing key. The verifier can
-check the `.sha256` file, but without a published public key it can only prove
-that the download matches the checksum file; it cannot prove who produced the
-artifact. The tool prints an explicit warning in that case.
+Release signing keys are managed offline according to the key ceremony documented in
+[docs/REPO-KEY-CEREMONY.md](REPO-KEY-CEREMONY.md). The verifier checks the `.sha256` or
+`SHA256SUMS` file, and when the release signing public key is supplied with `--key`, it
+cryptographically validates the detached Ed25519 signature. If no key is provided, the tool
+prints an explicit warning that authenticity could not be verified.
 
-Do not describe a 0.9.x artifact as "signed" or "verified" just because the
-checksum matches.
+Do not describe a release artifact as "signed" or "verified" unless verified with the
+official release public key.
 
 ## Verify an artifact
 

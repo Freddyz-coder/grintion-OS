@@ -21,8 +21,10 @@ sync
 ```
 
 Replace `/dev/sdX` with the whole device, not a partition. The image is hybrid
-and boots on BIOS and UEFI systems. Secure Boot must be disabled in firmware:
-the Limine bootloader is not signed and there is no shim.
+and boots on BIOS and UEFI systems. Secure Boot must be disabled in firmware to boot
+the live installation media, as the live Limine bootloader does not carry a Microsoft-signed
+shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollment; see
+[docs/SECURE-BOOT.md](SECURE-BOOT.md)).
 
 ## 2. Boot the live environment
 

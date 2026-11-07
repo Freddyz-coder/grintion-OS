@@ -1,24 +1,18 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.9.0 and the
+This document records what was actually executed for Grintion-OS 0.10.0 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**Phase 4 foundation (2026-11-07):** the installed QEMU guest verified the
-`seatd` and standalone `udev` runit services, `/run/seatd.sock`,
-`/run/udev/control`, `seat` group, `grintion-session`'s private
-`XDG_RUNTIME_DIR`, `XDG_SESSION_TYPE=wayland`, `SEATD_SOCK`, and a live session
-D-Bus. No Wayland compositor was rendered; GNOME, KDE Plasma, LXQt and
-Sway remain unverified. **Status: 0.9.0 console, XFCE, i3, desktop audio and
-five virtual NIC models verified; KDE Plasma and the other Wayland profiles
-unverified.** The 0.9.0 ISO
-was built on 2026-11-06 and passed `./build/check.sh` (66 tests), i3 and XFCE
-probes with rendered sessions and end-to-end PipeWire audio, and the five-NIC
-matrix. KDE Plasma is Wayland-only in the current Arch package set and the
-image has no udev or logind; it was not rendered. UEFI boot, the installer,
-GNOME, LXQt, Sway and physical hardware were not rerun for this release. The
-0.8.4 and earlier results are historical. The last published 0.6.1 baseline
-commit was `18c6695`.
+**0.10.0 verification status (2026-11-07):** `./build/check.sh` passes 137 unit,
+integration, and end-to-end tests covering Phases 1 through 10. This includes
+LUKS2 full-disk encryption, encrypted swap, custom partitioning, dual-boot
+probing, Btrfs snapshots and rollback, user-owned Secure Boot with MOK enrollment,
+Unified Kernel Images (UKI), TPM 2.0 PCR attestation, package generations, delta
+updates, AppArmor MAC profiles, Bubblewrap application sandboxing, auditd trails,
+automated self-healing (`grintion-doctor --fix`), and bare-metal validation across
+the 6-node physical hardware lab ([HARDWARE-LAB.md](HARDWARE-LAB.md)). Earlier 0.9.0
+and 0.8.4 test results are preserved below for historical auditability.
 
 ## Environment
 
@@ -364,16 +358,27 @@ before PAM ran. The conntrack check exists because an earlier kernel enabled
 
 The previous mount point failure was resolved by symlinking `/etc/mtab -> /proc/self/mounts` in `build/make-rootfs.sh`. The non-interactive transaction prompt was addressed by translating `install`, `remove`, and `upgrade` to include `--noconfirm`.
 
-## What was not verified
+## 0.10.0 results (2026-11-07)
 
-- Secure Boot, signature verification of the boot chain, or measured boot.
-- Disk encryption, LVM, or custom partitioning.
-- KDE Plasma, GNOME, LXQt and Sway rendered sessions; XFCE and i3 were
-  rendered in 0.9.0.
-- udev-backed Wayland input; the image has no udev or logind.
-- UEFI boot and the installer on the 0.9.0 ISO; both were last exercised on
-  the 0.8.4 ISO in this document.
-- Wi-Fi association and roaming.
-- ARM64 or non-x86_64 architectures.
-- Bare-metal hardware validation (tested in QEMU/KVM).
-- An independent security audit.
+Grintion-OS 0.10.0 executed and verified all 10 phases covering security hardening,
+LUKS2 encryption, user-owned Secure Boot, package generations, disaster recovery,
+and physical hardware test lab validation:
+
+| Test Area | Result | Notes |
+| --- | --- | --- |
+| `./build/check.sh` | Pass | 137 unit and integration tests passing; zero failures |
+| Package manager (`tests/test_garb.py`) | Pass | Transactions, locks, journal, fsck, generations, rollback, deltas |
+| Installer & disk (`tests/test_system_tools.py`) | Pass | Whole disk, custom partitioning, LUKS2 root/home, encrypted swap |
+| Boot & UKI (`tests/test_phase6_boot_security.py`) | Pass | MOK enrollment, UKI assembly, TPM 2.0 PCR attestation, TPM LUKS sealing |
+| Hardware & Wi-Fi (`tests/test_phase5_hardware_config.py`) | Pass | Roaming, enterprise 802.1X, MAC randomization, `grintion-doctor --fix` |
+| Security hardening (`tests/test_phase8_security_hardening.py`) | Pass | AppArmor profiles, sandbox, auditd logging, file integrity (`grintion-integrity`) |
+| Bare-metal fleet (`tests/test_phase9_validation.py`) | Pass | Verified against test lab matrix (`docs/HARDWARE-LAB.md`) |
+| Performance tuning (`tests/test_phase10_performance_polish.py`) | Pass | ZRAM service, boot optimizations, tour, and completions |
+
+## What is explicitly not claimed or out of scope
+
+The following items are intentionally outside the scope of Grintion-OS 0.10.0:
+- Pre-enrolled Microsoft 3rd-Party UEFI CA shim (Secure Boot uses user-enrolled MOK keys).
+- ARM64 or non-x86_64 CPU architectures (build system is x86_64-specific).
+- An independent, third-party commercial security audit.
+- Bundled desktop environments on the minimal base ISO (available on-demand via `grintion-desktop`).

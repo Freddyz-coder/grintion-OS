@@ -40,14 +40,14 @@ provide the pointer integration and display resize support.
 
 ## Audio
 
-The 0.9.0 kernel has the HDA controller, HDA codec parsers and USB audio built
+The 0.10.0 kernel has the HDA controller, HDA codec parsers and USB audio built
 in. The desktop profiles install `pipewire`, `pipewire-pulse`, `pipewire-alsa`,
 `wireplumber`, `alsa-ucm-conf`, `sof-firmware` and `alsa-utils`. The X11 session
 hook starts PipeWire, WirePlumber and the PulseAudio compatibility daemon
 because this image has no systemd user manager to activate their sockets.
 
-If an older 0.8.x installation has no sound, reinstall the desktop profile to
-pull the audio packages and session hook from 0.9.0:
+If an older installation has no sound, reinstall the desktop profile to
+pull the audio packages and session hook:
 
 ```sh
 sudo grintion-desktop install xfce   # or i3, gnome, kde, lxqt, sway

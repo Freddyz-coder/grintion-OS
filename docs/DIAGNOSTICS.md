@@ -13,6 +13,7 @@ is missing.
 ```sh
 grintion-doctor            # component check
 grintion-doctor --security # delegate to the security posture report
+grintion-doctor --fix      # safe, automated repair of common runtime/permission issues
 ```
 
 ## `grintion-security-report`
@@ -29,9 +30,10 @@ grintion-security-report --json       # machine-readable
 grintion-security-report --strict     # exit 1 on any warning or failure
 ```
 
-The report is deliberately honest: a control that is not implemented is
-reported as a warning, not as a pass. On 0.9.x you should expect warnings for
-disk encryption, AppArmor, auditd, AIDE and USBGuard.
+The report is deliberately honest: a control that is not configured or active is
+reported as a warning, not as a pass. On an unhardened or minimal installation, expect
+warnings for unconfigured controls (e.g. unencrypted root or unenrolled MOK); after
+configuring LUKS2, AppArmor, auditd, AIDE and USBGuard, those controls report a pass.
 
 ## `grintion-hwinfo`
 
