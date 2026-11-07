@@ -35,7 +35,9 @@ EOF
 }
 
 load_profile() {
-    local name="$1" file="$PROFILES_DIR/$name.conf"
+    local name file
+    name="$1"
+    file="$PROFILES_DIR/$name.conf"
     [ -f "$file" ] || die "unknown profile: $name (see 'grintion-apps list')"
     unset NAME DESCRIPTION PACKAGES
     # shellcheck disable=SC1090

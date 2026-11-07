@@ -249,6 +249,17 @@ verify_binaries() {
     if [ ${#missing[@]} -gt 0 ]; then
         die "installation did not provide: ${missing[*]}"$'\n'"        run 'sudo garb update' to refresh the databases, then retry; the package manager errors are above"
     fi
+    for bin in "$@"; do
+        [ -n "$bin" ] || continue
+        if [ -f "$TARGET_ROOT$bin" ]; then
+            local missing_so
+            missing_so=$(LD_LIBRARY_PATH="$TARGET_ROOT/usr/lib:$TARGET_ROOT/lib" ldd "$TARGET_ROOT$bin" 2>/dev/null | grep 'not found' || true)
+            if [ -n "$missing_so" ]; then
+                warn "binary $bin has missing shared libraries:"
+                printf '%s\n' "$missing_so" >&2
+            fi
+        fi
+    done
 }
 
 # Accounts that packages normally create with systemd-sysusers. Without them
@@ -594,8 +605,8 @@ cmd_status() {
 cmd_drivers() {
     [ "$(id -u)" -eq 0 ] || die "Driver installation requires root privileges"
     log "Scanning hardware for GPU devices..."
-    local drivers
-    drivers=($(detect_gpu_drivers))
+    local drivers=()
+    read -r -a drivers <<< "$(detect_gpu_drivers)"
     log "Recommended drivers: ${drivers[*]}"
     pkg_install "${drivers[@]}"
     log "GPU drivers installed successfully."
@@ -658,8 +669,8 @@ cmd_install() {
     # 1. Install GPU Drivers
     if [ "$SKIP_DRIVERS" -eq 0 ]; then
         log "Detecting and preparing GPU drivers..."
-        local drv_list
-        drv_list=($(detect_gpu_drivers))
+        local drv_list=()
+        read -r -a drv_list <<< "$(detect_gpu_drivers)"
         base_pkgs+=("${drv_list[@]}")
     fi
 
@@ -697,6 +708,24 @@ cmd_install() {
         mkdir -p "$TARGET_ROOT/usr/bin"
         printf '#!/bin/sh\nexec openssl rand -hex 16\n' > "$TARGET_ROOT/usr/bin/mcookie"
         chmod 0755 "$TARGET_ROOT/usr/bin/mcookie"
+    fi
+
+    # Ensure Xwrapper.config exists so unprivileged console users can run startx.
+    # pacman's xorg-server package does not ship this file; without it Xorg
+    # refuses to start for non-root users even when needs_root_rights=yes would
+    # allow it.  Write it only when xorg-server was actually installed.
+    if [ -x "$TARGET_ROOT/usr/bin/Xorg" ] || [ -x "$TARGET_ROOT/usr/bin/X" ]; then
+        local xwrapper_dir="$TARGET_ROOT/etc/X11"
+        mkdir -p "$xwrapper_dir"
+        if [ ! -f "$xwrapper_dir/Xwrapper.config" ]; then
+            cat > "$xwrapper_dir/Xwrapper.config" << 'EOF'
+# Xwrapper.config for Grintion-OS
+# Allows unprivileged console users to launch Xorg without systemd-logind
+allowed_users = console
+needs_root_rights = yes
+EOF
+            chmod 0644 "$xwrapper_dir/Xwrapper.config"
+        fi
     fi
 
     # 3. Configure Display Manager if applicable

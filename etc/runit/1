@@ -50,6 +50,12 @@ if ! mountpoint -q /var/tmp; then
 fi
 chmod 1777 /tmp /var/tmp
 
+# Standard X11 and ICE sockets directories: must exist with mode 1777 owned by root:root
+# so rootless Xorg and display managers do not fail or warn about ownership.
+mkdir -p /tmp/.X11-unix /tmp/.ICE-unix
+chmod 1777 /tmp/.X11-unix /tmp/.ICE-unix
+chown root:root /tmp/.X11-unix /tmp/.ICE-unix 2>/dev/null || true
+
 # pam_faillock needs a writable root-owned directory before the gettys start.
 mkdir -p /run/faillock
 chmod 0700 /run/faillock

@@ -5,7 +5,7 @@
 msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
 
 rescue() {
-    trap - EXIT ERR
+    trap - EXIT
     msg "$*"
     msg "dropping to an emergency recovery shell"
     msg "type 'reboot -f' to reboot, or 'poweroff -f' to shut down"

@@ -11,3 +11,7 @@ parallel
 ping6
 efibootmgr
 smartctl
+multipath
+# X11 authentication helper: needed by startx to write MIT-MAGIC-COOKIE auth files.
+# Present on hosts with xorg-xauth; in the installed system pacman ships it with xorg-server.
+xauth

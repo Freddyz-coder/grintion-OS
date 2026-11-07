@@ -11,7 +11,6 @@ TARGET=${1:-/mnt}
     exit 1
 }
 
-mounted=""
 cleanup() {
     set +e
     for path in run dev/pts dev sys proc; do

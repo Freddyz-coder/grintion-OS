@@ -93,7 +93,7 @@ check "hostname" "/etc/hostname is empty" file_ok etc/hostname
 check "machine-id" "machine-id is not 32 hexadecimal characters" \
     grep_file '^[0-9a-f]{32}$' etc/machine-id
 check "fstab root" "fstab has no $FILESYSTEM root entry" \
-    grep_file "^UUID=[^[:space:]]+[[:space:]]+/[[:space:]]+$FILESYSTEM[[:space:]]" etc/fstab
+    grep_file "^UUID=[^[:space:]]+[[:space:]]+/[[:space:]]+${FILESYSTEM}[[:space:]]" etc/fstab
 check "fstab ESP" "fstab has no vfat /boot/efi entry" \
     grep_file '/boot/efi[[:space:]]+vfat' etc/fstab
 check "kernel" "kernel is missing from the ESP" \

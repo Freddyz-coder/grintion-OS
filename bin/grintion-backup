@@ -8,7 +8,7 @@ set -Eeuo pipefail
 export LC_ALL=C
 
 DEFAULT_BACKUP_DIR="/var/backups/grintion"
-MANIFEST_FILE="backup.json"
+# Default manifest filename inside each backup archive
 
 die() { printf '[-] %s\n' "$*" >&2; exit 1; }
 log() { printf '[*] %s\n' "$*"; }

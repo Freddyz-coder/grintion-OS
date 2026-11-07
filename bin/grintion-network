@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # grintion-network - configure wired, static, Wi-Fi, and network privacy.
 #
 # The service reads /etc/grintion/network.conf through network.lib.sh. This CLI
@@ -97,6 +97,7 @@ if [ ! -r "$LIB" ]; then
 fi
 [ -r "$LIB" ] || die "network library not found: $LIB"
 export GRINTION_NETWORK_CONF="$CONFIG"
+# shellcheck source=/dev/null
 . "$LIB"
 
 get_saved_networks_dir() {

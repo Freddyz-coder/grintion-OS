@@ -69,26 +69,47 @@ def declared_libraries(entry: Path) -> list[str]:
 
 
 def installed_packages(selected: dict[str, Path], root: Path) -> tuple[dict[str, Path], list[str]]:
-    """Drop DB entries for packages whose libraries and commands are absent.
+    """Drop DB entries for packages whose files are absent from the rootfs.
 
     pacman trusts a local DB entry: a seeded package is treated as installed and
     is never reinstalled as a dependency, even when its files were never copied.
-    glib2 was seeded this way without libglib-2.0.so.0, so a desktop install ran
-    /usr/bin/update-desktop-database with a broken linker while pacman exited 0.
-    A package that declares shared libraries is only seeded when one of those
-    libraries, or one of its binaries, really exists. Data-only packages and
-    packages that still ship commands keep the old behaviour.
+    A package is kept when ANY of these conditions hold:
+      1. It ships at least one binary that exists in the rootfs.
+      2. It ships only shared libraries and ALL declared .so files exist.
+      3. It is a data package (no binaries, no libraries) and at least one
+         declared file exists.
+
+    Rationale for rule 1: resolve-libs.py copies all required shared-library
+    dependencies after this filter runs; we do not punish a binary package for
+    having a companion .so that hasn't been copied yet.  Only packages whose
+    primary artefact (a binary) is completely absent should be dropped.
     """
     installed: dict[str, Path] = {}
     dropped: list[str] = []
     for name, entry in selected.items():
+        binaries = declared_binaries(entry)
         libraries = declared_libraries(entry)
-        has_library = any((root / path).is_file() for path in libraries)
-        has_binary = any((root / path).is_file() for path in declared_binaries(entry))
-        if libraries and not has_library and not has_binary:
-            dropped.append(name)
+        files = recorded_files(entry)
+
+        if binaries:
+            # Keep if at least one declared binary is present; resolve-libs.py
+            # will satisfy any shared-library deps afterwards.
+            if any((root / path).is_file() for path in binaries):
+                installed[name] = entry
+            else:
+                dropped.append(name)
+        elif libraries:
+            # Library-only package: all declared .so files must be present.
+            if all((root / path).is_file() or (root / path).is_symlink() for path in libraries):
+                installed[name] = entry
+            else:
+                dropped.append(name)
         else:
-            installed[name] = entry
+            # Data package: at least one declared file must exist.
+            if any((root / path).is_file() or (root / path).is_symlink() for path in files):
+                installed[name] = entry
+            else:
+                dropped.append(name)
     return installed, sorted(dropped)
 
 

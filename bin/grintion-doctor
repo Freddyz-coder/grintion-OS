@@ -17,7 +17,7 @@ DRY_RUN=0
 case "${1-}" in
     --security)
         shift
-        SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+        SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
         if [ -x "$SELF_DIR/grintion-security-report" ]; then
             exec "$SELF_DIR/grintion-security-report" "$@"
         fi
@@ -152,7 +152,6 @@ secure_boot_state() {
         printf 'not-applicable\n'
         return 0
     fi
-    local var value
     for var in /sys/firmware/efi/efivars/SecureBoot-*; do
         [ -f "$var" ] || continue
         value=$(od -An -t u1 -j 4 -N 1 "$var" 2>/dev/null | tr -d ' \n')

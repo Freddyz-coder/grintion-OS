@@ -210,10 +210,63 @@ if [ -x /usr/bin/udevadm ] && [ -x /usr/lib/systemd/systemd-udevd ]; then
         [ -f "$lib" ] && install -D -m 0755 "$lib" "$ROOTFS/usr/lib/systemd/$(basename "$lib")"
     done
     [ -d /usr/lib/udev ] && cp -a /usr/lib/udev "$ROOTFS/usr/lib/"
-    [ -d /etc/udev ] && cp -a /etc/udev "$ROOTFS/etc/"
+    # Purge host-specific virtualization rules that fail callouts in generic environments
+    rm -f "$ROOTFS/usr/lib/udev/rules.d/"*vbox* "$ROOTFS/usr/lib/udev/rules.d/"*virtualbox*
 else
     die "udev assets are missing on the build host"
 fi
+
+# Shims for non-systemd system (runit): udev rules and pacman ALPM hooks expect
+# systemctl, systemd-sysctl, and systemd-hook. Provide lightweight no-op shims so
+# package scriptlets and hardware callouts succeed cleanly without polluting logs.
+install -D -m 0755 /dev/null "$ROOTFS/usr/bin/systemctl"
+cat > "$ROOTFS/usr/bin/systemctl" <<'SHIM'
+#!/bin/sh
+# Systemctl shim for runit-based Grintion-OS
+exit 0
+SHIM
+
+install -D -m 0755 /dev/null "$ROOTFS/usr/lib/systemd/systemd-sysctl"
+cat > "$ROOTFS/usr/lib/systemd/systemd-sysctl" <<'SHIM'
+#!/bin/sh
+exit 0
+SHIM
+
+install -D -m 0755 /dev/null "$ROOTFS/usr/share/libalpm/scripts/systemd-hook"
+cat > "$ROOTFS/usr/share/libalpm/scripts/systemd-hook" <<'SHIM'
+#!/bin/sh
+# Systemd ALPM hook shim for runit-based Grintion-OS
+case "$1" in
+    reload|restart)
+        if [ "$2" = "dbus.service" ] || [ "$2" = "dbus" ]; then
+            if [ -x /usr/bin/sv ] && sv status dbus >/dev/null 2>&1; then
+                sv reload dbus 2>/dev/null || true
+            fi
+        fi
+        ;;
+esac
+exit 0
+SHIM
+
+# Deploy glibc gconv modules for codepage conversion (needed by mkfs.vfat / iconv)
+if [ -d /usr/lib/gconv ]; then
+    log "deploying glibc iconv conversion modules"
+    mkdir -p "$ROOTFS/usr/lib/gconv"
+    cp -a /usr/lib/gconv/. "$ROOTFS/usr/lib/gconv/"
+fi
+
+# Deploy GLib 2.0 schemas and data
+if [ -d /usr/share/glib-2.0 ]; then
+    log "deploying GLib schemas"
+    mkdir -p "$ROOTFS/usr/share/glib-2.0"
+    cp -a /usr/share/glib-2.0/. "$ROOTFS/usr/share/glib-2.0/"
+fi
+
+# Ensure full GLib library suite is present for desktop and D-Bus services
+for glib_so in /usr/lib/libglib-2.0.so* /usr/lib/libgio-2.0.so* /usr/lib/libgmodule-2.0.so* /usr/lib/libgobject-2.0.so* /usr/lib/libgthread-2.0.so* /usr/lib/libgirepository-*.so*; do
+    [ -e "$glib_so" ] || continue
+    install -D -m 0755 "$glib_so" "$ROOTFS/usr/lib/$(basename "$glib_so")"
+done
 # Ship the full timezone database so the documented
 # `ln -sf /usr/share/zoneinfo/Region/City /etc/localtime` step works.
 if [ -d /usr/share/zoneinfo ]; then

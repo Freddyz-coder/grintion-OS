@@ -106,7 +106,8 @@ cmd_boot() {
     path=$(snapshot_path "${1:-}")
     btrfs subvolume show "$path" >/dev/null 2>&1 || die "no such snapshot: ${1:-}"
     name="${path##*/}"
-    local boot_name="${name}-boot-$(date -u +%Y%m%dT%H%M%SZ)"
+    local boot_name
+    boot_name="${name}-boot-$(date -u +%Y%m%dT%H%M%SZ)"
     local boot_path="$SNAP_DIR/$boot_name"
 
     # A read-only snapshot cannot be the writable root. Make a normal snapshot

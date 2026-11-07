@@ -143,6 +143,7 @@ swapon
 swapoff
 mountpoint
 findmnt
+dmsetup
 
 # Process and system observation
 ps
@@ -229,6 +230,7 @@ mcookie
 pacman
 pacman-key
 pacman-conf
+vercmp
 gpg
 gpg-agent
 gpgconf
@@ -240,6 +242,9 @@ dbus-launch
 dbus-run-session
 seatd
 udevadm
+gio
+gsettings
+glib-compile-schemas
 
 # Live tooling
 python3

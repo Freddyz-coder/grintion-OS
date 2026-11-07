@@ -22,7 +22,7 @@ need_cmd cryptsetup
 log "assembling the installed-system initramfs"
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{usr/bin,usr/lib,usr/lib64,proc,sys,dev,run,newroot}
-rm -rf "$ROOT/bin"
+rm -rf "${ROOT:?}/bin"
 ln -sfn usr/bin "$ROOT/bin"
 ln -sfn usr/lib "$ROOT/lib"
 ln -sfn usr/lib "$ROOT/lib64"
