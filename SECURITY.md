@@ -2,7 +2,7 @@
 
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.9.0 release actually provides, what it does not, and how to report a problem.
+0.10.0 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 
@@ -173,11 +173,17 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 | Limine assets | Vendored under `tools/limine/`; verify them against the upstream 8.7.0 release |
 | Host userland | Trusted as installed by the host package manager; `make check` verifies required commands exist |
 | `garb` repositories | Ed25519 index signature and per-file SHA-256 |
+| Release artifact (ISO) | SHA-256 checksum; a detached Ed25519 signature only when an operator supplies a published release key. No release key is published for 0.9.x, so the ISO is **unsigned**. `grintion-release-verify` reports this explicitly. |
 | Arch packages (pacman backend) | Arch public keyring, pinned by `config/pacman-keyring.sha256`, with `SigLevel = Required DatabaseOptional` (Arch publishes no `.db.sig`) |
 
 `make check` verifies shell syntax, Python compilation, executable bits,
 required host commands, documentation links, absolute home paths, and the
-`garb` test suite. It does not verify host package signatures.
+`garb`/diagnostics test suites. It does not verify host package signatures.
+
+`grintion-security-report` (also reachable as `grintion-doctor --security`)
+reports the runtime posture without changing it. It exits 0 by default and
+`--strict` exits 1 on any warning. A warning is not a vulnerability report; see
+[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
 ## Hardening the image yourself
 

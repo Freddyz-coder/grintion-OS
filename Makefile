@@ -9,7 +9,8 @@ VERSION := $(shell cat VERSION)
 ISO := output/grintion-os-x86_64.iso
 
 .PHONY: all help tools kernel install-initramfs rootfs iso check test test-garb \
-        test-boot test-display test-network test-install test-install-uefi test-all packages clean distclean release
+        test-boot test-display test-network test-install test-install-uefi test-all packages clean distclean release \
+        sign-release verify-release
 
 all: iso
 
@@ -24,7 +25,8 @@ help:
 	@echo "  make iso               build output/grintion-os-x86_64.iso (default)"
 	@echo "  make check             static checks, Python tests, package tests"
 	@echo "  make test              alias for check"
-	@echo "  make test-garb         package-manager integration tests"        @echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
+	@echo "  make test-garb         package-manager integration tests"
+	@echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
 	@echo "  make test-display      check the live ISO renders on the framebuffer"
 	@echo "  make test-network      boot with e1000, e1000e, virtio-net, rtl8139 and pcnet"
 	@echo "  make test-install      install to a QEMU disk and reboot from it"
@@ -34,6 +36,8 @@ help:
 	@echo "  make clean             remove build/work and generated output"
 	@echo "  make distclean         also remove downloaded sources and caches"
 	@echo "  make release           check, build the ISO and print checksums"
+	@echo "  make sign-release      sign output/SHA256SUMS with GRINTION_RELEASE_KEY"
+	@echo "  make verify-release    verify the checksum and detached signature"
 
 tools:
 	@./build/build-tools.sh
@@ -98,3 +102,10 @@ release: check iso
 	@echo "  git tag -a v$(VERSION) -m 'Grintion-OS $(VERSION)'"
 	@echo "  git push origin main v$(VERSION)"
 	@echo "  gh release create v$(VERSION) $(ISO) $(ISO).sha256 output/BUILD-INFO"
+
+sign-release:
+	@./build/sign-release.sh
+
+verify-release:
+	@./bin/grintion-release-verify $(ISO) --sha256-file output/SHA256SUMS \
+	    $${GRINTION_RELEASE_PUBKEY:+--key "$$GRINTION_RELEASE_PUBKEY"} --require-signature

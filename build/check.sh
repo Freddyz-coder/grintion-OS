@@ -48,7 +48,14 @@ else
 fi
 
 log "checking Python sources"
-PY_FILES=("bin/garb")
+PY_FILES=()
+while IFS= read -r -d '' script; do
+    IFS= read -r first_line < "$script" || true
+    case "$first_line" in
+        '#!'*'python'*)
+            PY_FILES+=("$script") ;;
+    esac
+done < <(find bin -type f -print0)
 while IFS= read -r -d '' path; do
     PY_FILES+=("$path")
 done < <(find build tests -maxdepth 1 -type f -name '*.py' -print0)
@@ -108,7 +115,7 @@ pass "documentation links"
 log "checking for accidental home-directory paths"
 if grep -rnI --exclude-dir=.git --exclude-dir=.venv --exclude-dir=build \
         --exclude-dir=output --exclude-dir=tools \
-        --exclude=handoff.md --exclude=featureAdding.md --exclude=NEXT-AI-PROMPT.md \
+        --exclude=handoff.md --exclude=nexthandoff.md --exclude=featureAdding.md --exclude=NEXT-AI-PROMPT.md \
         -E '/home/[A-Za-z0-9._-]+/' . >/tmp/grintion-home-paths 2>/dev/null; then
     cat /tmp/grintion-home-paths >&2
     fail "absolute home-directory path found"
@@ -131,7 +138,11 @@ if ! "$PYTHON_BIN" -c 'import pytest' >/dev/null 2>&1; then
 fi
 if [ "$PYTEST_READY" -eq 1 ]; then
     "$PYTHON_BIN" -m pytest -q tests/test_garb.py tests/test_system_tools.py \
-        tests/test_network.py tests/test_desktop_profiles.py || fail "garb/system/network/desktop tests failed"
+        tests/test_release_tools.py tests/test_network.py tests/test_desktop_profiles.py \
+        tests/test_phase5_hardware_config.py tests/test_phase6_boot_security.py \
+        tests/test_phase7_package_ecosystem.py tests/test_phase8_security_hardening.py \
+        tests/test_phase9_validation.py tests/test_phase10_performance_polish.py \
+        || fail "garb/system/release/network/desktop/phase5-10 tests failed"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.9.0
+- **Version:** 0.10.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,7 +17,7 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers install with `grintion-desktop` or `garb`; XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input, while KDE Plasma, GNOME, LXQt and Sway remain unverified
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber and the PulseAudio compatibility daemon, started by the X11 session hook. Playback is verified end-to-end on XFCE and i3 with QEMU audio capture
 
-Grintion-OS 0.9.0 is built from this tree. There is no hosted binary
+Grintion-OS 0.10.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Release
 artifacts are not signed.
 
@@ -36,10 +36,20 @@ artifacts are not signed.
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment (BPF syscall, kexec and `/dev/mem` off), restricted `/proc` and `dmesg`, ASLR, Yama ptrace scope, binfmt_misc compiled out, io_uring disabled at runtime, signed modules only, strict network sysctls, `nftables` firewall, PAM faillock. |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control, Bubblewrap application sandboxing, USBGuard data-blocking, auditd logging with sudo I/O trails, file integrity verification (`grintion-integrity`), and customizable security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). |
+| Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
+| Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots, and automated self-healing (`grintion-doctor --fix`). |
 
-Details: [architecture](docs/ARCHITECTURE.md), [installation](docs/INSTALL.md),
-[desktop & GUI](docs/DESKTOP-GUI.md), [package manager](docs/PACKAGE-MANAGER.md), [roadmap](docs/ROADMAP.md).
+Documentation:
+- [Handbook](docs/HANDBOOK.md) (Full 10-chapter manual)
+- [Guía Rápida en Español](docs/HANDBOOK-ES.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Installation](docs/INSTALL.md)
+- [Security Hardening](docs/SECURITY-HARDENING.md)
+- [Hardware & Lab Validation](docs/HARDWARE-LAB.md)
+- [Package Ecosystem](docs/PACKAGE-ECOSYSTEM.md)
+- [Performance Baselines](docs/PERFORMANCE-BASELINES.md)
+- [Roadmap](docs/ROADMAP.md)
 
 ---
 
@@ -185,7 +195,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.9.0 |
+| Feature | 0.10.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF |
@@ -208,7 +218,8 @@ this release builds and tests.
 ## Repository layout
 
 ```text
-bin/            grintion-install, grintion-desktop, grintion-persist, grintion-chroot, garb, limine-deploy, grintion-doctor
+bin/            grintion-install, grintion-desktop, grintion-persist, grintion-chroot, garb, limine-deploy,
+                grintion-doctor, grintion-security-report, grintion-hwinfo, grintion-release-verify
 build/          kernel, rootfs, initramfs and ISO build scripts
 config/         kernel fragment, required binaries, PAM modules, setuid list
 etc/            live and installed system configuration
@@ -224,7 +235,7 @@ docs/           installation, desktop & GUI, build, architecture, package and ve
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
-sensitive. The short version: the design is defensive, but 0.9.0 has no Secure
+sensitive. The short version: the design is defensive, but 0.10.0 has no Secure
 Boot chain, no verified boot, no disk encryption, and no independent security
 audit.
 

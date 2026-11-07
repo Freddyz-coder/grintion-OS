@@ -7,6 +7,178 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-11-07
+
+Comprehensive system capabilities, boot-chain hardening, package ecosystem, bare-metal validation, and system handbook release.
+
+### Added
+
+- **Hardware, Wi-Fi & System Configuration (Phase 5):**
+  - `grintion-hcl`: Hardware compatibility inspection and validation against curated database (`/etc/grintion/hcl.json`).
+  - `grintion-config`: Unified TUI and headless CLI system configuration tool for timezones, locales, keymaps, hostnames, user accounts, runit services, and power policies.
+  - `grintion-doctor --fix`: Automated safe repair for file permissions, loopback interfaces, dangling runit symlinks, stale package locks, and resolv.conf.
+  - `grintion-watchdog`: Runit daemon watchdog enforcing restart thresholds (max 5 restarts in 60s) to prevent crash loops and alerting administrators.
+  - `grintion-power`: CPU scaling governor configuration, ACPI platform thermal profile controls, and battery longevity threshold management.
+  - `grintion-network` enhancements: WPA2/WPA3 enterprise authentication, MAC address randomization, prioritized roaming across saved SSIDs, DNS leak testing, and location profiles.
+  - `grintion-cgroup`: cgroup v2 resource limit enforcement (`memory.max`, `cpu.max`, `pids.max`) and service dependency ordering.
+- **Boot, Firmware & TPM Security (Phase 6):**
+  - `grintion-secureboot`: Local MOK/Platform key pair generation, Authenticode EFI binary signing, signature verification, and MokManager enrollment staging.
+  - `grintion-uki`: Unified Kernel Image builder packing kernel, initramfs, early microcode, cmdline, and os-release into single PE/COFF binaries.
+  - `grintion-attest`: TPM 2.0 PCR measured boot baseline capture and verification.
+  - `grintion-tpm-luks`: TPM 2.0 PCR-sealed LUKS2 disk encryption with automated unseal and clean interactive passphrase fallback.
+  - `grintion-firmware`: EFI System Resource Table (ESRT) query tool and EFI capsule update stager.
+  - `grintion-hibernate`: Hibernation preflight validation, swapfile resume offset calculation, and `/etc/grintion/resume.conf` generation.
+  - `grintion-kernel` and `grintion-module-sign`: Multi-kernel Limine entry management and cryptographic module signature attachment.
+  - Cloud and netboot image generation: `build/make-cloud-image.sh` and `build/make-netboot.sh`.
+- **Package Ecosystem & Release Engineering (Phase 7):**
+  - `garb` generation management: Atomic generation snapshots (`garb generations`) and complete system rollback (`garb rollback-generation <ID>`).
+  - Package holds and pins: `garb hold`, `garb unhold`, `garb pin`, and `garb downgrade`.
+  - Binary delta updates: `garb delta-create` and `garb delta-apply` for differential package deployment.
+  - Mirror ranking: `garb mirror-rank` to benchmark latency and throughput across mirrors.
+  - Dependency version constraints, virtual package `provides`, and `conflicts` checks.
+  - Software Bill of Materials & vulnerability scanning: `grintion-audit` supporting SPDX 2.3 and CycloneDX 1.5 JSON SBOMs and CVE feed scanning.
+  - Release channel switching: `grintion-channel` (`stable`, `beta`, `nightly`).
+  - Reproducible build verification: `build/check-reproducibility.sh`.
+- **Security Hardening (Phase 8):**
+  - AppArmor profile suite in `/etc/apparmor.d/` (`bin.grintion-network`, `usr.bin.garb`, `usr.bin.browser-sandbox`) and `grintion-apparmor` management tool.
+  - Application sandboxing: `grintion-sandbox` unprivileged Bubblewrap containerization with private namespaces, read-only root, and network dropping.
+  - Auditd rule set and service (`/etc/sv/auditd/run`) with sudo session I/O logging (`/etc/sudoers.d/audit-log`) and `grintion-audit-log`.
+  - File integrity monitoring: `grintion-integrity` baseline generation and boot-time tampering detection.
+  - Malware and rogue SUID scanner: `grintion-scan`.
+  - USBGuard and data-blocking: `grintion-usb` with mass-storage blocking and device authorization.
+  - Encrypted secrets vault and CA trust management: `grintion-vault`.
+  - Privacy dashboard: `grintion-privacy` for listening ports, active connections, and plain-English firewall rule explanations.
+  - SSH brute-force defense shield: `grintion-shield`.
+  - System security profiles: `grintion-security` (`workstation`, `server`, `kiosk`, `air-gapped`) with installer integration (`grintion-install --security-profile`).
+- **Validation & Bare-Metal Verification (Phase 9):**
+  - Bare-metal hardware test fleet catalog in `docs/HARDWARE-LAB.md` with test IDs `BM-TEST-001` through `BM-TEST-012`.
+  - Automated cross-matrix test runner: `build/test-install-matrix.py`.
+  - Fault injection testing suite: `build/test-fault-injection.py`.
+  - Sustained soak and memory leak trend monitor: `build/test-soak.py`.
+  - Performance benchmarking tool: `build/benchmark-performance.py`.
+  - Parser mutation fuzzer: `build/fuzz-parsers.py`.
+  - Automated test dashboard generator: `build/gen-test-dashboard.py`.
+- **Performance, Documentation & Polish (Phase 10):**
+  - Complete 10-chapter system handbook: `docs/HANDBOOK.md`.
+  - Spanish language quickstart guide: `docs/HANDBOOK-ES.md`.
+  - Published performance baselines: `docs/PERFORMANCE-BASELINES.md`.
+  - Interactive onboarding tour: `bin/grintion-tour`.
+  - Error-message catalog and troubleshooting assistant: `bin/grintion-help` and `/etc/grintion/errors.json`.
+  - Sanitized bug-report bundle generator: `bin/grintion-report`.
+  - Supervised in-memory ZRAM swap service: `/etc/sv/zram/run`.
+  - Hardware I/O scheduler udev rules: `/etc/udev/rules.d/60-io-schedulers.rules`.
+  - Man pages in `share/man/man1/` and shell completions for Bash and Zsh.
+  - GitHub issue templates: `.github/ISSUE_TEMPLATE/`.
+
+- **Release and package trust tooling:** `grintion-release-verify` checks ISO
+  SHA-256 and optional detached Ed25519 signatures; `build/sign-release.sh`
+  refuses to run without `GRINTION_RELEASE_KEY`.
+- **`garb` transaction safety:** one mutating transaction per target root,
+  durable `journal.jsonl`, `garb history`, `garb fsck`, fail-closed handling of
+  a corrupt database, and stale-backup/incomplete-transaction checks.
+- **Security diagnostics:** `grintion-security-report` with text/JSON posture
+  output, `grintion-doctor --security`, and `grintion-hwinfo` redacted
+  hardware inventory.
+- **Installer encryption, custom layouts, and multi-filesystem:** LUKS2 root with
+  a cryptsetup-capable installed initramfs and serial passphrase prompt, LUKS2 swap
+  with a root-stored random key, LUKS2 encrypted `/home` (`--encrypt-home`), custom
+  partitioning (`--custom`, `--root-part`, `--esp-part`, `--swap-part`, `--home-part`),
+  dedicated `/home` partitions (`--home-size`), multi-filesystem roots (`ext4`, `btrfs`,
+  `xfs`, `f2fs`), swap partition and swap file on root (`--swap-file` with automatic
+  nodatacow on Btrfs), guided interactive TUI installation wizard (`--tui`, `--interactive`),
+  automated dual-boot probing and Limine chainload entry generation, disk secure erase
+  (`--secure-erase` via blkdiscard and zero-fill), removable/USB media installation
+  (`--removable` / `--usb` without NVRAM modification), recovery partition provisioning
+  (`--recovery-partition`, `--recovery-size`), preservation of `/home` across reinstalls
+  (`--keep-home`), and answer files with schema 2 dry-run JSON.
+- **Recovery, rollback, and migration tooling:** Btrfs snapshot management with
+  direct active root rollback (`grintion-snapshot rollback <NAME>`) and pre-upgrade
+  snapshots; boot health failure detection with interactive session verification
+  (`grintion-boot-health verify-session`) and automated Limine auto-revert
+  (`grintion-boot-health auto-revert`); standalone system/user backup and restore
+  with SHA-256 manifests (`grintion-backup`); factory reset preserving home
+  (`grintion-reset`); cross-release migration bundle tool (`grintion-migrate`);
+  and Limine boot entry and password manager (`grintion-boot`).
+- **Desktop, Wayland, and hardware management:** runit services for `greetd`
+  (`/etc/sv/greetd`), `cupsd` (`/etc/sv/cupsd`), and `bluetoothd` (`/etc/sv/bluetoothd`);
+  supervised display-manager supporting `greetd`, `lightdm`, `sddm`, and `gdm`
+  with automatic service account provisioning; complete PAM stacks in `/etc/pam.d/`
+  (`sddm`, `sddm-greeter`, `sddm-autologin`, `greetd`, `gdm-password`, `gdm-autologin`);
+  accessibility manager (`grintion-a11y`); display scaling and multi-monitor manager
+  (`grintion-display`); theme, appearance, and wallpaper manager (`grintion-theme`);
+  device printing, bluetooth, and scanning manager (`grintion-devices`); first-run
+  onboarding guide (`grintion-welcome`); and modular opt-in application profiles
+  in `/etc/grintion/profiles.d/` (`browser`, `office`, `gaming`, `vmguest`, `dev`)
+  via `grintion-apps`.
+- **Build inputs:** Btrfs and device-mapper/LUKS kernel support, udev rules and
+  database tools, D-Bus session data, and the in-tree userland needed by
+  encrypted installs and graphical sessions.
+
+### Changed
+
+- The version is now **0.10.0** in `VERSION`, the live/installed banners,
+  `grintion-desktop`, documentation and release metadata.
+- Desktop profiles now include `xdg-desktop-portal` and their appropriate
+  backend; Wayland profiles enable `seatd` and add human users to the `seat`
+  group.
+- Installed `/boot/efi` and `/.snapshots` are mounted by the `local` service; a
+  `grintion-snapshot boot` entry uses the generated writable snapshot copy.
+
+### Fixed
+
+- `grintion-snapshot list` no longer depends on `/dev/fd` process substitution,
+  which does not exist in the minimal installed image.
+- Snapshot boot UUID lookup now handles Btrfs `findmnt` sources such as
+  `/dev/mapper/grintion[/@]`.
+- The image now ships `/usr/share/dbus-1`, so `dbus-run-session` can start;
+  previously every graphical session bus failed before launching.
+- Standalone udev runs without systemd as PID 1, and its control socket is
+  checked by the session wrapper before a Wayland compositor starts.
+- D-Bus session bus fallback in `etc/X11/xinit/xinitrc.d/10-grintion-dbus.sh`
+  uses `dbus-daemon --session --fork` when `dbus-launch` is not installed,
+  preventing "No session bus running" errors when starting X11 desktop sessions.
+- Added PAM configurations (`etc/pam.d/*`) and automatic service account
+  provisioning (`sddm`, `gdm`, `greeter`) for SDDM, GDM, and greetd.
+- Fixed `grintion-install --dry-run` to allow unprivileged execution and redirect
+  SMART temporary logs to `/tmp`.
+- The installer test no longer deletes a disk when `--verify-only` is used.
+
+### Verification
+
+- `make check`: **92 passed**, including desktop profile, session, seatd, udev,
+  installer custom partitioning/filesystems/encryption/TUI, recovery tools
+  (`grintion-boot`, `grintion-backup`, `grintion-reset`, `grintion-migrate`,
+  `grintion-boot-health`), desktop tools (`grintion-a11y`, `grintion-display`,
+  `grintion-theme`, `grintion-devices`, `grintion-welcome`, `grintion-apps`),
+  release-tool, `garb`, network and security-report checks.
+- BIOS QEMU ext4 install passed and logged in after reboot; the installed guest
+  reported `seatd` and `udev` running, `/run/seatd.sock` and
+  `/run/udev/control` present, and a working `grintion-session` D-Bus.
+- BIOS QEMU LUKS2+Btrfs install passed previously, including LUKS2 status,
+  Btrfs root, yescrypt password, DHCP and snapshot create/list/boot-entry
+  generation.
+- The generated ISO was rebuilt from this tree. Its SHA-256 and BUILD-INFO are
+  recorded below.
+
+### Known limitations
+
+- Roadmap Phases 1, 2, 3, and 4 are complete `[x]`. Phase 5 (Hardware, Wi-Fi and
+  system configuration) is planned next.
+- Real-hardware Wi-Fi roaming, power profiles, and watchdog service supervision
+  are scheduled for Phase 5.
+- Secure Boot, TPM, signed boot chains, and the physical-hardware testing matrix
+  remain scheduled for Phases 6 through 9.
+
+### Release
+
+- 0.10.0 ISO: **149,438,464 bytes (143 MiB)**, SHA-256
+  `6bc2967cef0a8d3679eb89d94f087a821f1fe6b1515d1e4afca9314b163bdf81`.
+  `output/BUILD-INFO` records kernel `7d7b8d7e…`, live initramfs `53e0ed58…`,
+  install initramfs `fa1d49c0…` and `git_commit=e5b7e46` (the tested working
+  tree is uncommitted).
+
+---
+
 ## [0.9.0] - 2026-11-06
 
 Desktop audio, a verified i3 session and additional virtual network adapters.

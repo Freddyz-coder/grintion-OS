@@ -105,11 +105,12 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 
 # Grintion's own tools and the live init must be in the image; they are not
 # host binaries and therefore never come from the package list.
-for tool in garb grintion-install grintion-persist grintion-chroot limine-deploy live-shell grintion-doctor grintion-desktop grintion-network grintion-xorg-input poweroff reboot shutdown halt; do
-    [ -f "$GRINTION_REPO_ROOT/bin/$tool" ] || die "missing repository tool: bin/$tool"
-    install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/bin/$tool"
+for tool_path in "$GRINTION_REPO_ROOT"/bin/*; do
+    [ -f "$tool_path" ] && [ -x "$tool_path" ] || continue
+    tool="$(basename "$tool_path")"
+    install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/$tool"
     # Also install to /usr/sbin for classic SysV paths
-    install -D -m 0755 "$GRINTION_REPO_ROOT/bin/$tool" "$ROOTFS/usr/sbin/$tool"
+    install -D -m 0755 "$tool_path" "$ROOTFS/usr/sbin/$tool"
 done
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/live-init" "$ROOTFS/init"
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/recovery.sh" "$ROOTFS/recovery.sh"
@@ -192,6 +193,26 @@ install -D -m 0644 /etc/ssl/openssl.cnf "$ROOTFS/etc/ssl/openssl.cnf" 2>/dev/nul
 if [ -d /usr/lib/ossl-modules ]; then
     mkdir -p "$ROOTFS/usr/lib/ossl-modules"
     cp -a /usr/lib/ossl-modules/. "$ROOTFS/usr/lib/ossl-modules/"
+fi
+# dbus-run-session needs the shipped session.conf and service directories.
+# The binaries alone fail with "Failed to open /usr/share/dbus-1/session.conf".
+if [ -d /usr/share/dbus-1 ]; then
+    mkdir -p "$ROOTFS/usr/share/dbus-1"
+    cp -a /usr/share/dbus-1/. "$ROOTFS/usr/share/dbus-1/"
+fi
+# Wayland/libinput needs the udev database and rules. systemd-udevd is used as
+# a standalone device manager; systemd is not PID 1 and no systemd units run.
+if [ -x /usr/bin/udevadm ] && [ -x /usr/lib/systemd/systemd-udevd ]; then
+    install -D -m 0755 /usr/bin/udevadm "$ROOTFS/usr/bin/udevadm"
+    install -D -m 0755 /usr/lib/systemd/systemd-udevd "$ROOTFS/usr/lib/systemd/systemd-udevd"
+    mkdir -p "$ROOTFS/usr/lib/systemd"
+    for lib in /usr/lib/systemd/libsystemd-shared-*.so; do
+        [ -f "$lib" ] && install -D -m 0755 "$lib" "$ROOTFS/usr/lib/systemd/$(basename "$lib")"
+    done
+    [ -d /usr/lib/udev ] && cp -a /usr/lib/udev "$ROOTFS/usr/lib/"
+    [ -d /etc/udev ] && cp -a /etc/udev "$ROOTFS/etc/"
+else
+    die "udev assets are missing on the build host"
 fi
 # Ship the full timezone database so the documented
 # `ln -sf /usr/share/zoneinfo/Region/City /etc/localtime` step works.
@@ -292,7 +313,7 @@ chmod 0700 "$ROOTFS/root/.ssh"
 
 # service links: every link points at a service that exists and whose run
 # script only execs programs present in this rootfs.
-for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local; do
+for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local boot-health seatd udev; do
     [ -x "$ROOTFS/etc/sv/$service/run" ] || die "service is missing or not executable: $service"
     ln -sfn "/etc/sv/$service" "$ROOTFS/var/service/$service"
 done
