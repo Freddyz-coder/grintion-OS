@@ -48,11 +48,39 @@ def list_profiles(profile_dir: Path = DEFAULT_PROFILE_DIR) -> list[dict[str, str
     return results
 
 
+def kernel_profiles() -> list[dict[str, str]]:
+    """Return the profiles the kernel actually has loaded.
+
+    securityfs reports one line per profile, for example "garb (enforce)". A
+    file in /etc/apparmor.d is only a policy candidate; it confines nothing
+    until the kernel has loaded it, so status and verify must report both.
+    """
+    results: list[dict[str, str]] = []
+    try:
+        text = (SYS_APPARMOR / "profiles").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return results
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name = line
+        mode = "unknown"
+        if line.endswith(")") and " (" in line:
+            name, raw_mode = line.rsplit(" (", 1)
+            mode = raw_mode[:-1].strip() or "unknown"
+        results.append({"name": name, "mode": mode})
+    return results
+
+
 def status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
     enabled = is_apparmor_enabled()
     profiles = list_profiles(profile_dir)
     enforced = [p["name"] for p in profiles if p["mode"] == "enforce"]
     complaining = [p["name"] for p in profiles if p["mode"] == "complain"]
+    loaded = kernel_profiles()
+    loaded_enforced = [p["name"] for p in loaded if p["mode"].startswith("enforce")]
+    loaded_complaining = [p["name"] for p in loaded if p["mode"] == "complain"]
 
     return {
         "enabled": enabled,
@@ -60,6 +88,103 @@ def status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
         "enforce_count": len(enforced),
         "complain_count": len(complaining),
         "profiles": profiles,
+        "kernel_available": SYS_APPARMOR.is_dir(),
+        "kernel_loaded": len(loaded),
+        "kernel_enforce_count": len(loaded_enforced),
+        "kernel_complain_count": len(loaded_complaining),
+        "kernel_profiles": loaded,
+    }
+
+
+def load_all(profile_dir: Path = DEFAULT_PROFILE_DIR, parser_path: str | None = None) -> tuple[int, int, list[str]]:
+    """Load every on-disk profile with apparmor_parser -r.
+
+    Returns (loaded, failed, errors). The parser path can be overridden with
+    GRINTION_APPARMOR_PARSER so the loader is testable without a live kernel.
+    """
+    parser = parser_path or os.environ.get("GRINTION_APPARMOR_PARSER") or shutil.which("apparmor_parser")
+    if not parser:
+        return 0, 0, ["apparmor_parser is not installed"]
+    loaded = 0
+    failed = 0
+    errors: list[str] = []
+    for profile in list_profiles(profile_dir):
+        try:
+            result = subprocess.run(
+                [parser, "-r", profile["path"]], capture_output=True, text=True, check=False
+            )
+        except OSError as exc:
+            failed += 1
+            errors.append(f"{profile['name']}: {exc}")
+            continue
+        if result.returncode == 0:
+            loaded += 1
+        else:
+            failed += 1
+            errors.append(f"{profile['name']}: {result.stderr.strip() or f'parser exited {result.returncode}'}")
+    return loaded, failed, errors
+
+
+def profile_attachment(path: Path) -> str | None:
+    """Return the path a profile attaches to, so verify can match kernel names."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("profile "):
+            parts = line.split()
+            for token in parts[1:]:
+                if token.startswith("/"):
+                    return token
+        if line.startswith("/"):
+            return line.split()[0]
+    return None
+
+
+def verify(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    enabled = is_apparmor_enabled()
+    profiles = list_profiles(profile_dir)
+    loaded = kernel_profiles()
+    issues: list[str] = []
+
+    if not enabled:
+        issues.append("AppArmor is not enabled in the kernel (boot with security=apparmor apparmor=1)")
+    if not loaded:
+        issues.append("the kernel has no AppArmor profiles loaded; start the apparmor service")
+
+    expected = {
+        attachment
+        for profile in profiles
+        if (attachment := profile_attachment(Path(profile["path"])))
+    }
+    loaded_names = {profile["name"] for profile in loaded}
+    loaded_short = {Path(name).name for name in loaded_names}
+    missing = sorted(
+        name for name in expected if name not in loaded_names and Path(name).name not in loaded_short
+    )
+    if missing:
+        issues.append("profiles not loaded in the kernel: " + ", ".join(missing))
+
+    complain_files = [p["name"] for p in profiles if p["mode"] == "complain"]
+    if complain_files:
+        issues.append("profiles on disk are in complain mode: " + ", ".join(complain_files))
+    complain_kernel = [p["name"] for p in loaded if p["mode"] == "complain"]
+    if complain_kernel:
+        issues.append("profiles loaded in complain mode: " + ", ".join(complain_kernel))
+
+    return {
+        "enabled": enabled,
+        "files": len(profiles),
+        "kernel_loaded": len(loaded),
+        "kernel_enforce": sum(1 for p in loaded if p["mode"].startswith("enforce")),
+        "kernel_complain": len(complain_kernel),
+        "missing": missing,
+        "compliant": not issues,
+        "issues": issues,
     }
 
 
@@ -106,6 +231,9 @@ def main() -> int:
     p_load = sub.add_parser("load", parents=[common], help="Load or parse an AppArmor profile")
     p_load.add_argument("profile", help="Profile filename or path")
 
+    sub.add_parser("load-all", parents=[common], help="Load every profile in /etc/apparmor.d")
+    sub.add_parser("verify", parents=[common], help="Verify that the kernel is enforcing the on-disk profiles")
+
     p_enforce = sub.add_parser("enforce", parents=[common], help="Set profile to enforce mode")
     p_enforce.add_argument("profile", help="Profile name in /etc/apparmor.d")
 
@@ -123,10 +251,48 @@ def main() -> int:
         else:
             state_str = "ENABLED" if st["enabled"] else "DISABLED (simulated/permissive)"
             print(f"AppArmor Status: {state_str}")
-            print(f"Profiles: {st['profiles_loaded']} total, {st['enforce_count']} enforced, {st['complain_count']} complain")
+            print(f"Profiles on disk: {st['profiles_loaded']} total, {st['enforce_count']} enforced, {st['complain_count']} complain")
+            if st["kernel_available"]:
+                print(f"Loaded in kernel: {st['kernel_loaded']} total, {st['kernel_enforce_count']} enforced, {st['kernel_complain_count']} complain")
+            else:
+                print("Loaded in kernel: securityfs is unavailable")
             for p in st["profiles"]:
                 print(f"  [{p['mode'].upper():8}] {p['name']}")
         return 0
+
+    if args.command == "load-all":
+        parser_path = os.environ.get("GRINTION_APPARMOR_PARSER") or shutil.which("apparmor_parser")
+        if not parser_path:
+            message = "apparmor_parser is not installed"
+            if getattr(args, "json", False):
+                print(json.dumps({"loaded": 0, "failed": 0, "errors": [message]}, indent=2))
+            else:
+                print(f"Error: {message}", file=sys.stderr)
+            return 1
+        loaded, failed, errors = load_all(profile_dir, parser_path)
+        if getattr(args, "json", False):
+            print(json.dumps({"loaded": loaded, "failed": failed, "errors": errors}, indent=2))
+        else:
+            print(f"Loaded {loaded} profile(s); {failed} failure(s).")
+            for error in errors:
+                print(f"  {error}", file=sys.stderr)
+        return 0 if failed == 0 else 1
+
+    if args.command == "verify":
+        result = verify(profile_dir)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            if result["compliant"]:
+                print(
+                    f"AppArmor verified: {result['kernel_enforce']} profile(s) enforcing, "
+                    f"{result['kernel_complain']} complaining."
+                )
+            else:
+                print("AppArmor verification failed:", file=sys.stderr)
+                for issue in result["issues"]:
+                    print(f"  - {issue}", file=sys.stderr)
+        return 0 if result["compliant"] else 1
 
     if args.command == "enforce":
         if set_profile_mode(args.profile, "enforce", profile_dir):

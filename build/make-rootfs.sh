@@ -17,6 +17,10 @@ CONFIG="$GRINTION_REPO_ROOT/config"
 KREL="$(kernel_release)"
 MODROOT="$WORK/kernel-modules"
 STAGE_DHCPCD="$WORK/dhcpcd-root"
+# Optional root of an unpacked Arch apparmor package. This lets an unprivileged
+# builder use apparmor_parser and its policy abstractions without installing
+# the package system-wide. Normal builds leave this empty and use the host.
+APPARMOR_ROOT="${GRINTION_APPARMOR_ROOT:-}"
 
 need_cmd bash
 need_cmd python3
@@ -83,6 +87,23 @@ while IFS= read -r cmd; do
         warn "optional command not present on host: $cmd"
     fi
 done < "$CONFIG/rootfs.optional-binaries"
+
+# MAC tooling is not optional in an image that claims AppArmor enforcement.
+# Keep this separate from rootfs.required-binaries so `make check` can run on
+# hosts that do not build images, while `make rootfs` still refuses to ship a
+# profile set that cannot be loaded.
+while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    case "$cmd" in \#*) continue ;; esac
+    if [ -n "$APPARMOR_ROOT" ]; then
+        src="$APPARMOR_ROOT/usr/bin/$cmd"
+    else
+        src="$(type -P "$cmd" 2>/dev/null || true)"
+    fi
+    [ -n "$src" ] && [ -x "$src" ] \
+        || die "required MAC command is missing: $cmd (install apparmor or set GRINTION_APPARMOR_ROOT)"
+    install -D -m 0755 "$(readlink -f "$src")" "$ROOTFS/usr/bin/$cmd"
+done < "$CONFIG/rootfs.mac-binaries"
 
 ln -sfn bash "$ROOTFS/usr/bin/sh"
 [ -x "$ROOTFS/usr/bin/vim" ] && ln -sfn vim "$ROOTFS/usr/bin/vi"
@@ -338,6 +359,34 @@ chmod 0755 "$ROOTFS/usr/share/limine/limine"
 log "deploying /etc configuration"
 cp -a "$GRINTION_REPO_ROOT/etc/." "$ROOTFS/etc/"
 
+# The tracked profiles include the AppArmor policy language abstractions,
+# tunables and ABI declarations. Those files ship with the apparmor package on
+# the build host, not with this repository, so copy the matching support tree
+# into the image or every profile fails to parse at boot.
+for dir in abi tunables abstractions; do
+    if [ -n "$APPARMOR_ROOT" ]; then
+        src="$APPARMOR_ROOT/etc/apparmor.d/$dir"
+        [ -e "$src" ] || src="$APPARMOR_ROOT/usr/share/apparmor/$dir"
+    else
+        src="/etc/apparmor.d/$dir"
+        [ -e "$src" ] || src="/usr/share/apparmor/$dir"
+    fi
+    [ -e "$src" ] || die "AppArmor policy support is missing: $dir (install apparmor or set GRINTION_APPARMOR_ROOT)"
+    mkdir -p "$ROOTFS/etc/apparmor.d/$dir"
+    cp -aL "$src"/. "$ROOTFS/etc/apparmor.d/$dir/"
+done
+
+# A profile that does not parse confines nothing. Use the parser that will ship
+# in the image, against the policy support copied above, instead of trusting the
+# profiles because they are present.
+log "validating AppArmor profiles"
+for profile in "$ROOTFS"/etc/apparmor.d/*; do
+    [ -f "$profile" ] || continue
+    "$ROOTFS/usr/bin/apparmor_parser" -Q --skip-cache \
+        -I "$ROOTFS/etc/apparmor.d" "$profile" >/dev/null 2>&1 \
+        || die "AppArmor profile failed to parse: $profile"
+done
+
 # Account databases are generated from one declarative manifest instead of
 # being copied from the build host. The manifest uses portable UIDs/GIDs and
 # deliberately omits host-only accounts (for example spice-webdavd).
@@ -346,8 +395,10 @@ python3 "$GRINTION_REPO_ROOT/build/gen-accounts.py" \
     --manifest "$CONFIG/accounts.toml" --etc "$ROOTFS/etc"
 
 # The runtime doctor checks this list instead of silently trusting the build.
-grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries" \
-    | sort -u > "$ROOTFS/etc/grintion/required-commands"
+{
+    grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries"
+    grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.mac-binaries"
+} | sort -u > "$ROOTFS/etc/grintion/required-commands"
 
 # pacman's CheckSpace option needs mount information. A regular /etc/mtab is
 # not maintained without util-linux's mount helper, so use the kernel view.
@@ -402,7 +453,7 @@ chmod 0700 "$ROOTFS/root/.ssh"
 
 # service links: every link points at a service that exists and whose run
 # script only execs programs present in this rootfs.
-for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local boot-health seatd udev timesync; do
+for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog local boot-health seatd udev timesync apparmor; do
     [ -x "$ROOTFS/etc/sv/$service/run" ] || die "service is missing or not executable: $service"
     ln -sfn "/etc/sv/$service" "$ROOTFS/var/service/$service"
 done

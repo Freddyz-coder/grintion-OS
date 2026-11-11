@@ -79,6 +79,19 @@ def boot(
         if "FIREWALL_OK" not in output:
             raise AssertionError(f"firewall rules were not loaded:\n{output}")
 
+        output = run("cat /sys/module/apparmor/parameters/enabled")
+        if "Y" not in output:
+            raise AssertionError(f"AppArmor is not enabled:\n{output}")
+
+        output = run("cat /sys/kernel/security/apparmor/profiles")
+        for profile in ("/usr/bin/garb", "/usr/bin/grintion-network", "/usr/bin/browser-sandbox"):
+            if profile not in output:
+                raise AssertionError(f"AppArmor profile not loaded: {profile}\n{output}")
+
+        output = run("sv status /var/service/apparmor")
+        if "run:" not in output:
+            raise AssertionError(f"apparmor service is not running:\n{output}")
+
         output = run("sudo -n true && echo SUDO_OK")
         if "SUDO_OK" not in output:
             raise AssertionError(f"sudo is broken:\n{output}")

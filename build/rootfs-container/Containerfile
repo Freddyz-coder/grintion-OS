@@ -15,7 +15,7 @@ RUN printf '[core]\nServer = https://archive.archlinux.org/repos/%s/$repo/os/$ar
         tar gzip bzip2 xz unzip cpio \
         openssh openssl gnupg pacman dbus seatd systemd glib2 \
         fastfetch htop wget nftables rsync iw wpa_supplicant wireless_tools bind \
-        iproute2 net-tools iputils openbsd-netcat shadow sudo pam \
+        iproute2 net-tools iputils openbsd-netcat shadow sudo pam apparmor \
         conntrack-tools \
  && pacman -Scc --noconfirm
 

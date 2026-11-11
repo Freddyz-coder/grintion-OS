@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.11.0
+- **Version:** 0.12.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,7 +17,11 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-Grintion-OS 0.11.0 is built from this tree. There is no hosted binary
+0.12.0 is a security release: AppArmor is compiled into the kernel and loaded
+at boot, and X11 no longer listens on TCP or abstract sockets. See
+[docs/SECURITY-HARDENING.md](docs/SECURITY-HARDENING.md).
+
+Grintion-OS 0.12.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Official
 release artifacts can be signed with `make sign-release` and verified with
 `bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
@@ -37,7 +41,7 @@ release artifacts can be signed with `make sign-release` and verified with
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control, Bubblewrap application sandboxing, USBGuard data-blocking, auditd logging with sudo I/O trails, file integrity verification (`grintion-integrity`), and customizable security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot, Bubblewrap application sandboxing, USBGuard data-blocking, auditd logging with sudo I/O trails, file integrity verification (`grintion-integrity`), and customizable security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots, and automated self-healing (`grintion-doctor --fix`). |
 
@@ -204,7 +208,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.11.0 |
+| Feature | 0.12.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -251,7 +255,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.11.0 has not undergone an independent third-party
+and atomic rollback, but 0.12.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

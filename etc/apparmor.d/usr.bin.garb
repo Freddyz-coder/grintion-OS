@@ -1,30 +1,109 @@
-# AppArmor profile for garb package manager
+# AppArmor profile for the garb package manager.
+#
+# garb must install packages across the filesystem, so broad write access is
+# deliberate. The security boundary is the data it must never touch
+# (credentials, host keys, kernel memory, MAC policy, block devices) and the
+# privileged capabilities it must never acquire. AppArmor "deny" rules take
+# precedence over every allow rule and inherited abstraction.
 abi <abi/3.0>,
 
 include <tunables/global>
 
-/bin/garb {
+/usr/bin/garb flags=(attach_disconnected,mediate_deleted) {
   include <abstractions/base>
   include <abstractions/nameservice>
 
+  # Package downloads and repository metadata, including DNS over UDP.
   network inet stream,
+  network inet dgram,
   network inet6 stream,
+  network inet6 dgram,
+  deny network raw,
 
-  /bin/garb mr,
-  /usr/bin/python3* ix,
+  # Pacman and package scriptlets execute helpers from the system paths.
+  /usr/bin/** ix,
+  /usr/sbin/** ix,
+  /bin/** ix,
+  /sbin/** ix,
 
-  /etc/garb/** r,
-  /etc/garb/pins.conf rw,
-  /etc/garb/preferences.conf rw,
-  /etc/garb/repos.d/** rw,
+  # Filesystem writes required for package installation.
+  /etc/** rwkl,
+  /usr/** rwkl,
+  /opt/** rwkl,
+  /var/** rwkl,
+  /boot/** rwkl,
+  /run/** rwkl,
+  /srv/** rwkl,
+  /media/** rwkl,
+  /mnt/** rwkl,
+  /tmp/** rwk,
+  /var/tmp/** rwk,
 
-  /var/lib/garb/** rwklm,
-  /var/cache/garb/** rwklm,
-  /var/log/garb/** rwklm,
+  # Package installation legitimately needs these capabilities.
+  capability chown,
+  capability dac_override,
+  capability fowner,
+  capability fsetid,
+  capability mknod,
+  capability setgid,
+  capability setuid,
+  capability sys_chroot,
 
-  /tmp/** rwmk,
+  # High-risk capabilities are never needed by a package manager.
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
 
-  deny /etc/shadow* rwklx,
-  deny /home/*/.ssh/** rwklx,
+  # Credential and host-secret boundary.
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /etc/ssl/private/** rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+  deny @{HOME}/.password-store/** rwklx,
+  deny @{HOME}/.netrc rwklx,
+  deny @{HOME}/.git-credentials rwklx,
+
+  # Kernel, MAC and device boundaries.
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/sys/** w,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/** w,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+
+  # Never execute or mmap code from writable temporary storage.
+  deny /tmp/** x,
+  deny /var/tmp/** x,
+  deny /dev/shm/** x,
+
+  # A package install must not rewrite the MAC policy that confines it.
+  deny /etc/apparmor.d/** w,
+
+  deny ptrace,
+  deny mount,
+  deny pivot_root,
 }
-

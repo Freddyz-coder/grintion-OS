@@ -1,34 +1,105 @@
-# AppArmor profile for sandboxed web browsers and untrusted web clients
+# AppArmor profile for sandboxed web browsers and untrusted web clients.
+#
+# Browsers need a writable profile/cache tree and X11/D-Bus access, but they
+# never need SSH/GPG keys, cloud credentials, host private keys, raw disks or
+# kernel memory. Deny rules below override the broad home and X abstractions.
 abi <abi/3.0>,
 
 include <tunables/global>
 
-/usr/bin/browser-sandbox {
+/usr/bin/browser-sandbox flags=(attach_disconnected,mediate_deleted) {
   include <abstractions/base>
   include <abstractions/fonts>
   include <abstractions/nameservice>
   include <abstractions/X>
 
   network inet stream,
-  network inet6 stream,
   network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  deny network raw,
 
+  # The wrapper and the browser it starts.
   /usr/bin/browser-sandbox mr,
   /usr/bin/bwrap ix,
   /usr/bin/firejail ix,
+  /usr/bin/** ix,
+  /usr/lib/** ix,
+  /usr/lib64/** ix,
+  /opt/** ix,
 
-  owner @{HOME}/.cache/** rw,
-  owner @{HOME}/.config/** r,
-  owner @{HOME}/Downloads/** rw,
+  # Browser state, caches and downloads only.
+  owner @{HOME}/.config/** rwk,
+  owner @{HOME}/.cache/** rwk,
+  owner @{HOME}/.local/share/** rwk,
+  owner @{HOME}/.mozilla/** rwk,
+  owner @{HOME}/.pki/** rwk,
+  owner @{HOME}/Downloads/** rwk,
+  owner @{HOME}/.Xauthority r,
+  owner /run/user/*/** rw,
+  /run/dbus/system_bus_socket rw,
 
   /dev/dri/** rw,
-  /dev/shm/** rwm,
+  /dev/shm/** rwmk,
+  /tmp/** rwmk,
+  /sys/devices/** r,
+  /sys/class/** r,
+  /etc/ssl/** r,
+  /usr/share/ca-certificates/** r,
 
-  deny /etc/shadow* rwklx,
-  deny /etc/sudoers* rwklx,
+  # Credential and cloud-token boundary.
   deny @{HOME}/.ssh/** rwklx,
   deny @{HOME}/.gnupg/** rwklx,
-  deny /boot/** rwklx,
+  deny @{HOME}/.password-store/** rwklx,
+  deny @{HOME}/.config/gh/** rwklx,
+  deny @{HOME}/.config/gcloud/** rwklx,
+  deny @{HOME}/.aws/** rwklx,
+  deny @{HOME}/.kube/** rwklx,
+  deny @{HOME}/.docker/** rwklx,
+  deny @{HOME}/.netrc rwklx,
+  deny @{HOME}/.git-credentials rwklx,
+  deny @{HOME}/.npmrc rwklx,
+  deny @{HOME}/.pypirc rwklx,
+  deny @{HOME}/.Xauthority w,
+  deny /home/*/.ssh/** rwklx,
+  deny /home/*/.gnupg/** rwklx,
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /etc/ssl/private/** rwklx,
   deny /root/** rwklx,
-}
+  deny /boot/** rwklx,
 
+  # No raw kernel or device access.
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
+  deny /tmp/** x,
+  deny /dev/shm/** x,
+  deny /etc/apparmor.d/** w,
+  deny ptrace,
+}

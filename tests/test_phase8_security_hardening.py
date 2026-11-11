@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 import pytest
 
-BIN_DIR = Path(__file__).resolve().parent.parent / "bin"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BIN_DIR = REPO_ROOT / "bin"
 
 
 def run_bin(cmd: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -211,4 +212,111 @@ def test_grintion_privacy_dashboard():
     data = json.loads(res.stdout)
     assert "firewall" in data
     assert "listening_sockets" in data
+
+
+def test_grintion_apparmor_load_all_and_verify(tmp_path: Path):
+    profile_dir = tmp_path / "apparmor.d"
+    profile_dir.mkdir()
+    profile = profile_dir / "usr.bin.demo"
+    profile.write_text("/usr/bin/demo {\n  /etc/demo r,\n}\n")
+
+    parser_log = tmp_path / "parser.log"
+    parser = tmp_path / "apparmor_parser"
+    parser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{parser_log}\"\nexit 0\n")
+    parser.chmod(0o755)
+
+    env = {
+        "GRINTION_APPARMOR_DIR": str(profile_dir),
+        "GRINTION_APPARMOR_PARSER": str(parser),
+    }
+    res = run_bin("grintion-apparmor", "load-all", env=env)
+    assert res.returncode == 0
+    assert "-r" in parser_log.read_text()
+    assert str(profile) in parser_log.read_text()
+
+    sysfs = tmp_path / "securityfs"
+    sysfs.mkdir()
+    (sysfs / "profiles").write_text("demo (enforce)\n")
+    enabled = tmp_path / "enabled"
+    enabled.write_text("Y\n")
+    env.update({
+        "GRINTION_SYS_APPARMOR": str(sysfs),
+        "GRINTION_SYSFS_APPARMOR_PARAM": str(enabled),
+    })
+
+    res_status = run_bin("grintion-apparmor", "status", "--json", env=env)
+    assert res_status.returncode == 0
+    status = json.loads(res_status.stdout)
+    assert status["kernel_loaded"] == 1
+    assert status["kernel_enforce_count"] == 1
+
+    res_verify = run_bin("grintion-apparmor", "verify", "--json", env=env)
+    assert res_verify.returncode == 0
+    assert json.loads(res_verify.stdout)["compliant"] is True
+
+    other = profile_dir / "usr.bin.other"
+    other.write_text("/usr/bin/other {\n  /etc/other r,\n}\n")
+    res_missing = run_bin("grintion-apparmor", "verify", "--json", env=env)
+    assert res_missing.returncode == 1
+    assert "/usr/bin/other" in json.loads(res_missing.stdout)["missing"]
+    other.unlink()
+
+    profile.write_text("/usr/bin/demo flags=(complain) {\n  /etc/demo r,\n}\n")
+    res_complain = run_bin("grintion-apparmor", "verify", "--json", env=env)
+    assert res_complain.returncode == 1
+    assert json.loads(res_complain.stdout)["compliant"] is False
+
+
+def test_apparmor_profiles_load_at_boot_and_deny_secrets():
+    profiles = [p for p in (REPO_ROOT / "etc" / "apparmor.d").glob("*") if p.is_file()]
+    assert profiles
+    for path in profiles:
+        text = path.read_text()
+        assert "flags=(attach_disconnected,mediate_deleted)" in text, path
+        assert "deny /etc/shadow rwklx" in text, path
+        assert "deny ptrace" in text, path
+        assert "deny capability sys_admin" in text, path
+
+    service = REPO_ROOT / "etc" / "sv" / "apparmor" / "run"
+    assert service.is_file()
+    assert os.access(service, os.X_OK)
+    assert "apparmor_parser" in service.read_text()
+    assert '"$parser" -r' in service.read_text()
+
+    kernel = (REPO_ROOT / "config" / "kernel-hardened.config").read_text()
+    assert "CONFIG_SECURITY_APPARMOR=y" in kernel
+    for boot_file in ("build/build-iso.sh", "bin/limine-deploy", "bin/grintion-install", "bin/grintion-uki"):
+        assert "security=apparmor apparmor=1" in (REPO_ROOT / boot_file).read_text(), boot_file
+
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert "udev timesync apparmor; do" in rootfs
+    assert "for dir in abi tunables abstractions; do" in rootfs
+    mac = (REPO_ROOT / "config" / "rootfs.mac-binaries").read_text()
+    assert "apparmor_parser" in mac
+
+
+def test_x11_remote_transports_and_cookies_are_locked_down():
+    xserverrc = REPO_ROOT / "etc" / "X11" / "xinit" / "xserverrc"
+    assert xserverrc.is_file()
+    assert os.access(xserverrc, os.X_OK)
+    server_text = xserverrc.read_text()
+    assert "-nolisten tcp" in server_text
+    assert "-nolisten local" in server_text
+
+    hook = REPO_ROOT / "etc" / "X11" / "xinit" / "xinitrc.d" / "05-grintion-x11-security.sh"
+    assert hook.is_file()
+    assert os.access(hook, os.X_OK)
+    hook_text = hook.read_text()
+    assert "chmod 600" in hook_text
+    assert "xhost -" in hook_text
+
+    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert "xserver-command=X -nolisten tcp -nolisten local" in desktop
+    assert "ServerArguments=-nolisten tcp -nolisten local" in desktop
+
+    wrapper = (REPO_ROOT / "etc" / "X11" / "Xwrapper.config").read_text()
+    assert "allowed_users = console" in wrapper
+
+    report = (REPO_ROOT / "bin" / "grintion-security-report").read_text()
+    assert "x11-access" in report
 

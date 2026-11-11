@@ -66,7 +66,7 @@ def format_changelog(version: str, categories: dict[str, list[str]]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate Changelog from Git commits")
-    parser.add_argument("--version", default="0.11.0")
+    parser.add_argument("--version", default="0.12.0")
     parser.add_argument("--since", help="git tag to diff against")
     parser.add_argument("--output", type=Path)
 

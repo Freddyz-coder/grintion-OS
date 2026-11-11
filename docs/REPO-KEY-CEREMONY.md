@@ -78,7 +78,7 @@ exists:
 
 1. Set the repository secret `GRINTION_RELEASE_KEY` to the Ed25519 private key
    (PEM). A run without it fails instead of publishing unsigned artifacts.
-2. Tag the release (`git tag -a v0.11.0 -m 'Grintion-OS 0.11.0'`) and push the
+2. Tag the release (`git tag -a v0.12.0 -m 'Grintion-OS 0.12.0'`) and push the
    tag. The workflow builds with `make iso-pinned`, so the live userland comes
    from the dated Arch Linux Archive snapshot, not the runner's host packages.
 3. The release contains `grintion-os-x86_64.iso`, `SHA256SUMS`,

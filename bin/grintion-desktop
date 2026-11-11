@@ -332,6 +332,7 @@ logind-check-graphical=false
 [Seat:*]
 greeter-session=lightdm-gtk-greeter
 session-wrapper=/etc/lightdm/Xsession-grintion
+xserver-command=X -nolisten tcp -nolisten local
 EOF
     chmod 0644 "$conf_dir/50-grintion.conf"
     if [ ! -x "$TARGET_ROOT/etc/lightdm/Xsession-grintion" ]; then
@@ -391,6 +392,7 @@ enable_dm_service() {
             if [ -f "$TARGET_ROOT/etc/lightdm/lightdm.conf" ]; then
                 sed -i 's/^#\?greeter-session=.*/greeter-session=lightdm-gtk-greeter/' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
                 sed -i 's|^#\?session-wrapper=.*|session-wrapper=/etc/lightdm/Xsession-grintion|' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
+                sed -i 's|^#\?xserver-command=.*|xserver-command=X -nolisten tcp -nolisten local|' "$TARGET_ROOT/etc/lightdm/lightdm.conf"
             fi
         elif [ "$dm" = "/usr/bin/sddm" ]; then
             ensure_service_account sddm /var/lib/sddm
@@ -529,6 +531,51 @@ SessionCommand=/etc/sddm/wayland-session-grintion
 EOF
     chmod 0644 "$TARGET_ROOT/etc/sddm.conf.d/20-grintion-wayland.conf"
     log "Configured SDDM Wayland session runtime wrapper"
+}
+
+configure_x11_security() {
+    # Xorg is only present for X11-capable profiles. Write these files after
+    # package installation because pacman may have installed its own
+    # xserverrc, and point every supported display manager at the safe flags.
+    if [ ! -x "$TARGET_ROOT/usr/bin/Xorg" ] && [ ! -x "$TARGET_ROOT/usr/bin/X" ]; then
+        return 0
+    fi
+
+    local xinit_dir="$TARGET_ROOT/etc/X11/xinit"
+    mkdir -p "$xinit_dir" "$TARGET_ROOT/etc/X11/xorg.conf.d"
+    cat > "$xinit_dir/xserverrc" <<'EOF'
+#!/bin/sh
+# Disable the TCP and abstract-namespace X11 transports. Clients must use the
+# local filesystem socket and present the per-session MIT-MAGIC-COOKIE.
+server=/usr/bin/X
+[ -x "$server" ] || server=/usr/bin/Xorg
+exec "$server" -nolisten tcp -nolisten local "$@"
+EOF
+    chmod 0755 "$xinit_dir/xserverrc"
+
+    if [ -d "$TARGET_ROOT/etc/lightdm" ]; then
+        local lightdm_conf="$TARGET_ROOT/etc/lightdm/lightdm.conf"
+        if [ -f "$lightdm_conf" ] && grep -q '^#\?xserver-command=' "$lightdm_conf"; then
+            sed -i 's|^#\?xserver-command=.*|xserver-command=X -nolisten tcp -nolisten local|' "$lightdm_conf"
+        fi
+        mkdir -p "$TARGET_ROOT/etc/lightdm/lightdm.conf.d"
+        cat > "$TARGET_ROOT/etc/lightdm/lightdm.conf.d/60-grintion-x11.conf" <<'EOF'
+[Seat:*]
+xserver-command=X -nolisten tcp -nolisten local
+EOF
+        chmod 0644 "$TARGET_ROOT/etc/lightdm/lightdm.conf.d/60-grintion-x11.conf"
+    fi
+
+    if [ -x "$TARGET_ROOT/usr/bin/sddm" ]; then
+        mkdir -p "$TARGET_ROOT/etc/sddm.conf.d"
+        cat > "$TARGET_ROOT/etc/sddm.conf.d/10-grintion-security.conf" <<'EOF'
+[X11]
+ServerArguments=-nolisten tcp -nolisten local
+EOF
+        chmod 0644 "$TARGET_ROOT/etc/sddm.conf.d/10-grintion-security.conf"
+    fi
+
+    log "Configured X11 without TCP/abstract listeners and with cookie access control"
 }
 
 # Session files are what a greeter lists. Most desktops ship their own, but
@@ -893,6 +940,7 @@ cmd_install() {
     # service accounts; without them dbus-daemon warns on the console and the
     # daemons cannot start.
     provision_dbus_accounts
+    configure_x11_security
 
     # Ensure mcookie exists for startx
     if [ ! -x "$TARGET_ROOT/usr/bin/mcookie" ]; then

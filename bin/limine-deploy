@@ -59,7 +59,7 @@ interface_branding: Grintion-OS
 /Grintion-OS
     protocol: linux
     kernel_path: boot():/EFI/grintion/vmlinuz-grintion
-    cmdline: root=UUID=$ROOT_UUID rw quiet console=ttyS0,115200 console=tty0 grintion.serial=1
+    cmdline: root=UUID=$ROOT_UUID rw quiet console=ttyS0,115200 console=tty0 grintion.serial=1 security=apparmor apparmor=1
     module_path: boot():/EFI/grintion/initramfs-install.img
 EOF
 cp "$EFI_DIR/limine.conf" "$EFI_DIR/EFI/BOOT/limine.conf"

@@ -17,6 +17,12 @@ fi
 
 mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
 
+# AppArmor exposes its policy and loaded-profile state through securityfs.
+# Without this mount the kernel can enforce nothing and apparmor_parser fails
+# with "Unable to open /sys/kernel/security/apparmor".
+mkdir -p /sys/kernel/security
+mountpoint -q /sys/kernel/security || mount -t securityfs securityfs /sys/kernel/security 2>/dev/null || true
+
 if ! mountpoint -q /dev; then
     mount -t devtmpfs dev /dev -o mode=0755,nosuid
 fi

@@ -4,7 +4,7 @@ Grintion-OS is an x86_64 operating system with a source-built kernel, a runit
 userland, a live RAM overlay, a disk installer, and dual-backend package
 management. This roadmap turns the 0.9.0 gap list into ordered phases.
 
-**Planning baseline:** 0.11.0. **Target:** 0.12.0 and later. Nothing here is a
+**Planning baseline:** 0.12.0. **Target:** 0.13.0 and later. Nothing here is a
 promise of a date. A phase heading marked `[x]` means the deliverable exists;
 it does **not** mean every configuration is verified. Verification is tracked
 separately in [VERIFICATION.md](VERIFICATION.md).

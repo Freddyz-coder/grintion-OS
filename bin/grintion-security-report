@@ -136,6 +136,34 @@ def sudo_logging_enabled() -> bool:
     return "log_input" in joined or "log_output" in joined or "LOG_INPUT" in joined or "LOG_OUTPUT" in joined
 
 
+def x11_state() -> dict:
+    """Inspect X11 remote transports and the configuration that disables them."""
+    installed = Path("/usr/bin/Xorg").exists() or Path("/usr/bin/X").exists()
+    tcp_ports: list[str] = []
+    for proc in ("/proc/net/tcp", "/proc/net/tcp6"):
+        for line in read_text(proc).splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            try:
+                port = int(fields[1].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                continue
+            if 6000 <= port <= 6063:
+                tcp_ports.append(str(port))
+
+    config_paths = [Path("/etc/X11/xinit/xserverrc")]
+    config_paths += sorted(Path("/etc/lightdm").glob("*.conf"))
+    config_paths += sorted(Path("/etc/lightdm/lightdm.conf.d").glob("*.conf"))
+    config_paths += sorted(Path("/etc/sddm.conf.d").glob("*.conf"))
+    config = "\n".join(read_text(path) for path in config_paths)
+    return {
+        "installed": installed,
+        "tcp_ports": sorted(set(tcp_ports), key=int),
+        "nolisten_configured": "-nolisten tcp" in config and "-nolisten local" in config,
+    }
+
+
 def collect() -> dict:
     checks: list[dict] = []
     version = read_text("/etc/grintion/version").strip()
@@ -226,10 +254,39 @@ def collect() -> dict:
 
     apparmor = read_text("/sys/module/apparmor/parameters/enabled").strip()
     if apparmor == "Y":
-        add(checks, "apparmor", "ok", "AppArmor is enabled")
+        loaded_profiles = [
+            line.strip()
+            for line in read_text("/sys/kernel/security/apparmor/profiles").splitlines()
+            if line.strip()
+        ]
+        complaining = [line for line in loaded_profiles if "(complain)" in line]
+        if not loaded_profiles:
+            add(checks, "apparmor", "warn", "AppArmor is enabled but no profiles are loaded",
+                "Start the apparmor service and run 'grintion-apparmor verify'.")
+        elif complaining:
+            add(checks, "apparmor", "warn",
+                f"AppArmor is enabled; {len(loaded_profiles)} profile(s) loaded, "
+                f"{len(complaining)} in complain mode",
+                "A complain-mode profile logs violations but does not block them.")
+        else:
+            add(checks, "apparmor", "ok",
+                f"AppArmor is enabled; {len(loaded_profiles)} profile(s) enforcing")
     else:
         add(checks, "apparmor", "warn", "AppArmor is not enabled",
-            "No mandatory access control is provided by 0.9.x.")
+            "Boot with 'security=apparmor apparmor=1'; check CONFIG_SECURITY_APPARMOR.")
+
+    x11 = x11_state()
+    if not x11["installed"]:
+        add(checks, "x11-access", "info", "no X11 server installed")
+    elif x11["tcp_ports"]:
+        add(checks, "x11-access", "fail",
+            f"X11 is listening on TCP port(s): {', '.join(x11['tcp_ports'])}",
+            "Remote X11 bypasses local access control; start Xorg with -nolisten tcp -nolisten local.")
+    elif not x11["nolisten_configured"]:
+        add(checks, "x11-access", "warn", "X11 configuration does not pin -nolisten",
+            "Add -nolisten tcp -nolisten local to xserverrc and the display manager.")
+    else:
+        add(checks, "x11-access", "ok", "X11 TCP/abstract transports are disabled in configuration")
 
     if running_process("auditd"):
         add(checks, "auditd", "ok", "auditd is running")

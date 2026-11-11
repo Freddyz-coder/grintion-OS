@@ -1,6 +1,6 @@
 # Building Grintion-OS
 
-This document covers building the 0.11.0 ISO from source. Installation is in
+This document covers building the 0.12.0 ISO from source. Installation is in
 [INSTALL.md](INSTALL.md); the boot flow is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The build is **offline after the first fetch**. `make tools` and `make kernel`
@@ -26,15 +26,29 @@ iteration but is not the release path.
 ```sh
 sudo pacman -S --needed base-devel bc bison flex kmod cpio gzip curl \
     openssl parted dosfstools e2fsprogs rsync xorriso \
-    pacman gnupg archlinux-keyring \
+    pacman gnupg archlinux-keyring apparmor \
     python python-pytest python-pexpect \
     qemu-full edk2-ovmf shellcheck
 ```
+
+If the build host cannot install `apparmor`, download its package and point the
+rootfs build at the unpacked tree. The parser and policy abstractions are copied
+into the image; the package is not needed system-wide:
+
+```sh
+mkdir -p build/work/apparmor-root
+curl -fL -o build/work/apparmor.pkg.tar.zst "$(pacman -Sp apparmor)"
+bsdtar -xf build/work/apparmor.pkg.tar.zst -C build/work/apparmor-root
+GRINTION_APPARMOR_ROOT="$PWD/build/work/apparmor-root" make rootfs
+```
+
+The resulting `make check` gate still runs on hosts without AppArmor.
 
 What each group is for:
 
 | Package | Used by |
 | --- | --- |
+| `apparmor` | `make rootfs`: supplies `apparmor_parser` and the policy abstractions; the build fails without it. `make check` does not require it. |
 | `base-devel`, `bison`, `flex`, `kmod` | kernel build, `depmod` |
 | `bc` | kernel build (a pinned copy is also built into `tools/bin/bc`) |
 | `cpio`, `gzip` | live rootfs staging checks |

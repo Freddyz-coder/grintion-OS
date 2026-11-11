@@ -1,0 +1,10 @@
+#!/bin/sh
+# Grintion-OS X server defaults for startx.
+#
+# Disable the TCP and abstract-namespace transports. Clients must connect
+# through /tmp/.X11-unix and present the per-session MIT-MAGIC-COOKIE; this
+# prevents another local user, and anything on the network, from reaching the
+# display without the cookie. The filesystem socket remains available.
+server=/usr/bin/X
+[ -x "$server" ] || server=/usr/bin/Xorg
+exec "$server" -nolisten tcp -nolisten local "$@"

@@ -54,7 +54,7 @@ Stitch the kernel, initramfs, command line, and early microcode into one PE/COFF
 grintion-uki build \
   --kernel /boot/vmlinuz \
   --initrd /boot/initramfs.img \
-  --cmdline "quiet root=LABEL=GRINTION_ROOT rw" \
+  --cmdline "quiet root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1" \
   --output /boot/efi/EFI/grintion/grintion-uki.efi
 
 # Sign UKI with your MOK private key

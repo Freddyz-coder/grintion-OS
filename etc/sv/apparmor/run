@@ -1,0 +1,46 @@
+#!/bin/sh
+# Grintion-OS runit service: apparmor
+#
+# Loads every tracked profile once at boot. runit respawns a run script that
+# exits, so after reporting the service sleeps. A parser or policy failure is
+# logged and visible in `sv status`, but it never blocks the rest of boot.
+
+mkdir -p /var/log
+exec >> /var/log/apparmor.log 2>&1
+
+if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)" != "Y" ]; then
+    echo "apparmor: kernel support is not enabled"
+    echo "apparmor: boot with 'security=apparmor apparmor=1' and check CONFIG_SECURITY_APPARMOR"
+    exec sleep 3600
+fi
+
+parser=""
+for candidate in /usr/bin/apparmor_parser /usr/sbin/apparmor_parser /sbin/apparmor_parser; do
+    if [ -x "$candidate" ]; then
+        parser="$candidate"
+        break
+    fi
+done
+if [ -z "$parser" ]; then
+    echo "apparmor: apparmor_parser is missing; no profiles can be loaded"
+    exec sleep 3600
+fi
+
+loaded=0
+failed=0
+for profile in /etc/apparmor.d/*; do
+    [ -f "$profile" ] || continue
+    case "${profile##*/}" in
+        *~|*.dpkg-*|*.rpmnew|*.rpmsave|*.pacnew|*.pacsave) continue ;;
+    esac
+    if "$parser" -r "$profile"; then
+        echo "apparmor: loaded ${profile##*/}"
+        loaded=$((loaded + 1))
+    else
+        echo "apparmor: failed to load ${profile##*/}"
+        failed=$((failed + 1))
+    fi
+done
+
+echo "apparmor: $loaded profile(s) loaded, $failed failure(s)"
+exec sleep 3600

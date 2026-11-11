@@ -17,12 +17,34 @@ The security profile can be chosen during installation via `grintion-install --s
 
 ## 2. Mandatory Access Control (AppArmor)
 
-- AppArmor profiles are located in `/etc/apparmor.d/`:
-  - `bin.grintion-network`: Isolates network tools, restricts access to shadow/root credentials.
-  - `usr.bin.garb`: Confines package manager operations, preventing access to user SSH keys and passwords.
-  - `usr.bin.browser-sandbox`: Strictly sandboxes browser processes to temporary cache and Downloads folders.
-- Managed using `grintion-apparmor status`, `grintion-apparmor enforce <profile>`, and `grintion-apparmor complain <profile>`.
-- An experimental track configuration is tracked at `/etc/selinux/config`.
+AppArmor is compiled into the kernel (`CONFIG_SECURITY_APPARMOR=y`), the boot
+command line selects it (`security=apparmor apparmor=1`), `/etc/runit/1` mounts
+securityfs, and the `apparmor` runit service loads every profile at boot. A
+profile file that is not loaded confines nothing, so do not treat the files in
+`/etc/apparmor.d/` as enforcement evidence by themselves.
+
+- Profiles:
+  - `bin.grintion-network`: confines the network manager while allowing
+    netlink, DHCP and Wi-Fi helpers. Denies credential files, raw disks, boot
+    files, kernel memory, MAC policy and dangerous capabilities.
+  - `usr.bin.garb`: confines package installation. Package managers need broad
+    filesystem write access, so the boundary is credentials, host keys, boot
+    files, raw block devices, kernel memory, `/sys` and `/proc/sys` writes, and
+    capabilities such as `sys_admin`, `sys_module` and `sys_rawio`.
+  - `usr.bin.browser-sandbox`: confines browser processes to their own config,
+    cache, downloads, X11 and D-Bus paths. SSH/GPG keys, cloud tokens, host
+    private keys, raw devices and kernel memory are explicitly denied.
+- Profiles use `flags=(attach_disconnected,mediate_deleted)`, and every
+  sensitive-path `deny` rule overrides inherited abstractions. The rootfs build
+  parses every profile with the real `apparmor_parser` and fails closed on a
+  syntax error.
+- Manage them with `grintion-apparmor status`, `grintion-apparmor load-all`,
+  `grintion-apparmor verify`, `grintion-apparmor enforce <profile>` and
+  `grintion-apparmor complain <profile>`. `verify` fails unless the kernel has
+  loaded the profiles in enforce mode; `status` separates on-disk profiles from
+  kernel-loaded profiles.
+- An experimental SELinux configuration remains at `/etc/selinux/config`; it is
+  not the default MAC implementation.
 
 ## 3. Application Sandboxing (`grintion-sandbox`)
 
@@ -72,4 +94,25 @@ The security profile can be chosen during installation via `grintion-install --s
 
 - Daemon monitoring authentication failures (`/etc/sv/grintion-shield/run`).
 - Automatically blacklists abusive IP addresses via `nftables` or `/etc/hosts.deny` upon exceeding retry thresholds.
+
+## 11. X11 Access Control
+
+- `startx` uses `/etc/X11/xinit/xserverrc`, which starts Xorg with
+  `-nolisten tcp -nolisten local`. This removes the TCP listener and the
+  abstract-namespace socket; clients must use `/tmp/.X11-unix` and present the
+  per-session MIT-MAGIC-COOKIE.
+- `grintion-desktop` writes the same flags into LightDM's
+  `xserver-command` and SDDM's `[X11] ServerArguments`, so graphical logins do
+  not reopen the remote transports. The files are written after package
+  installation because pacman can replace `xserverrc`.
+- `etc/X11/xinit/xinitrc.d/05-grintion-x11-security.sh` runs `xhost -` to keep
+  the server access-control list enabled and makes `$XAUTHORITY` mode 0600.
+- `Xwrapper.config` sets `allowed_users = console`; only the local console user
+  may start Xorg. `needs_root_rights = yes` is required because the image has no
+  logind, so Xorg runs as root. That is an accepted limitation, not a claim of
+  rootless X11.
+- X11 is not a security boundary between clients running as the same user.
+  These controls stop remote and other-user connections; they do not isolate a
+  compromised X11 client from the rest of the session. Use the Wayland
+  profiles or `grintion-sandbox` when client isolation is required.
 

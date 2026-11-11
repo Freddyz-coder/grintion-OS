@@ -1,0 +1,7 @@
+# Mandatory access control binaries for the live rootfs.
+#
+# /etc/sv/apparmor loads the tracked profiles at boot, so an image without the
+# parser would advertise AppArmor while enforcing nothing. `make rootfs` fails
+# if any entry here is missing from the build host. `make check` does not scan
+# this list: the static gate must still run on hosts that do not build images.
+apparmor_parser

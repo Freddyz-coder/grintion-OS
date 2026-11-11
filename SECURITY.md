@@ -2,13 +2,13 @@
 
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.11.0 release actually provides, what it does not, and how to report a problem.
+0.12.0 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
-| 0.11.x | Security fixes on a best-effort basis |
+| 0.12.x | Security fixes on a best-effort basis |
 | Earlier versions | No |
 
 There is no long-term-support branch and no guaranteed response time. Security
@@ -151,9 +151,19 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 - **Disk encryption on live persistence.** While the installer provides LUKS2 full-disk
   encryption for installed roots, encrypted `/home`, and encrypted swap, live
   sessions with persistence (`GRINTION_PERSIST`) remain plain unencrypted ext4.
-- **Mandatory access control scope.** AppArmor profiles are included and enforced for
-  network tools, `garb`, and browser sandboxes (`grintion-sandbox`). System-wide
-  enforcing SELinux is experimental and not default.
+- **Mandatory access control scope.** The kernel is built with AppArmor,
+  securityfs is mounted at boot, and the `apparmor` runit service loads every
+  profile in `/etc/apparmor.d`. Profiles confine the network manager, `garb`
+  and `browser-sandbox` with explicit denials for credentials, host keys,
+  kernel memory, raw block devices and dangerous capabilities.
+  `grintion-apparmor verify` checks that the kernel actually loaded them in
+  enforce mode. Arbitrary desktop applications and individual X11 clients are
+  not confined by default; system-wide enforcing SELinux is experimental.
+- **X11 client isolation.** Xorg starts with `-nolisten tcp -nolisten local`
+  and MIT-MAGIC-COOKIE authentication, and `Xwrapper.config` permits only the
+  local console user. This blocks remote and abstract-socket access, but X11
+  clients running as the same user share a display and are not isolated from
+  each other. Use a Wayland session when client isolation is required.
 - **No package-level signatures.** A compromised repository signing key
   compromises every package in that repository.
 - **The pacman backend trusts Arch upstream.** It trusts Arch official repositories

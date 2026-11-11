@@ -1,15 +1,36 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.11.0 and the
+This document records what was actually executed for Grintion-OS 0.12.0 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**0.11.0 verification status (2026-11-11):** `make check` passes; the desktop
-section below records KDE Plasma, LXQt and Sway rendering in QEMU/KVM on
-installed images with the fixes in this tree. The older QEMU and bare-metal
-results below remain the historical record; they are not re-claimed for 0.11.0
-unless a section explicitly says so. "Implemented" and "previously verified"
-are not the same claim.
+**0.12.0 verification status (2026-11-11):** the kernel and ISO were rebuilt
+with AppArmor enforcement and the X11 listener lockdown. `make check` passes;
+BIOS and UEFI live boot pass with all three AppArmor profiles loaded in enforce
+mode. Desktop rendering and installer runs were not repeated for this release;
+older QEMU and bare-metal results below remain the historical record.
+
+## 0.12.0 security hardening results (2026-11-11)
+
+Targeted security release. The kernel and ISO were rebuilt from this tree; this
+release did not re-run the desktop probes.
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 164,823,040 bytes (157 MiB) |
+| SHA-256 | `9c5ec96646002f1f2e550524d26b1951901d6841ee54eba66ddee796b63005c9` |
+| `BUILD-INFO` commit | `3fe543c` (built before the release commit) |
+
+| Check | Result |
+| --- | --- |
+| `make check` | 165 passed |
+| Kernel | `6.12.114-grintion`; `CONFIG_SECURITY_APPARMOR=y`, `CONFIG_SECURITYFS=y` |
+| Profile parse | `apparmor_parser` 4.1.8 accepted all three profiles; the rootfs build fails closed on syntax errors |
+| BIOS live boot | Passed; AppArmor `enabled=Y`; all three profiles loaded `(enforce)`; `apparmor` service running; `grintion-doctor` rc 0 |
+| UEFI live boot | Passed; same AppArmor assertions |
+
+X11 configuration was validated statically. A graphical session was not
+re-rendered for this release, so no new desktop visual claim is made.
 
 Historical tables record `shellcheck | Not installed; static lint was skipped`
 because the gate used to skip lint when the tool was absent. Since 0.10.1,

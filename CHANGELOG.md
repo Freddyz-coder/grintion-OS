@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-11-11
+
+### Security
+
+- **AppArmor is now enforced instead of merely shipped.** The kernel contract
+  enables `CONFIG_SECURITY_APPARMOR` and the boot command line selects
+  `security=apparmor apparmor=1`; `/etc/runit/1` mounts securityfs and the new
+  `apparmor` runit service loads every profile at boot. Previously the profiles
+  in `/etc/apparmor.d/` were never parsed, so they confined nothing.
+- **Profiles deny credentials, host keys, kernel memory, raw block devices and
+  dangerous capabilities.** `grintion-apparmor` gained `load-all` and `verify`,
+  and `status` now separates profiles on disk from profiles the kernel has
+  actually loaded. `grintion-security-report` reports loaded/complain-mode
+  profiles and an exposed X11 TCP listener.
+- **X11 no longer exposes TCP or abstract-socket transports.** `xserverrc`,
+  LightDM's `xserver-command` and SDDM's `[X11] ServerArguments` pass
+  `-nolisten tcp -nolisten local`; a session hook keeps `xhost` access control
+  enabled and `$XAUTHORITY` at mode 0600. `Xwrapper.config` remains
+  console-user-only.
+
+### Verification
+
+- `make check`: **165 passed**.
+- Kernel `6.12.114-grintion` built with `CONFIG_SECURITY_APPARMOR=y` and
+  `CONFIG_SECURITYFS=y`; every boot path passes `security=apparmor apparmor=1`.
+- The shipped `apparmor_parser` 4.1.8 parses all three profiles; `make rootfs`
+  now fails closed when a profile does not parse.
+- QEMU/KVM live boot passed on BIOS and UEFI. In both runs AppArmor reported
+  `enabled=Y`, the `apparmor` service was running, and `/usr/bin/garb`,
+  `/usr/bin/grintion-network` and `/usr/bin/browser-sandbox` were loaded in
+  enforce mode. `grintion-doctor` exited 0.
+- X11 configuration was validated statically; graphical sessions were not
+  re-rendered for this release.
+
+### Release
+
+- The 0.12.0 ISO is **164,823,040 bytes (157 MiB)** with SHA-256
+  `9c5ec96646002f1f2e550524d26b1951901d6841ee54eba66ddee796b63005c9`.
+  It was built from this tree before the release commit; `output/BUILD-INFO`
+  records `git_commit=3fe543c`. No release key was available, so the artifacts
+  are unsigned; verify the checksum before use.
+
+---
+
 ## [0.11.0] - 2026-11-11
 
 ### Fixed

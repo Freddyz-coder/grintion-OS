@@ -1,10 +1,14 @@
-# AppArmor profile for grintion-network
-# Restricts network configuration daemon and tooling
+# AppArmor profile for grintion-network.
+#
+# The daemon must be able to run ip, iw, wpa_supplicant, dhcpcd and nft, and to
+# rewrite resolver and Wi-Fi configuration. It must not read credentials, raw
+# disks or kernel memory, and must not acquire global administrative
+# capabilities.
 abi <abi/3.0>,
 
 include <tunables/global>
 
-/bin/grintion-network {
+/usr/bin/grintion-network flags=(attach_disconnected,mediate_deleted) {
   include <abstractions/base>
   include <abstractions/nameservice>
 
@@ -13,26 +17,86 @@ include <tunables/global>
   network inet6 stream,
   network inet6 dgram,
   network netlink raw,
+  deny network raw,
 
-  /bin/grintion-network mr,
-  /usr/bin/python3* ix,
+  # Interface configuration and Wi-Fi/DHCP helpers.
+  capability net_admin,
+  capability net_raw,
+  capability net_bind_service,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
+
+  /usr/bin/** ix,
+  /usr/sbin/** ix,
+  /bin/** ix,
+  /sbin/** ix,
 
   /etc/grintion/** r,
   /etc/grintion/network.conf rw,
   /etc/grintion/profiles.d/** r,
   /etc/resolv.conf rw,
+  /etc/hosts r,
   /etc/wpa_supplicant/** rw,
+  /etc/ssl/certs/** r,
 
-  /proc/sys/net/** r,
+  /proc/sys/net/** rw,
   /sys/class/net/** r,
   /sys/devices/** r,
+  /dev/rfkill rw,
 
-  /tmp/** rwmk,
+  /tmp/** rwk,
+  /var/tmp/** rwk,
   /run/wpa_supplicant/** rw,
+  /run/dhcpcd/** rw,
   /run/grintion-network/** rw,
+  /var/lib/dhcpcd/** rwkl,
+  /var/lib/wpa_supplicant/** rwkl,
+  /var/log/grintion-network.log rw,
 
-  deny /home/** rw,
-  deny /root/** rw,
-  deny /etc/shadow* rwklx,
+  # Credential, boot and raw-device boundary.
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /boot/** rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+  deny @{HOME}/.password-store/** rwklx,
+
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/** w,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+
+  deny /tmp/** x,
+  deny /var/tmp/** x,
+  deny /dev/shm/** x,
+  deny /etc/apparmor.d/** w,
+
+  deny ptrace,
+  deny mount,
+  deny pivot_root,
 }
-
