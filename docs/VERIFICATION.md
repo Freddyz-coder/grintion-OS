@@ -45,13 +45,14 @@ Targeted desktop follow-up. KDE and LXQt were verified on installed QEMU/KVM
 images that already contained the fixes being productized. Sway was verified
 twice: first on an installed image with the updated `/usr/bin/grintion-desktop`
 and `sway.conf`, then end-to-end from a fresh `--desktop sway` install of the
-rebuilt 0.11.0 ISO. BIOS and UEFI live boot pass (`make test-boot`).
+rebuilt 0.11.0 ISO. BIOS and UEFI live boot pass on the rebuilt ISO
+(`build/test-boot.sh`).
 
 | Artifact | Value |
 | --- | --- |
 | ISO | `output/grintion-os-x86_64.iso`, 163,862,528 bytes (156 MiB) |
-| SHA-256 | `2790ba6c9d42c4660c9bcd55636f923a72bd13275019e5af8b9b54362e94c783` |
-| `BUILD-INFO` commit | `9171355` (built from the working tree) |
+| SHA-256 | `fcdbc0d9a1ac7f47540ecbffa36277fc20916a865e90048acc7ba08ee4335194` |
+| `BUILD-INFO` commit | `a27cb7b` (built from the release commit) |
 
 | Desktop | Session | Result | Evidence |
 | --- | --- | --- | --- |

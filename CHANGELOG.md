@@ -122,9 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Release
 
 - The 0.11.0 ISO is **163,862,528 bytes (156 MiB)** with SHA-256
-  `2790ba6c9d42c4660c9bcd55636f923a72bd13275019e5af8b9b54362e94c783`.
+  `fcdbc0d9a1ac7f47540ecbffa36277fc20916a865e90048acc7ba08ee4335194`.
   It was built from this tree; `output/BUILD-INFO` records
-  `git_commit=9171355`. `make test-boot` passed on BIOS and UEFI.
+  `git_commit=a27cb7b`. `build/test-boot.sh` passed on BIOS and UEFI.
 
 ## [0.10.1] - 2026-11-08
 
