@@ -2,7 +2,6 @@
 build/work/
 build/cache/
 output/
-None/
 *.tmp
 __pycache__/
 *.pyc
@@ -19,10 +18,10 @@ tools/bin/bc
 # local planning documents (not part of the public source tree)
 featureAdding.md
 handoff.md
+handoff-*.md
 nexthandoff.md
 
 # Local architecture questionnaire for the expansion planning session.
-# if temporary2.txt is missing, this line should be removed from the .gitignore file.
 temporary2.txt
 
 ProblemsWhenInstalling.txt
@@ -30,6 +29,3 @@ SecurityProblems.txt
 
 # Local machine-readable system dump; not part of the public source tree.
 info.txt
-
-# If temporary.txt is missing, this line should be removed from the .gitignore file.
-Temporary.txt

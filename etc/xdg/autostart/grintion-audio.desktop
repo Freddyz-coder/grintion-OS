@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Grintion Audio
+Comment=Start PipeWire, WirePlumber and the PulseAudio compatibility daemon
+Exec=/usr/bin/grintion-audio --session
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-Phase=Initialization

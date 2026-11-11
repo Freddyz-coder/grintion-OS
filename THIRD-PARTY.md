@@ -4,9 +4,11 @@ Grintion-OS is distributed under the GNU General Public License, version 3 or
 later (see [LICENSE](LICENSE)). Upstream components keep their own licenses.
 
 This file lists the components built or vendored by this repository. The live
-userland is copied from the build host's packages (see
-[docs/BUILDING.md](docs/BUILDING.md)); those packages keep their upstream
-licenses, which are recorded in the host package metadata.
+userland comes from distribution packages: `make rootfs-pinned` takes them from
+the dated Arch Linux Archive snapshot in `config/arch-snapshot` (see
+[docs/BUILDING.md](docs/BUILDING.md)). Those packages keep their upstream
+licenses, which are recorded in the package metadata. Tracked binaries and
+their provenance are listed in [docs/BINARY-PROVENANCE.md](docs/BINARY-PROVENANCE.md).
 
 ## Built from pinned sources
 
@@ -26,9 +28,12 @@ The kernel's full license texts are also copied into the image at
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
 | Limine | 8.7.0 | BSD-2-Clause | <https://github.com/limine-bootloader/limine> |
+| GNU xorriso | 1.5.6.pl02 | GPL-3.0-or-later | <https://www.gnu.org/software/xorriso/> |
 
-Limine assets are stored under `tools/limine/`. Kernel, modules and Limine
-version pins are documented in [docs/BUILDING.md](docs/BUILDING.md).
+Limine assets are stored under `tools/limine/`; `BOOTAA64.EFI` is not shipped
+because ARM64 is unsupported. Kernel, modules, Limine and xorriso version pins
+are documented in [docs/BUILDING.md](docs/BUILDING.md) and
+[docs/BINARY-PROVENANCE.md](docs/BINARY-PROVENANCE.md).
 
 ## Host-provided userland
 

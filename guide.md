@@ -112,7 +112,7 @@ grintion-install --disk /dev/sda --encrypt --user grintion
 Install pre-configured desktop environments and GPU drivers:
 
 ```bash
-# Install desktop (options: xfce, gnome, kde, lxqt, sway, i3)
+# Install desktop (options: xfce, kde, lxqt, sway, i3)
 sudo grintion-desktop install xfce
 # The full XFCE download can take several minutes on a slow mirror; package
 # manager output is streamed to the screen and saved to

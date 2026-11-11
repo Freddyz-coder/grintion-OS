@@ -60,8 +60,14 @@ binary delta patches between package versions:
 garb delta-create --old pkg-1.0.0.garb --new pkg-1.1.0.garb --out pkg-delta.garb-delta
 
 # Apply delta to reconstruct v2 from v1
-garb delta-apply --old pkg-1.0.0.garb --delta pkg-delta.garb-delta --out pkg-1.1.0.garb
+garb delta-apply --old pkg-1.0.0.garb --delta pkg-delta.garb-delta --out pkg-1.1.0.garb \
+    --index repo/index.json --key keys/public.pem --package demo-app
 ```
+
+`delta-apply` verifies the reconstructed archive against the Ed25519-signed
+index before writing the output. A delta whose metadata was edited, or whose
+reconstruction does not match the published package hash, is rejected. The
+delta is only a transport optimization; it is not a trust root.
 
 ## Mirror Ranking
 
@@ -86,9 +92,15 @@ grintion-audit sbom --format cyclonedx --output /var/log/system-sbom.cdx.json
 # Inspect package build provenance and signing authority
 grintion-audit provenance openssl
 
-# Scan installed packages against vulnerability feed
+# Scan installed packages against a locally supplied advisory feed
 grintion-audit scan --feed /etc/grintion/cve-feed.json --json
 ```
+
+No advisory feed is hosted by the project yet. `grintion-audit scan` therefore
+fails closed with exit status 2 when neither `--feed` nor `GRINTION_CVE_FEED` is
+set; it no longer falls back to invented CVE entries. The feed is a JSON array
+of objects with `id`, `package`, `affected`, `fixed`, `severity` and `title`
+fields.
 
 ## Release Channels: `grintion-channel`
 

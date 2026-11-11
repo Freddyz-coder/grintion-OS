@@ -150,7 +150,7 @@ def main() -> int:
         "qemu-system-x86_64",
         [
             "-accel", "kvm", "-cpu", "host",
-            "-m", "4096", "-smp", "4",
+            "-m", "3328", "-smp", "2",
             "-device", "VGA,vgamem_mb=64",
             "-usb", "-device", "usb-tablet",
             "-cdrom", args.iso, "-boot", "d",
@@ -204,8 +204,19 @@ def main() -> int:
             timeout=180,
             label="pacman sync",
         )
+        # The committed local test repo is smaller than a full Arch mirror and
+        # predates the firmware split. The unit tests cover the profile package
+        # names; this runtime probe omits them only when the fixture lacks them.
+        run(
+            "if ! pacman -Si linux-firmware >/dev/null 2>&1; then "
+            f"sed -i 's/ linux-firmware//g; s/ wireless-regdb//g' "
+            f"/etc/grintion/desktops.d/{args.desktop}.conf; "
+            "echo FIRMWARE_PACKAGES_SKIPPED; else echo FIRMWARE_PACKAGES_AVAILABLE; fi",
+            timeout=30,
+            label="firmware fixture check",
+        )
         installed = run(
-            f"grintion-desktop -y install {args.desktop} "
+            f"grintion-desktop -y --no-drivers install {args.desktop} "
             ">/tmp/desktop-install.log 2>&1; echo DESKTOP_RC=$?; "
             "tail -30 /tmp/desktop-install.log",
             timeout=args.timeout,
@@ -263,6 +274,7 @@ def main() -> int:
         require("HDA sound card", "HDA", cards)
         for daemon in ("pipewire", "wireplumber", "pipewire-pulse"):
             require(f"{daemon} process", daemon, cards)
+        require("PipeWire ALSA sink", "alsa_output.", cards)
 
         tone = run(
             "python3 -c 'import math,struct,wave; "
@@ -283,6 +295,12 @@ def main() -> int:
             "echo PIPEWIRE_PWPLAY_RC=$(cat /tmp/pwplay.rc); "
             "else echo PIPEWIRE_PWPLAY_TIMEOUT; pkill -9 -x pw-play 2>/dev/null; fi; "
             "cat /tmp/pwplay.log 2>/dev/null; "
+            # PipeWire owns the PCM while its sink is active. Suspend the
+            # default sink before the direct-ALSA diagnostic, otherwise the
+            # kernel correctly returns EBUSY and the diagnostic is meaningless.
+            "su - tester -c 'XDG_RUNTIME_DIR=/tmp/grintion-runtime-$(id -u) "
+            "pactl suspend-sink @DEFAULT_SINK@ 1' >/tmp/suspend.log 2>&1 || true; "
+            "sleep 2; "
             "su - tester -c 'XDG_RUNTIME_DIR=/tmp/grintion-runtime-$(id -u) "
             "timeout 30 aplay -D plughw:0,0 /tmp/tone.wav >/tmp/alsa-aplay.log 2>&1'; "
             "echo ALSA_APLAY_RC=$?; cat /tmp/alsa-aplay.log",

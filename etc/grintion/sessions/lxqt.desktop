@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=LXQt
+Comment=Lightweight Qt desktop
+Exec=startlxqt
+TryExec=startlxqt
+Type=Application
+DesktopNames=LXQt
+Keywords=desktop;environment;qt;

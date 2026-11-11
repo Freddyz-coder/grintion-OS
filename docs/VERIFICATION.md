@@ -1,32 +1,112 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.10.0 and the
+This document records what was actually executed for Grintion-OS 0.11.0 and the
 earlier work. It does not claim coverage of hardware or configurations that
 were not tested.
 
-**0.10.0 verification status (2026-11-07):** `./build/check.sh` passes 137 unit,
-integration, and end-to-end tests covering Phases 1 through 10. This includes
-LUKS2 full-disk encryption, encrypted swap, custom partitioning, dual-boot
-probing, Btrfs snapshots and rollback, user-owned Secure Boot with MOK enrollment,
-Unified Kernel Images (UKI), TPM 2.0 PCR attestation, package generations, delta
-updates, AppArmor MAC profiles, Bubblewrap application sandboxing, auditd trails,
-automated self-healing (`grintion-doctor --fix`), and bare-metal validation across
-the 6-node physical hardware lab ([HARDWARE-LAB.md](HARDWARE-LAB.md)). Earlier 0.9.0
-and 0.8.4 test results are preserved below for historical auditability.
+**0.11.0 verification status (2026-11-11):** `make check` passes; the desktop
+section below records KDE Plasma, LXQt and Sway rendering in QEMU/KVM on
+installed images with the fixes in this tree. The older QEMU and bare-metal
+results below remain the historical record; they are not re-claimed for 0.11.0
+unless a section explicitly says so. "Implemented" and "previously verified"
+are not the same claim.
+
+Historical tables record `shellcheck | Not installed; static lint was skipped`
+because the gate used to skip lint when the tool was absent. Since 0.10.1,
+`build/check.sh` fails closed when shellcheck is missing.
+
+## Evidence artifacts
+
+- Every `make check` writes `output/junit.xml`; the static CI job uploads it.
+- The self-hosted KVM job uploads QEMU serial logs and `output/junit.xml` from
+  `make test-boot`, `make test-install` and `make test-install-uefi`.
+- The bare-metal runs `BM-TEST-001` through `BM-TEST-012` in
+  [HARDWARE-LAB.md](HARDWARE-LAB.md) are operator records. Their raw serial and
+  JUnit logs are **not** in this repository and have not been attached to a
+  release; treat those claims as unverified by CI until the logs are assets.
 
 ## Environment
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-11-06 |
+| Date | 2026-11-09 (static gate and 0.10.1 follow-up); older QEMU rows are from 0.9.0/0.10.0 |
 | Host | Arch Linux x86_64, 16 vCPU, 13 GiB RAM |
 | Virtualisation | QEMU with `-accel kvm -cpu host` |
-| Firmware | SeaBIOS; OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd` is available but UEFI was not rerun for 0.9.0 |
-| Guest RAM / vCPU | 4 GiB / 4 for the desktop probes; 2 GiB / 2 for the boot and network tests |
+| Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd`; both were rerun for the 0.10.1 follow-up |
+| Guest RAM / vCPU | 3.25 GiB / 2 for the 0.10.1 XFCE probe; 4 GiB / 4 for older desktop probes; 2 GiB / 2 for boot and network tests |
 | Network | QEMU user networking; `e1000` for the desktop probes, plus the five-NIC matrix |
 | Console | serial, `root@grintion-live` |
 | Kernel | `6.12.114-grintion` |
-| shellcheck | Not installed; static lint was skipped |
+| shellcheck | 0.11.0; required by `build/check.sh` (historical rows below record skipped lint) |
+
+## 0.11.0 desktop results (2026-11-11)
+
+Targeted desktop follow-up. KDE and LXQt were verified on installed QEMU/KVM
+images that already contained the fixes being productized. Sway was verified
+twice: first on an installed image with the updated `/usr/bin/grintion-desktop`
+and `sway.conf`, then end-to-end from a fresh `--desktop sway` install of the
+rebuilt 0.11.0 ISO. BIOS and UEFI live boot pass (`make test-boot`).
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 163,862,528 bytes (156 MiB) |
+| SHA-256 | `2790ba6c9d42c4660c9bcd55636f923a72bd13275019e5af8b9b54362e94c783` |
+| `BUILD-INFO` commit | `9171355` (built from the working tree) |
+
+| Desktop | Session | Result | Evidence |
+| --- | --- | --- | --- |
+| KDE Plasma 6.8.2 | SDDM / Wayland | Rendered | `build/work/de-verify/kde-fixes/kde-fixed.png`, 1280x800, 1,023,917 non-black; `kwin_wayland`, `plasmashell`, `ksmserver` running |
+| LXQt | LightDM / X11 | Rendered | `build/work/de-verify/lxqt-lightdm/lxqt-lightdm.png`, 1280x800, 1,022,249 non-black; `lxqt-session`, `openbox`, `lxqt-panel`, `pcmanfm-qt` running |
+| Sway 1.12 | Direct Wayland | Rendered | `build/work/de-verify/fresh-sway/fresh-sway.png`, 1280x800, 1,023,950 non-black; fresh 0.11.0 `--desktop sway` install; `sway`, `swaybg`, `swaybar` running; `/usr/sbin/grintion-desktop` absent; `~/.config/sway/config` includes `/etc/sway/config.d/*`; `libseat.so.1` present; `pipewire-0` socket created |
+| GNOME 51 | — | Refused | `grintion-desktop install gnome` stops before downloading: `gnome-session` needs `org.freedesktop.systemd1` |
+
+Sway needed `WLR_RENDERER=pixman WLR_RENDERER_ALLOW_SOFTWARE=1` under QEMU's
+emulated GPU. `libseat` comes from Arch's `seatd` package, which replaces the
+former `libseat` package; listing `seatd` in the profile forces pacman to
+complete the seeded package install. The fresh install confirmed the image
+build change: only `/usr/bin` carries the installer, so nothing shadows an
+update. The earlier installed-image run did have a stale
+`/usr/sbin/grintion-desktop`; invoking `/usr/bin` explicitly created the user
+config there. The PipeWire/WirePlumber stack started with a `pipewire-0`
+socket. No playback was attempted in Sway because the probe has no emulated
+sound device.
+
+`make check`: **162 passed**, including shellcheck, Python compilation,
+tracked-binary provenance, documentation links and the home-path scan.
+
+## 0.10.1 follow-up results (2026-11-09)
+
+These runs use the rebuilt working-tree ISO. They verify the audio and desktop
+changes in this tree; they are not a release claim.
+
+| Item | Value |
+| --- | --- |
+| Artifact | `output/grintion-os-x86_64.iso` |
+| Size | 163,983,360 bytes (156 MiB) |
+| SHA-256 | `f0b0550933f7b3aa9635609a3fce2267d924e2053cc2a9d0d7a5ab548e8787b8` |
+| Kernel | `6.12.114-grintion` |
+| `BUILD-INFO` commit | `9171355` (ISO built from the working tree before a commit) |
+| Guest RAM / vCPU | 3.25 GiB / 2 for the XFCE probe; 2 GiB / 2 for live boot |
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `make check` | Pass | 154 pytest cases plus shell syntax, Python compilation, executable bits, documentation links, provenance and the home-path scan |
+| Live boot, BIOS | Pass | `FBCON_OK`, DHCP `10.0.2.15`, supervised `network`, `FIREWALL_OK`, `SUDO_OK`, `DOCTOR_RC=0`, and a plain `poweroff` exited QEMU |
+| Live boot, UEFI | Pass | Same assertions under OVMF |
+| XFCE install | Pass | `grintion-desktop -y --no-drivers install xfce`; Xorg, `xfce4-session`, `xfwm4` and `xfce4-panel` ran and the framebuffer was non-black |
+| Audio sink | Pass | WirePlumber enumerated `alsa_output.pci-0000_00_04.0.analog-stereo`; no hard-coded `plughw:0,0` sink |
+| PipeWire playback | Pass | `pw-play` of a stereo 48 kHz 440 Hz tone returned 0 |
+| Direct ALSA diagnostic | Pass | `aplay -D plughw:0,0` returned 0 after `pactl suspend-sink`; without suspending, PipeWire owns the PCM and `EBUSY` is expected |
+| QEMU audio capture | Pass | 105,730 frames, peak 11999 (the generated amplitude) |
+| Kernel health | Pass | `TAINTED=0`, `OOM_COUNT=0`, `PANIC_COUNT=0` |
+| KDE Plasma, GNOME, Sway | Not verified | Profiles are defined, but the image has no logind-compatible session manager; no SDDM/GDM/Plasma/GNOME/Sway session was rendered |
+| LXQt | Not verified | The profile now uses the verified LightDM/X11 path; no LXQt session was rendered in this pass |
+
+The runtime probe's local package fixture predates the firmware split and lacks
+some GPU packages. It drops `linux-firmware` and `wireless-regdb` only when the
+fixture does not contain them; the unit tests cover the shipped profile package
+names. The probe also uses `--no-drivers`, so it does not exercise firmware or
+GPU installation from Arch mirrors.
 
 ## 0.9.0 results (2026-11-06)
 
@@ -358,7 +438,10 @@ before PAM ran. The conntrack check exists because an earlier kernel enabled
 
 The previous mount point failure was resolved by symlinking `/etc/mtab -> /proc/self/mounts` in `build/make-rootfs.sh`. The non-interactive transaction prompt was addressed by translating `install`, `remove`, and `upgrade` to include `--noconfirm`.
 
-## 0.10.0 results (2026-11-07)
+## 0.10.0 results (2026-11-07, historical)
+
+> These are the 0.10.0 records. The bare-metal rows are operator claims; their
+> raw logs are not in this repository (see [Evidence artifacts](#evidence-artifacts)).
 
 Grintion-OS 0.10.0 executed and verified all 10 phases covering security hardening,
 LUKS2 encryption, user-owned Secure Boot, package generations, disaster recovery,

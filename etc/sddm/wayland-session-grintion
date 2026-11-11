@@ -1,0 +1,34 @@
+#!/bin/sh
+# Grintion-OS SDDM Wayland session wrapper.
+#
+# SDDM relies on logind (pam_systemd) to create /run/user/<uid> and export
+# XDG_RUNTIME_DIR. This image has no logind, so Plasma's Wayland session died
+# with "Could not create wayland socket" before KWin could draw anything.
+#
+# Give the session a private runtime directory owned by the user, export the
+# environment Wayland compositors and libinput expect, then run SDDM's own
+# session script unchanged so profile/PAM handling stays upstream.
+set -e
+
+uid=$(id -u 2>/dev/null) || uid=0
+runtime=${XDG_RUNTIME_DIR:-}
+
+# An inherited directory is usable only when this user can write to it.
+if [ -z "$runtime" ] || ! mkdir -p "$runtime" 2>/dev/null \
+    || [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+    runtime="/run/user/$uid"
+    if ! mkdir -p "$runtime" 2>/dev/null \
+        || [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+        # No logind to own /run/user; use the same per-user path as the X11
+        # session wrapper and bin/grintion-session.
+        runtime="/tmp/grintion-runtime-$uid"
+        mkdir -p "$runtime"
+    fi
+fi
+chmod 700 "$runtime" 2>/dev/null || true
+
+export XDG_RUNTIME_DIR="$runtime"
+export XDG_SESSION_TYPE=wayland
+export SEATD_SOCK="${SEATD_SOCK:-/run/seatd.sock}"
+
+exec /usr/share/sddm/scripts/wayland-session "$@"

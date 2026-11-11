@@ -4,7 +4,8 @@ Defaults   env_reset
 Defaults   secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Defaults   use_pty
 Defaults   log_year, logfile="/var/log/sudo.log"
-Defaults   mail_badpass
+# mail_badpass is deliberately unset: the image ships no MTA, so enabling it
+# would only queue mail that is never delivered.
 
 root ALL=(ALL:ALL) ALL
 %wheel ALL=(ALL:ALL) ALL

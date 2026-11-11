@@ -22,9 +22,9 @@ if [ ! -S /run/dbus/system_bus_socket ]; then
     echo "display-manager: no D-Bus system bus; enable it with 'ln -sfn /etc/sv/dbus /var/service/dbus'"
 fi
 
-# This image has no udev, so libinput cannot enumerate input devices and Xorg
-# starts with only the virtual XTEST pointer. Describe the kernel's event
-# devices explicitly so the real keyboard and mouse work.
+# Xorg drivers that use libudev need the database the udev service builds.
+# Describe the kernel's event devices explicitly as an evdev fallback, so the
+# keyboard and mouse still work if that database is not ready yet.
 if [ -x /usr/bin/grintion-xorg-input ]; then
     /usr/bin/grintion-xorg-input
 fi

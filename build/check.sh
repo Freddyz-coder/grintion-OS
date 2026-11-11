@@ -36,15 +36,15 @@ else
 fi
 pass "shell syntax"
 
-if command -v shellcheck >/dev/null 2>&1; then
+if ! command -v shellcheck >/dev/null 2>&1; then
+    fail "shellcheck is required; install it (Arch: pacman -S shellcheck)"
+else
     log "running shellcheck"
     if ! shellcheck --severity=warning "${SHELL_FILES[@]}"; then
         fail "shellcheck reported problems"
     else
         pass "shellcheck"
     fi
-else
-    warn "shellcheck is not installed; skipping lint (install shellcheck to enable)"
 fi
 
 log "checking Python sources"
@@ -58,11 +58,21 @@ while IFS= read -r -d '' script; do
 done < <(find bin -type f -print0)
 while IFS= read -r -d '' path; do
     PY_FILES+=("$path")
+done < <(find bin/garblib -type f -name '*.py' -print0)
+while IFS= read -r -d '' path; do
+    PY_FILES+=("$path")
 done < <(find build tests -maxdepth 1 -type f -name '*.py' -print0)
 if python3 -m py_compile "${PY_FILES[@]}"; then
     pass "Python compilation"
 else
     fail "Python compilation failed"
+fi
+
+log "checking tracked binary provenance"
+if ( cd "$GRINTION_REPO_ROOT" && sha256sum -c --quiet config/binaries.sha256 ); then
+    pass "tracked binary hashes"
+else
+    fail "tracked binary hash mismatch (rebuild or update config/binaries.sha256)"
 fi
 
 log "checking executable bits"
@@ -136,8 +146,10 @@ if ! "$PYTHON_BIN" -c 'import pytest' >/dev/null 2>&1; then
         fail "pytest is not installed (install python-pytest or create .venv)"
     fi
 fi
+mkdir -p output
 if [ "$PYTEST_READY" -eq 1 ]; then
-    "$PYTHON_BIN" -m pytest -q tests/test_garb.py tests/test_system_tools.py \
+    "$PYTHON_BIN" -m pytest -q --junitxml=output/junit.xml \
+        tests/test_accounts.py tests/test_garb.py tests/test_garblib.py tests/test_system_tools.py \
         tests/test_release_tools.py tests/test_network.py tests/test_desktop_profiles.py \
         tests/test_phase5_hardware_config.py tests/test_phase6_boot_security.py \
         tests/test_phase7_package_ecosystem.py tests/test_phase8_security_hardening.py \

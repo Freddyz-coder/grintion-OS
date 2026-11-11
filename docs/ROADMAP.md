@@ -4,10 +4,10 @@ Grintion-OS is an x86_64 operating system with a source-built kernel, a runit
 userland, a live RAM overlay, a disk installer, and dual-backend package
 management. This roadmap turns the 0.9.0 gap list into ordered phases.
 
-**Planning baseline:** 0.9.0. **Target:** 0.10.0 and later. Nothing here is a
-promise of a date. A phase is finished only when its exit criteria are met and
-the evidence is recorded; a feature is not "done" because a flag or a script
-exists.
+**Planning baseline:** 0.11.0. **Target:** 0.12.0 and later. Nothing here is a
+promise of a date. A phase heading marked `[x]` means the deliverable exists;
+it does **not** mean every configuration is verified. Verification is tracked
+separately in [VERIFICATION.md](VERIFICATION.md).
 
 ## How this roadmap is executed
 
@@ -18,6 +18,8 @@ exists.
 - Claim labels follow [SECURITY.md](../SECURITY.md): **implemented**,
   **verified**, **unverified** and **not provided**. A feature that is written
   but not exercised is not called verified.
+- Phase headings are implementation status. Phase 4 and Phase 9 are `[~]`
+  because their graphical and bare-metal claims are not fully evidenced.
 - Every phase ends with the smallest relevant check (`make check` plus the
   phase-specific QEMU or unit probe). Physical-hardware claims require the
   hardware matrix in Phase 9.
@@ -87,8 +89,8 @@ world by default.
   (`--secure-erase` via blkdiscard and zero-fill).
 - [x] Post-install self-test (`grintion-verify-install`).
 
-**Phase 2 delivered:** All installer and disk essentials are implemented and
-verified. The installer supports whole-disk or custom partition layouts, LUKS2
+**Phase 2 delivered:** All installer and disk essentials are implemented.
+Verification is recorded in [VERIFICATION.md](VERIFICATION.md). The installer supports whole-disk or custom partition layouts, LUKS2
 encryption for root and home, encrypted swap and swapfiles, multiple filesystems
 (ext4, Btrfs, XFS, F2FS), dual-boot detection, guided TUI wizard, and dry-run
 JSON schema 2. Covered in `tests/test_system_tools.py` and documented in
@@ -130,6 +132,10 @@ starts after explicit `continue`.
 
 ## Phase 4 — Desktop and Wayland (High) `[x]`
 
+**Status:** the profile and session plumbing is implemented. XFCE, i3, KDE
+Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway have rendered sessions in
+QEMU/KVM. GNOME remains blocked because `gnome-session` 51 requires systemd.
+
 **Goal:** replace the "unverified" desktop matrix with a tested one, including
 Wayland, without adopting systemd.
 
@@ -161,8 +167,10 @@ Wayland, without adopting systemd.
 (LightDM, SDDM, GDM, greetd), PAM stacks, accessibility tools (`grintion-a11y`),
 display scaling/multi-monitor (`grintion-display`), themes (`grintion-theme`),
 device printing/bluetooth (`grintion-devices`), onboarding (`grintion-welcome`),
-and application profile management (`grintion-apps`) are fully implemented and
-tested. Documented in [DESKTOP-GUI.md](DESKTOP-GUI.md).
+and application profile management (`grintion-apps`) are implemented. XFCE,
+i3, KDE Plasma, LXQt and Sway were rendered in QEMU/KVM; GNOME remains
+unsupported because of its systemd dependency. Documented in
+[DESKTOP-GUI.md](DESKTOP-GUI.md).
 
 ## Phase 5 — Hardware, Wi-Fi and system configuration (High) `[x]`
 
@@ -189,8 +197,9 @@ configure the system.
 central system configuration (`grintion-config`), safe repair (`grintion-doctor --fix`),
 service watchdog (`grintion-watchdog`), power/thermal management (`grintion-power`),
 Wi-Fi roaming/enterprise and privacy controls (`grintion-network`), cgroup v2
-limits (`grintion-cgroup`), and firmware packaging strategy are fully implemented and
-verified. Documented in [HARDWARE-FIRMWARE.md](HARDWARE-FIRMWARE.md) and
+limits (`grintion-cgroup`), and firmware packaging strategy are implemented.
+Verification is recorded in [VERIFICATION.md](VERIFICATION.md). Documented in
+[HARDWARE-FIRMWARE.md](HARDWARE-FIRMWARE.md) and
 [SYSTEM-CONFIG.md](SYSTEM-CONFIG.md), and exercised in
 `tests/test_phase5_hardware_config.py`. Phase 6 starts after explicit `continue`.
 
@@ -217,7 +226,8 @@ measured boot attestation (`grintion-attest`), TPM-backed LUKS sealing with
 passphrase fallback (`grintion-tpm-luks`), EFI capsule updates (`grintion-firmware`),
 hibernation preflight and swap configuration (`grintion-hibernate`), multi-kernel
 management (`grintion-kernel`), kernel module signing (`grintion-module-sign`),
-and cloud/netboot image generation are fully implemented and verified. Documented
+and cloud/netboot image generation are implemented. Verification is recorded in
+[VERIFICATION.md](VERIFICATION.md). Documented
 in [SECURE-BOOT.md](SECURE-BOOT.md) and [BOOT-SECURITY.md](BOOT-SECURITY.md),
 and exercised in `tests/test_phase6_boot_security.py`. Phase 7 starts after
 explicit `continue`.
@@ -239,10 +249,14 @@ release pipeline.
   scan against a feed.
 - [x] Signed `BUILD-INFO`/attestation, release SBOM and `grintion-verify-release`
   integration into `make release`.
-- [x] Reproducible builds across hosts, with remaining host-dependent inputs
-  documented; build in a pinned container.
+- [~] Reproducible builds across hosts, with remaining host-dependent inputs
+  documented; build in a pinned container. 0.10.1 adds the dated Arch Linux
+  Archive container path (`make rootfs-pinned`); a matching cross-host rebuild
+  is not yet recorded.
 - [x] Release channels (stable/beta/nightly), delta ISOs, changelog generation.
-- [x] Package build CI and an upgrade-verification boot test.
+- [x] Package build CI and an upgrade-verification boot test. The static job
+  is in `.github/workflows/ci.yml`; the upgrade boot test remains local until a
+  KVM runner executes it.
 
 **Phase 7 delivered:** Package generations with rollback (`garb generations`,
 `garb rollback-generation`), package hold and pin (`garb hold`, `garb pin`),
@@ -251,8 +265,9 @@ package downgrades (`garb downgrade`), delta updates (`garb delta-create`,
 constraints, virtual package `provides` and `conflicts`, Software Bill of Materials
 (SPDX 2.3 and CycloneDX 1.5) and vulnerability auditing (`grintion-audit`),
 release channel management (`grintion-channel`), reproducible builds (`build/check-reproducibility.sh`),
-and automated changelog generation (`build/gen-changelog.py`) are fully implemented
-and verified. Documented in [REPO-KEY-CEREMONY.md](REPO-KEY-CEREMONY.md) and
+and automated changelog generation (`build/gen-changelog.py`) are implemented.
+Verification is recorded in [VERIFICATION.md](VERIFICATION.md). Documented in
+[REPO-KEY-CEREMONY.md](REPO-KEY-CEREMONY.md) and
 [PACKAGE-ECOSYSTEM.md](PACKAGE-ECOSYSTEM.md), and exercised in
 `tests/test_phase7_package_ecosystem.py` and `build/test-upgrade.sh`. Phase 8 starts
 after explicit `continue`.
@@ -288,11 +303,15 @@ and install-time profile selection (`--security-profile`). Negative boundary tes
 implemented and passing in `tests/test_phase8_security_hardening.py`. Documented in
 [SECURITY-HARDENING.md](SECURITY-HARDENING.md).
 
-## Phase 9 — Validation and bare metal (Essential) `[x]`
+## Phase 9 — Validation and bare metal (Essential) `[~]`
+
+**Status:** the test harnesses are implemented. Bare-metal logs for
+`BM-TEST-001` through `BM-TEST-012` are not attached to the repository or a
+release, so those results are not CI-verifiable yet.
 
 **Goal:** replace "QEMU only" with recorded evidence across real hardware.
 
-- [x] Bare-metal lab with named machines, firmware versions and device IDs ([HARDWARE-LAB.md](HARDWARE-LAB.md)).
+- [~] Bare-metal lab with named machines, firmware versions and device IDs ([HARDWARE-LAB.md](HARDWARE-LAB.md)); raw run logs still need to be attached as release artifacts.
 - [x] Automated install matrix: BIOS/UEFI × virtio/SATA/NVMe × five NICs ×
   disk sizes, plus LUKS and dual-boot cases (`build/test-install-matrix.py`).
 - [x] Fault injection: disk errors, power loss, ENOSPC, OOM, interrupted
@@ -301,7 +320,7 @@ implemented and passing in `tests/test_phase8_security_hardening.py`. Documented
 - [x] Boot-time and performance regression baselines (`build/benchmark-performance.py`).
 - [x] Reproducibility verification and security negative tests.
 - [x] Fuzzing for `garb`, installer parsers and package/index formats (`build/fuzz-parsers.py`).
-- [x] Hardware-in-the-loop CI; JUnit/JSON results dashboard (`build/gen-test-dashboard.py`).
+- [~] Hardware-in-the-loop CI; JUnit/JSON results dashboard (`build/gen-test-dashboard.py`). KVM boot/install jobs are defined in `.github/workflows/ci.yml`; bare-metal CI is not connected.
 
 **Phase 9 delivered:** Bare-metal hardware test lab catalog (`docs/HARDWARE-LAB.md`)
 citing explicit test run IDs (`BM-TEST-001` through `BM-TEST-012`) and physical machines
@@ -310,7 +329,9 @@ automated cross-matrix test runner (`build/test-install-matrix.py`); fault injec
 (`build/test-fault-injection.py`); soak and RSS leak trend monitor (`build/test-soak.py`);
 performance benchmarking (`build/benchmark-performance.py`); parser mutation fuzzing
 (`build/fuzz-parsers.py`); and JUnit/HTML test dashboard generator (`build/gen-test-dashboard.py`).
-Exercised and verified in `tests/test_phase9_validation.py`.
+Exercised in `tests/test_phase9_validation.py`. The KVM jobs are defined in
+`.github/workflows/ci.yml`; the physical-lab claims remain unverified until
+their raw logs and JUnit output are published as release assets.
 
 ## Phase 10 — Performance, documentation and polish (Ongoing) `[x]`
 
@@ -339,6 +360,20 @@ and troubleshooting lookup (`bin/grintion-help`), sanitized bug-report bundle
 hardware rules (`etc/udev/rules.d/60-io-schedulers.rules`), man pages, Bash and Zsh
 completions, and GitHub issue templates. Exercised and verified in
 `tests/test_phase10_performance_polish.py`.
+
+---
+
+## CI and release evidence (0.11.0)
+
+- `.github/workflows/ci.yml` runs `make check` in an Arch container with
+  shellcheck and pytest, and uploads `output/junit.xml`. QEMU boot and install
+  tests run on a self-hosted KVM runner instead of a GitHub-hosted runner.
+- `.github/workflows/release.yml` builds, tests and signs a tag, then publishes
+  the ISO, `SHA256SUMS`, `SHA256SUMS.sig`, `BUILD-INFO`, the public key and
+  JUnit output. It requires `GRINTION_RELEASE_KEY`; a release without a key
+  fails rather than publishing unsigned artifacts.
+- `.github/workflows/upstream-watch.yml` runs `make check-upstream` weekly so a
+  new 6.12.x kernel is visible before the manual pin is updated.
 
 ---
 

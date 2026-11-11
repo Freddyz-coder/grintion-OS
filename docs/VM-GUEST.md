@@ -42,15 +42,18 @@ provide the pointer integration and display resize support.
 
 The 0.10.0 kernel has the HDA controller, HDA codec parsers and USB audio built
 in. The desktop profiles install `pipewire`, `pipewire-pulse`, `pipewire-alsa`,
-`wireplumber`, `alsa-ucm-conf`, `sof-firmware` and `alsa-utils`. The X11 session
-hook starts PipeWire, WirePlumber and the PulseAudio compatibility daemon
-because this image has no systemd user manager to activate their sockets.
+`wireplumber`, `alsa-ucm-conf`, `sof-firmware`, `linux-firmware` and
+`alsa-utils`. The shared `grintion-audio` helper starts PipeWire, WirePlumber
+and the PulseAudio compatibility daemon because this image has no systemd user
+manager to activate their sockets. It is called by the X11 hook and by an XDG
+autostart entry, and it unmutes every detected ALSA card. PipeWire enumerates
+real sinks through udev; there is no hard-coded `plughw:0,0` sink.
 
-If an older installation has no sound, reinstall the desktop profile to
-pull the audio packages and session hook:
+If an older installation has no sound, reinstall the desktop profile to pull
+the audio packages, firmware and session helper:
 
 ```sh
-sudo grintion-desktop install xfce   # or i3, gnome, kde, lxqt, sway
+sudo grintion-desktop install xfce   # or i3, kde, lxqt, sway
 ```
 
 Diagnose inside the guest:
@@ -92,7 +95,6 @@ an audio device shows no card in `/proc/asound/cards`, regardless of PipeWire.
 The release probe uses QEMU's `wav` backend and verifies that a 440 Hz tone
 played through the native PipeWire client (`pw-play`) and through direct ALSA
 (`aplay -D plughw:0,0`) produces non-silent samples. It does not test a
-physical host speaker. PipeWire 1.6.10 has an upstream drain lockup in its
-`pipewire-alsa` client, fixed in 1.6.11: `aplay -D pipewire` may play the file
-and then fail to exit on 1.6.10. Use `pw-play`, direct `plughw` playback, or
-upgrade to PipeWire 1.6.11 when it reaches the stable repositories.
+physical host speaker. PipeWire 1.6.11 is the current Arch stable version and
+includes the fix for the 1.6.10 `pipewire-alsa` drain lockup. On an older
+1.6.10 image, use `pw-play`, direct `plughw` playback, or upgrade the package.

@@ -1,0 +1,24 @@
+name: Upstream kernel watch
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check pinned 6.12.x against kernel.org
+        run: ./build/check-upstream.sh
+      - name: Upload bump report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-kernel-report
+          path: output/upstream-check.txt
+          if-no-files-found: warn

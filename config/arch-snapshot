@@ -1,0 +1,3 @@
+# Dated Arch Linux Archive snapshot for the pinned userland build.
+# Format: YYYY/MM/DD. Used by build/container-rootfs.sh.
+ALA_DATE=2026/11/01

@@ -1,5 +1,6 @@
 # .gitattributes
-# Ensure tests, caches, and development files are excluded from source archive zips (git archive / GitHub Download ZIP)
-tests/ export-ignore
+# Keep the test suite in source archive zips: `make check` needs tests/. Do not
+# export-ignore tests, build/ or .github/, or a GitHub "Download ZIP" cannot run
+# the gate required by CONTRIBUTING.md.
 .gitattributes export-ignore
 .gitignore export-ignore

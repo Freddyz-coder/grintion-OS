@@ -81,14 +81,26 @@ if [ "$SESSION_TYPE" = wayland ]; then
     fi
 fi
 
-# Reuse the tracked audio hook so Wayland and X11 sessions get the same
-# PipeWire/WirePlumber startup without a systemd user manager.
-if [ -r /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh ]; then
-    # shellcheck disable=SC1091
-    . /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh || true
-fi
+start_audio() {
+    # Reuse the tracked audio hook so Wayland and X11 sessions get the same
+    # PipeWire/WirePlumber startup without a systemd user manager.
+    if [ -r /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh ]; then
+        # shellcheck disable=SC1091
+        . /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh || true
+    fi
+}
 
+# WirePlumber needs a session bus. Starting the hook before dbus-run-session
+# leaves the session manager unable to connect, so run both inside the same
+# bus. For callers that already exported a bus, start audio in the current
+# environment.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
-    exec dbus-run-session -- "$@"
+    exec dbus-run-session -- sh -c '
+        if [ -r /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh ]; then
+            . /etc/X11/xinit/xinitrc.d/20-grintion-audio.sh || true
+        fi
+        exec "$@"
+    ' sh "$@"
 fi
+start_audio
 exec "$@"

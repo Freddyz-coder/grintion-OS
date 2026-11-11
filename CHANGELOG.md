@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-11-11
+
+### Fixed
+
+- **KDE Plasma renders on Wayland without systemd or logind.** SDDM's
+  packaged Wayland session expects `pam_systemd` to create
+  `XDG_RUNTIME_DIR`; without it KWin exited with "Could not create wayland
+  socket" and the screen stayed black. A tracked
+  `/etc/sddm/wayland-session-grintion` wrapper creates a private per-user
+  runtime directory, exports `XDG_SESSION_TYPE=wayland` and `SEATD_SOCK`,
+  and `grintion-desktop` points `[Wayland] SessionCommand` at it. Human
+  accounts are also added to `video`, `audio`, `input`, `render` and (for
+  Wayland profiles) `seat`; without those groups nothing can open
+  `/dev/dri/card0`, `/dev/snd/*` or `/dev/input/*`. Duplicate group lines
+  (`render`, `input`) that made `usermod` refuse are collapsed first.
+  Verified in QEMU/KVM on an installed image: `kwin_wayland`,
+  `plasmashell` and `ksmserver` run and the framebuffer shows 1,023,917
+  non-black pixels.
+- **LXQt actually starts.** The `lxqt` package set ships no
+  `/usr/share/xsessions/lxqt.desktop`, so LightDM had no session to launch
+  and autologin returned to the greeter. A tracked session entry is
+  installed when the package does not provide one. Verified with LightDM in
+  QEMU/KVM: `lxqt-session`, `openbox`, `lxqt-panel` and `pcmanfm-qt` run and
+  the framebuffer shows 1,022,249 non-black pixels. LXQt stays on LightDM;
+  SDDM's X11 path still cannot manage the VT without logind.
+- **Desktop installs survive seeded file conflicts.** The seed database can
+  leave unowned files (`libnl`, `libbsd`, `gtk4`, ...) that make the first
+  pacman transaction fail. The installer retried only once and stopped
+  without re-reading the second failure, so e.g. a Sway install aborted.
+  It now retries up to three times and merges the conflict paths reported by
+  each failed attempt, still refusing security-sensitive paths.
+- **GNOME is no longer installed as a broken desktop.** GNOME 51's
+  `gnome-session` starts `gnome-session@gnome.target` through
+  `org.freedesktop.systemd1` and aborts with "Failed to start unit" when it
+  is absent. GDM also produced no greeter without logind. The profile is
+  marked `REQUIRES_SYSTEMD=1` and `grintion-desktop install gnome` now fails
+  before downloading packages, with an explanation and the supported
+  alternatives. This is an upstream hard dependency, not a configuration
+  bug.
+- **Sway renders.** Arch's `seatd` package replaces `libseat` and ships
+  `libseat.so.1`, but the base image only carried the seeded `seatd` binary,
+  so pacman treated the package as installed and the library never appeared;
+  `sway` died with `libseat.so.1: cannot open shared object file`. The Sway
+  profile now lists `seatd` (forcing the full reinstall), the installer fails
+  if `libseat.so` is still absent, and the profile adds `swaybg`. Each human
+  account gets `~/.config/sway/config` copied from the package template with
+  `/etc/sway/config.d/50-grintion-session.conf`, which starts the shared
+  audio stack and sets a solid background so the session is never an
+  ambiguous black frame. Verified in QEMU/KVM: `sway`, `swaybg` and
+  `swaybar` run and the framebuffer shows 1,023,950 non-black pixels.
+- **Desktop tools are installed once.** `make-rootfs.sh` copied every
+  Grintion tool into both `/usr/bin` and `/usr/sbin`. Root's `PATH` searches
+  `/usr/sbin` first, so an updated `/usr/bin/grintion-desktop` was shadowed
+  by the stale `/usr/sbin` copy and installer fixes appeared not to run (the
+  missing Sway per-user config was the visible symptom). Only `/usr/bin` is
+  populated now.
+- **Audio starts in Wayland sessions and finds the real sound card.**
+  `grintion-session` started PipeWire/WirePlumber before `dbus-run-session`, so
+  WirePlumber had no session bus. The shared `bin/grintion-audio` helper now
+  runs inside the session bus, is invoked by both the X11 hook and an XDG
+  autostart entry, and unmutes every ALSA card instead of only card 0. The
+  hard-coded `plughw:0,0` PipeWire sink was removed; WirePlumber enumerates
+  the actual card through udev. Desktop profiles now install
+  `linux-firmware` and `wireless-regdb`. The rebuilt ISO passes BIOS/UEFI
+  live boot and the XFCE QEMU probe: install, dynamic sink, `pw-play`, a
+  suspended-sink `aplay` diagnostic and WAV capture.
+- **LXQt uses LightDM.** LXQt is an X11 desktop and SDDM was never rendered in
+  this runit image; its profile now uses the verified LightDM/X11 path.
+- **Common Wi-Fi drivers are built.** The kernel configuration now enables
+  Intel, Realtek, MediaTek, Qualcomm Atheros and Broadcom wireless drivers,
+  with the matching firmware package available to desktop installs.
+- **Invalid desktop selections fail before partitioning.** `grintion-install`
+  validates the profile before any disk operation, instead of writing a base
+  system and failing at the end.
+
+### Changed
+
+- The version is now **0.11.0** in `VERSION`, `/etc/grintion/version`,
+  `/etc/issue`, `/etc/motd`, `grintion-audit`, `grintion-uki`,
+  `grintion-welcome` and the current-facing documentation.
+- Desktop profiles list `seatd` explicitly (KDE and Sway), and Sway adds
+  `swaybg` for the default background.
+
+### Verification
+
+- `make check`: **162 passed**, including the new seat-library, Sway config
+  and single-install-location tests.
+- KDE Plasma (SDDM/Wayland) rendered in QEMU/KVM: 1,023,917 non-black pixels,
+  `kwin_wayland`, `plasmashell` and `ksmserver` running.
+- LXQt (LightDM/X11) rendered: 1,022,249 non-black pixels, `lxqt-session`,
+  `openbox`, `lxqt-panel` and `pcmanfm-qt` running.
+- Sway rendered: 1,023,950 non-black pixels, `sway`, `swaybg` and `swaybar`
+  running, `~/.config/sway/config` includes `/etc/sway/config.d/*`, and
+  `libseat.so.1` is present. The QEMU probe has no sound device; the
+  PipeWire/WirePlumber stack started with a `pipewire-0` socket, but playback
+  was not exercised in the Sway session.
+- The KDE and LXQt screenshots come from installed images. Sway was also
+  verified from a fresh 0.11.0 ISO install: `grintion-install --desktop sway`
+  completed, the installed disk booted, `/usr/bin/grintion-desktop` existed
+  without a shadowing `/usr/sbin` copy, the user config was created, and
+  Sway rendered the same 1,023,950 non-black pixels with PipeWire running.
+
+### Known limitations
+
+- GNOME is refused. `gnome-session` 51 starts its units through
+  `org.freedesktop.systemd1`; supporting it needs a patched session manager
+  or a systemd-user shim, neither of which is shipped.
+- Desktop audio playback remains verified end-to-end on XFCE only. KDE, LXQt
+  and Sway start the shared stack, but no QEMU audio capture was run there.
+- Bare-metal GPU, input, Wi-Fi and audio testing remains out of scope for
+  this release.
+
+### Release
+
+- The 0.11.0 ISO is **163,862,528 bytes (156 MiB)** with SHA-256
+  `2790ba6c9d42c4660c9bcd55636f923a72bd13275019e5af8b9b54362e94c783`.
+  It was built from this tree; `output/BUILD-INFO` records
+  `git_commit=9171355`. `make test-boot` passed on BIOS and UEFI.
+
 ## [0.10.1] - 2026-11-08
 
 Bug-fix release for package delegation, the pacman database seed, TLS trust,

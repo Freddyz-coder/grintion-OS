@@ -15,7 +15,14 @@ OUTPUT="$GRINTION_REPO_ROOT/output"
 ISO_NAME="grintion-os-x86_64.iso"
 ISO="$OUTPUT/$ISO_NAME"
 LIMINE_DIR="$GRINTION_REPO_ROOT/tools/limine"
-XORRISO="$(command -v xorriso || true)"
+# Prefer the tracked xorriso so the ISO tooling version is pinned by
+# config/binaries.sha256 instead of drifting with the build host.
+TRACKED_XORRISO="$GRINTION_REPO_ROOT/tools/bin/xorriso"
+if [ -x "$TRACKED_XORRISO" ]; then
+    XORRISO="$TRACKED_XORRISO"
+else
+    XORRISO="$(command -v xorriso || true)"
+fi
 
 need_cmd python3
 [ -n "$XORRISO" ] || die "xorriso is required"

@@ -126,8 +126,11 @@ atomically and restarts the services; `grintion-network connect` links
 `/etc/sv/wpa_supplicant` into `/var/service` and writes a mode-0600
 `wpa_supplicant.conf` from the plaintext passphrase or 64-hex PSK.
 
-There is no udev. `devtmpfs` creates device nodes and `mdev` applies
-`/etc/mdev.conf` for hotplug.
+`devtmpfs` creates the initial device nodes and BusyBox `mdev` applies
+`/etc/mdev.conf` for early hotplug. During service startup, standalone
+`systemd-udevd` (not systemd as PID 1) populates `/run/udev` so libinput and
+desktop tools can enumerate devices; `udevadm trigger` coldplugs the devices
+that already exist.
 
 ---
 
@@ -225,8 +228,9 @@ install; display-manager supervision uses the tracked
 contains `wayland`, `grintion-desktop` enables `seatd` and adds human users to
 the `seat` group. `grintion-session` creates a private `XDG_RUNTIME_DIR`, starts
 a session bus when needed, exports the session type and seat socket, and execs
-the compositor. eudev/libinput and logind are still absent, so Wayland sessions
-are **not** claimed as verified.
+the compositor. Standalone udev and `seatd` are present; KDE Plasma
+(SDDM/Wayland), LXQt (LightDM/X11) and Sway (direct Wayland) render without
+logind, while GNOME is refused because `gnome-session` requires systemd.
 
 ---
 
@@ -317,6 +321,6 @@ Vendored binaries:
 
 - Limine 8.7.0 bootloader assets.
 
-This split is the main architectural compromise of 0.10.1. See
+This split is the main architectural compromise of 0.11.0. See
 [BUILDING.md](BUILDING.md) and the "What independent means" section in the
 README.

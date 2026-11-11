@@ -6,7 +6,7 @@ Grintion-OS is designed with a clean separation of concerns:
 
 ---
 
-## Verification status (0.9.0)
+## Verification status (0.11.0)
 
 Verified: `grintion-desktop install xfce` and `... install i3` complete,
 LightDM starts, and both sessions render under Xorg in QEMU/KVM. The probes
@@ -14,20 +14,40 @@ captured non-black desktops at 1280x800 (1,023,950 non-black pixels for XFCE,
 999,348 for i3), with `xfce4-session`/`xfwm4`/`xfce4-panel` and
 `i3`/`i3bar` running. i3 no longer shows its first-run configuration wizard.
 
-Audio is verified end-to-end on both sessions. The kernel provides HDA, the
-HDA codec parsers and USB audio built in; the profile installs PipeWire,
-WirePlumber, `pipewire-pulse` and ALSA tools; the session hook starts them and
-unmutes card 0. Because the image has no udev, a static `plughw:0,0` sink is
-declared in `/etc/pipewire/pipewire.conf.d/50-grintion-alsa.conf`. A stereo
-48 kHz 440 Hz tone played with `pw-play` (native PipeWire) and with
-`aplay -D plughw:0,0` (direct ALSA), and QEMU's WAV backend captured the tone
-(peak 11999 on both probes) with no kernel taints, OOM kills or panics.
+Audio is verified end-to-end on XFCE. The kernel provides HDA, the HDA codec
+parsers and USB audio built in; the profile installs PipeWire, WirePlumber,
+`pipewire-pulse`, ALSA tools, `linux-firmware`, `wireless-regdb` and
+`sof-firmware`. The shared `grintion-audio` helper is called from the X11
+session hook and from `/etc/xdg/autostart/grintion-audio.desktop`, so GNOME,
+KDE, LXQt and XFCE sessions all start the same stack without a systemd user
+manager. It unmutes every card in `/proc/asound/card*`, not just card 0.
 
-Known upstream issue: PipeWire 1.6.10 (the Arch stable version at release) has
-a drain lockup in its ALSA plugin, fixed in 1.6.11. `aplay -D pipewire` can
-therefore play the file and then fail to exit on 1.6.10; use `pw-play` or
-direct `plughw` playback, or upgrade to PipeWire 1.6.11 when it reaches the
-stable repositories.
+The hard-coded `plughw:0,0` PipeWire sink was removed. That sink selected the
+wrong PCM on machines where HDMI is card 0 or the analog codec is card 1, and
+it could leave a real laptop silent. WirePlumber now enumerates the actual
+sink through udev; the XFCE QEMU probe showed
+`alsa_output.pci-0000_00_04.0.analog-stereo`, `pw-play` returned 0, and QEMU
+captured the 440 Hz tone (105,730 frames, peak 11999). Direct `aplay` while
+PipeWire owns the PCM correctly returns `EBUSY`; suspend the PipeWire sink
+before using direct ALSA as a diagnostic.
+
+PipeWire 1.6.11 is the current Arch stable version installed by the desktop
+profiles. It includes the upstream fix for the 1.6.10 `pipewire-alsa` drain
+lockup; on an older 1.6.10 image, use `pw-play` or upgrade the package.
+
+| Desktop | Session | Result | Evidence |
+| --- | --- | --- | --- |
+| XFCE | LightDM / X11 | Rendered | 1,023,950 non-black pixels; audio captured |
+| i3 | LightDM / X11 | Rendered | 999,348 non-black pixels; audio captured |
+| KDE Plasma 6.8 | SDDM / Wayland | Rendered | 1,023,917 non-black pixels; `kwin_wayland`, `plasmashell`, `ksmserver` |
+| LXQt | LightDM / X11 | Rendered | 1,022,249 non-black pixels; `lxqt-session`, `openbox`, `lxqt-panel`, `pcmanfm-qt` |
+| Sway 1.12 | Direct Wayland | Rendered | 1,023,950 non-black pixels; `sway`, `swaybg`, `swaybar`; `libseat.so.1` |
+| GNOME 51 | — | Refused | `gnome-session` requires `org.freedesktop.systemd1` |
+
+KDE and LXQt were rendered on installed QEMU/KVM images. Sway was also
+verified from a fresh 0.11.0 ISO install (`--desktop sway`): the installed
+disk booted, the user config existed, and the session rendered at 1,023,950
+non-black pixels.
 
 ### Phase 4 Desktop, Wayland, and Display Manager Matrix
 
@@ -47,13 +67,19 @@ are automatically provisioned by `grintion-desktop`. D-Bus session bus startup
 in X11 sessions provides automatic fallback to `dbus-daemon --session --fork`
 when `dbus-launch` is not installed, eliminating "No session bus running" errors.
 
-KDE Plasma is **not verified**. The Arch Plasma 6.8 package set is Wayland-only
+KDE Plasma, LXQt and Sway render in QEMU/KVM. Plasma 6.8 is Wayland-only
 (`plasma-workspace` ships `startplasma-wayland` and `plasma.desktop`; there is
-no `startplasma-x11` or X11 session file), and the image has no udev or logind,
-which Wayland input needs. The KDE profile installs packages and points SDDM at
-the Wayland session, but no Plasma session or input was rendered or tested.
-GNOME, LXQt and Sway are also unverified. Treat those profiles as installation
-recipes, not as proof of a working session.
+no `startplasma-x11` or X11 session file). SDDM launches it through
+`/etc/sddm/wayland-session-grintion`, which creates the private
+`XDG_RUNTIME_DIR` that `pam_systemd` would normally provide; human accounts
+are in `video`, `audio`, `input`, `render` and `seat` so KWin can open
+`/dev/dri/card0`. LXQt ships no upstream session entry, so the tracked
+`lxqt.desktop` is installed and LightDM launches `startlxqt`. Sway obtains
+DRM/input access through `seatd` and the `libseat` library shipped by that
+package, reads `~/.config/sway/config` with the Grintion drop-in, and starts
+`swaybg` plus `swaybar`. GNOME remains unsupported: `gnome-session` 51 starts
+its units through `org.freedesktop.systemd1` and exits before drawing, so
+`grintion-desktop install gnome` refuses before downloading anything.
 
 If the greeter does not appear:
 
@@ -170,25 +196,28 @@ default	xf86-video-vesa xf86-video-fbdev
 - **Default Display Manager:** GDM
 - **Characteristics:** Polished modern design, comprehensive application ecosystem, smooth touch gestures.
 - **Packages:** `gnome`, `gnome-terminal`, `nautilus`, `gdm`
+- **Verification:** not supported. `gnome-session` 51 requires the systemd user session manager; the installer refuses this profile before downloading packages.
 
 ### KDE Plasma (`kde` / `plasma`)
 - **Display Server:** Wayland (the 6.8 Arch package set no longer ships an X11 session)
 - **Default Display Manager:** SDDM
 - **Characteristics:** Highly customizable, modern Qt design, widget system, powerful settings.
 - **Packages:** `plasma-meta`, `konsole`, `dolphin`, `sddm`
-- **Verification:** not verified in 0.9.0; see the status above.
+- **Verification:** rendered on Wayland through SDDM in 0.11.0; see the status above.
 
 ### LXQt (`lxqt`)
 - **Display Server:** X11
-- **Default Display Manager:** SDDM
+- **Default Display Manager:** LightDM
 - **Characteristics:** Extremely low resource consumption, clean Qt interface.
-- **Packages:** `lxqt`, `pavucontrol-qt`, `qterminal`, `pcmanfm-qt`, `sddm`
+- **Packages:** `lxqt`, `pavucontrol-qt`, `qterminal`, `pcmanfm-qt`, `lightdm`, `lightdm-gtk-greeter`
+- **Verification:** rendered through LightDM/X11 in 0.11.0; see the status above.
 
 ### Sway (`sway`)
 - **Display Server:** Wayland native
 - **Default Display Manager:** Direct login or LightDM
 - **Characteristics:** Ultra-fast, keyboard-driven i3-compatible Wayland tiling compositor.
-- **Packages:** `sway`, `swaylock`, `swayidle`, `waybar`, `foot`, `wofi`, `polkit`
+- **Packages:** `sway`, `swaybg`, `swaylock`, `swayidle`, `waybar`, `foot`, `wofi`, `polkit`, `seatd`
+- **Verification:** rendered with `swaybg` and `swaybar` in QEMU/KVM in 0.11.0; see the status above.
 
 ### i3 (`i3`)
 - **Display Server:** X11

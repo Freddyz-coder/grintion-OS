@@ -1,0 +1,59 @@
+name: Signed release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The release is built and tested on KVM-capable hardware, not on a
+    # GitHub-hosted runner.
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the offline signing key
+        env:
+          RELEASE_KEY: ${{ secrets.GRINTION_RELEASE_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::error::GRINTION_RELEASE_KEY must contain the offline Ed25519 private key"
+            exit 1
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/grintion-release.pem"
+          printf '%s' "$RELEASE_KEY" > "$RUNNER_TEMP/grintion-release.pem"
+          echo "GRINTION_RELEASE_KEY=$RUNNER_TEMP/grintion-release.pem" >> "$GITHUB_ENV"
+
+      - name: Require a container engine for the pinned rootfs
+        run: command -v podman || command -v docker
+
+      - name: Build and test
+        run: |
+          make check
+          make iso-pinned
+          ./build/test-boot.sh
+          ./build/test-install.sh
+          ./build/test-install.sh --uefi
+
+      - name: Sign the tested artifacts
+        run: |
+          make sign-release
+          openssl pkey -in "$GRINTION_RELEASE_KEY" -pubout -out output/grintion-release-public.pem
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            output/grintion-os-x86_64.iso \
+            output/SHA256SUMS \
+            output/SHA256SUMS.sig \
+            output/BUILD-INFO \
+            output/grintion-release-public.pem \
+            output/junit.xml \
+            --verify-tag --generate-notes

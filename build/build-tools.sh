@@ -59,7 +59,7 @@ extract() {
 }
 
 fetch busybox-1.37.0.tar.bz2 https://busybox.net/downloads/busybox-1.37.0.tar.bz2
-fetch runit-2.1.2.tar.gz http://smarden.org/runit/runit-2.1.2.tar.gz
+fetch runit-2.1.2.tar.gz https://smarden.org/runit/runit-2.1.2.tar.gz
 fetch bc-1.07.1.tar.gz https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz
 fetch dhcpcd-10.5.2.tar.xz https://github.com/NetworkConfiguration/dhcpcd/releases/download/v10.5.2/dhcpcd-10.5.2.tar.xz
 

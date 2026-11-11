@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.10.1 installs from the live ISO to a target disk or existing
+Grintion-OS 0.11.0 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.10.1 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.10.1 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.11.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.11.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -258,7 +258,7 @@ and cache; use `pacman -Q` / `pacman -Sc` for pacman-installed packages.
 
 ## Graphical Desktop Environments
 
-Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console. XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input and working PipeWire audio; KDE Plasma, GNOME, LXQt and Sway remain unverified in 0.10.0 (see [VERIFICATION.md](VERIFICATION.md)).
+Grintion-OS boots into a lightweight console prompt for administrative efficiency. Graphical desktop environments can be installed from this console. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM (see [VERIFICATION.md](VERIFICATION.md)). GNOME is not supported: `gnome-session` requires the systemd user session manager, and the installer refuses that profile before downloading packages.
 
 ### Pre-installing during disk installation
 
@@ -271,8 +271,8 @@ grintion-install --disk /dev/vda --user myuser --desktop xfce
 ```sh
 grintion-desktop list              # List supported environments
 grintion-desktop install xfce      # Install XFCE desktop & LightDM
-grintion-desktop install gnome     # Install GNOME desktop & GDM
 grintion-desktop install kde       # Install KDE Plasma & SDDM
+grintion-desktop install lxqt      # Install LXQt & LightDM
 grintion-desktop install sway      # Install Sway Wayland tiling WM
 grintion-desktop drivers           # Auto-detect GPU and install drivers
 ```

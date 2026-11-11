@@ -2,13 +2,13 @@
 
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.10.1 release actually provides, what it does not, and how to report a problem.
+0.11.0 release actually provides, what it does not, and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
-| 0.10.x | Security fixes on a best-effort basis |
+| 0.11.x | Security fixes on a best-effort basis |
 | Earlier versions | No |
 
 There is no long-term-support branch and no guaranteed response time. Security
@@ -73,8 +73,9 @@ include:
 | `fs.suid_dumpable` | 0 |
 | `kernel.core_pattern` | `/dev/null` |
 
-The image has no udev; `devtmpfs` creates device nodes and BusyBox `mdev`
-applies `/etc/mdev.conf`. The setuid list is explicit in
+`devtmpfs` creates the initial device nodes and BusyBox `mdev` applies
+`/etc/mdev.conf`. The standalone udev service later populates `/run/udev` for
+libinput and desktop tools. The setuid list is explicit in
 `config/rootfs.setuid` and applied at build time.
 
 ### Accounts and access

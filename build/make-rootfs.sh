@@ -108,10 +108,23 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 for tool_path in "$GRINTION_REPO_ROOT"/bin/*; do
     [ -f "$tool_path" ] && [ -x "$tool_path" ] || continue
     tool="$(basename "$tool_path")"
+    # Install each tool once. Root's PATH puts /usr/sbin before /usr/bin, so a
+    # second copy there shadowed the /usr/bin one: after the desktop installer
+    # updated /usr/bin/grintion-desktop, 'grintion-desktop' still executed the
+    # stale /usr/sbin copy. That made the Sway user config step silently
+    # disappear. Nothing invokes these tools through /usr/sbin.
     install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/$tool"
-    # Also install to /usr/sbin for classic SysV paths
-    install -D -m 0755 "$tool_path" "$ROOTFS/usr/sbin/$tool"
 done
+
+# garb is split into a package; the CLI adds /usr/lib/garb when it is not
+# running from the source tree.
+rm -rf "$ROOTFS/usr/lib/garb/garblib"
+install -d -m 0755 "$ROOTFS/usr/lib/garb"
+cp -a "$GRINTION_REPO_ROOT/bin/garblib" "$ROOTFS/usr/lib/garb/garblib"
+find "$ROOTFS/usr/lib/garb/garblib" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$ROOTFS/usr/lib/garb/garblib" -type d -exec chmod 0755 {} +
+find "$ROOTFS/usr/lib/garb/garblib" -type f -exec chmod 0644 {} +
+
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/live-init" "$ROOTFS/init"
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/recovery.sh" "$ROOTFS/recovery.sh"
 
@@ -315,7 +328,7 @@ install -D -m 0644 "$OUTPUT/config-grintion" "$ROOTFS/usr/lib/grintion/boot/conf
     sha256sum vmlinuz-grintion initramfs-install.img System.map-grintion config-grintion > SHA256SUMS
 )
 
-for asset in limine limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI BOOTAA64.EFI; do
+for asset in limine limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI; do
     [ -f "$GRINTION_REPO_ROOT/tools/limine/$asset" ] || die "limine asset missing: $asset"
     install -D -m 0644 "$GRINTION_REPO_ROOT/tools/limine/$asset" "$ROOTFS/usr/share/limine/$asset"
 done
@@ -324,6 +337,13 @@ chmod 0755 "$ROOTFS/usr/share/limine/limine"
 # ---------------------------------------------------------------- configuration
 log "deploying /etc configuration"
 cp -a "$GRINTION_REPO_ROOT/etc/." "$ROOTFS/etc/"
+
+# Account databases are generated from one declarative manifest instead of
+# being copied from the build host. The manifest uses portable UIDs/GIDs and
+# deliberately omits host-only accounts (for example spice-webdavd).
+log "generating account databases from config/accounts.toml"
+python3 "$GRINTION_REPO_ROOT/build/gen-accounts.py" \
+    --manifest "$CONFIG/accounts.toml" --etc "$ROOTFS/etc"
 
 # The runtime doctor checks this list instead of silently trusting the build.
 grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries" \

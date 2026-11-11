@@ -1,0 +1,17 @@
+# Tracked binary hashes, enforced by build/check.sh.
+# Format: <sha256>  <path>
+#
+# Provenance for each entry is recorded in docs/BINARY-PROVENANCE.md. These
+# binaries are inputs to the build, not built by the kernel/rootfs pipeline;
+# changing one requires updating this file in the same commit.
+b13963056f070fdcb37950d1ec3eecc5070152f7bd815471ba60a49212207850  tools/bin/chpst
+965acb650c7b548f3629ff2e8af12ae1d53d28da51778541700154b7743bd2ea  tools/bin/runit
+54b0f3eed5626438cc3e06ec358801212779c0bb77e08dbe6b5a82e9654d499c  tools/bin/runsv
+ad65c688b346740fd9958e7b8e9c14a401a84a7ea1079c930d5bb5e9c38c367f  tools/bin/runsvdir
+61f6679edd643e0a6207dd81187cc49f14af8f9e21ca5c4d0e27f2a0c3f9efa2  tools/bin/sv
+ad80dd0b8196a622044d79072164c06d74f9b3a472ad7a0156a6a06199e30817  tools/bin/xorriso
+51ca2b20ed14bbc678a396cdfb0c1d941acbc155cabebc9bfafabe4cdae1be73  tools/limine/BOOTX64.EFI
+d37ad65c7624c36d2b21e1128d262d7d8667f3752ee9f11b20de38ed5bf1d0e1  tools/limine/limine
+6eee0485702a0dc8a2df6f5e00bc6494a2a4a9d97f1dff2bdeed96e6e9f937d2  tools/limine/limine-bios-cd.bin
+b94bd7ae8a7faf58c7c9ba727b7becfe2f5161b2c5b60096e98853aa263f5150  tools/limine/limine-bios.sys
+0ea0aa408c464014a306840acc843dc564e54f602b2077852ceb34178488bd03  tools/limine/limine-uefi-cd.bin

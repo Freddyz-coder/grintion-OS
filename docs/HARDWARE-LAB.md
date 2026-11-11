@@ -2,6 +2,11 @@
 
 This document provides the hardware verification matrix, named test machines, firmware versions, PCI IDs, and test execution evidence required by Phase 9 of Grintion-OS.
 
+> **Evidence note (0.10.1):** the `logs/bm/...` paths below are not present in
+> this repository. They are operator records, not machine-checkable CI output.
+> Attach the raw serial/JUnit logs as release assets before treating these rows
+> as verified. See [VERIFICATION.md](VERIFICATION.md).
+
 ## 1. Hardware Lab Fleet
 
 The Grintion-OS bare-metal test fleet consists of physical test nodes representing key hardware architectures and vendor generations:

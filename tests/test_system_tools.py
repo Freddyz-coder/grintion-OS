@@ -84,7 +84,7 @@ def test_installer_help_lists_swap_size() -> None:
 def test_limine_deploy_installs_referenced_files(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
-    for name in ("limine-bios.sys", "BOOTX64.EFI", "BOOTAA64.EFI"):
+    for name in ("limine-bios.sys", "BOOTX64.EFI"):
         (assets / name).write_bytes(b"asset")
     esp = tmp_path / "esp"
     esp.mkdir()
@@ -206,10 +206,10 @@ def test_graphical_sessions_start_a_dbus_session_bus() -> None:
     assert "dbus-run-session" in required
 
 
-def test_xorg_uses_evdev_explicitly_without_udev() -> None:
-    # The image runs mdev, not udev. libinput enumerates devices through
-    # libudev, so Xorg started with only the XTEST pointer and the real mouse
-    # and keyboard were dead even though the desktop rendered.
+def test_xorg_uses_evdev_fallback() -> None:
+    # Standalone udev feeds libinput, but Xorg can launch before that database
+    # settles. The explicit evdev sections keep the real mouse and keyboard
+    # working even when the libudev path is unavailable.
     generator = REPO_ROOT / "bin" / "grintion-xorg-input"
     assert generator.is_file()
     text = generator.read_text()
@@ -274,18 +274,32 @@ def test_desktop_writes_an_explicit_lightdm_greeter_session() -> None:
     assert "greeter-session=lightdm-gtk-greeter" in script
 
 
-def test_lightdm_account_has_a_shadow_entry() -> None:
+def test_lightdm_account_has_a_shadow_entry(tmp_path: Path) -> None:
     # lightdm is declared in /etc/passwd but was missing from /etc/shadow, so
     # useradd refused with "user already exists" and PAM could not establish
     # credentials for the greeter (Failed to establish PAM credentials).
+    # Accounts are now generated at build time, so test the generator output.
+    import subprocess
+    import sys
+
+    etc = tmp_path / "etc"
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "build" / "gen-accounts.py"),
+            "--manifest", str(REPO_ROOT / "config" / "accounts.toml"),
+            "--etc", str(etc),
+        ],
+        check=True,
+    )
     passwd = {
         line.split(":", 1)[0]
-        for line in (REPO_ROOT / "etc" / "passwd").read_text().splitlines()
+        for line in (etc / "passwd").read_text().splitlines()
         if line
     }
     shadow = {
         line.split(":", 1)[0]
-        for line in (REPO_ROOT / "etc" / "shadow").read_text().splitlines()
+        for line in (etc / "shadow").read_text().splitlines()
         if line
     }
     assert passwd <= shadow, f"accounts without shadow entries: {sorted(passwd - shadow)}"
@@ -337,24 +351,31 @@ def test_desktop_profiles_install_and_start_pipewire() -> None:
     hook = REPO_ROOT / "etc" / "X11" / "xinit" / "xinitrc.d" / "20-grintion-audio.sh"
     assert hook.is_file()
     assert os.access(hook, os.X_OK)
-    text = hook.read_text()
+    hook_text = hook.read_text()
+    assert "grintion-audio --session" in hook_text
+
+    helper = REPO_ROOT / "bin" / "grintion-audio"
+    assert helper.is_file()
+    assert os.access(helper, os.X_OK)
+    text = helper.read_text()
     for daemon in ("pipewire", "wireplumber", "pipewire-pulse"):
         assert daemon in text
     assert "XDG_RUNTIME_DIR" in text
+    assert "/proc/asound/card[0-9]*" in text
 
     wrapper = (REPO_ROOT / "etc" / "lightdm" / "Xsession-grintion").read_text()
     assert "XDG_RUNTIME_DIR" in wrapper
 
     for profile in (REPO_ROOT / "etc" / "grintion" / "desktops.d").glob("*.conf"):
         values = profile.read_text()
-        for package in ("pipewire", "wireplumber", "alsa-ucm-conf"):
+        for package in ("pipewire", "wireplumber", "alsa-ucm-conf", "linux-firmware"):
             assert package in values, f"{profile.name} is missing {package}"
 
 
 def test_limine_deploy_refuses_missing_kernel(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
-    for name in ("limine-bios.sys", "BOOTX64.EFI", "BOOTAA64.EFI"):
+    for name in ("limine-bios.sys", "BOOTX64.EFI"):
         (assets / name).write_bytes(b"asset")
     esp = tmp_path / "esp"
     esp.mkdir()

@@ -8,6 +8,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DESKTOP = REPO_ROOT / "bin" / "grintion-desktop"
 SESSION = REPO_ROOT / "bin" / "grintion-session"
+INSTALL = REPO_ROOT / "bin" / "grintion-install"
+AUDIO = REPO_ROOT / "bin" / "grintion-audio"
 PROFILES = REPO_ROOT / "etc" / "grintion" / "desktops.d"
 
 
@@ -109,8 +111,11 @@ def test_seatd_service_and_group_are_tracked() -> None:
     service = (REPO_ROOT / "etc" / "sv" / "seatd" / "run").read_text()
     assert "seatd -g seat" in service
     assert "/run/seatd.sock" in service
-    groups = (REPO_ROOT / "etc" / "group").read_text()
-    assert "seat:x:" in groups
+    import tomllib
+
+    manifest = tomllib.loads((REPO_ROOT / "config" / "accounts.toml").read_text())
+    groups = {group["name"] for group in manifest["group"]}
+    assert "seat" in groups
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert "seatd" in rootfs
     assert "seatd" in (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
@@ -126,3 +131,161 @@ def test_udev_service_is_the_standalone_device_manager() -> None:
     assert "udevadm" in (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
     session = (REPO_ROOT / "bin" / "grintion-session").read_text()
     assert "/run/udev/control" in session
+
+
+def test_sddm_wayland_session_gets_a_runtime_directory() -> None:
+    # Without logind/pam_systemd SDDM's Wayland session had no writable
+    # XDG_RUNTIME_DIR and KWin exited with "Could not create wayland socket".
+    wrapper = REPO_ROOT / "etc" / "sddm" / "wayland-session-grintion"
+    assert wrapper.is_file()
+    assert os.access(wrapper, os.X_OK)
+    text = wrapper.read_text()
+    assert "XDG_RUNTIME_DIR" in text
+    assert "stat -c %u" in text
+    assert 'exec /usr/share/sddm/scripts/wayland-session "$@"' in text
+
+    desktop = DESKTOP.read_text()
+    assert "configure_sddm_wayland" in desktop
+    assert "SessionCommand=/etc/sddm/wayland-session-grintion" in desktop
+
+
+def test_human_accounts_get_graphics_sound_and_input_groups() -> None:
+    # Nothing applies udev/pam ACLs without logind: /dev/dri/card0 is
+    # root:video, /dev/snd/* root:audio and /dev/input/* root:input, so a
+    # session owned only by wheel cannot start a Wayland compositor.
+    text = DESKTOP.read_text()
+    assert "grant_session_groups" in text
+    assert 'wanted = ["video", "audio", "input", "render"]' in text
+    assert 'wanted.append("seat")' in text
+    # Duplicate group lines made usermod refuse with "Multiple entries named
+    # 'render'"; the function collapses them before adding members.
+    assert "if not line.strip() or name in seen" in text
+
+
+def test_wayland_profiles_complete_the_seat_library() -> None:
+    # Arch's seatd package replaces libseat and ships libseat.so.1. The base
+    # image carries the seeded seatd binary, so pacman can report the package
+    # as installed while the library is absent; listing seatd in the profile
+    # forces the full reinstall and the installer verifies the result.
+    for name in ("sway", "kde"):
+        packages = read_profile(PROFILES / f"{name}.conf")["PACKAGES"].split()
+        assert "seatd" in packages, name
+    desktop = DESKTOP.read_text()
+    assert 'compgen -G "$TARGET_ROOT/usr/lib/libseat.so*"' in desktop
+    assert "libseat.so is missing" in desktop
+
+
+def test_lxqt_ships_a_greeter_session_entry() -> None:
+    entry = (REPO_ROOT / "etc" / "grintion" / "sessions" / "lxqt.desktop").read_text()
+    assert "Exec=startlxqt" in entry
+    assert "TryExec=startlxqt" in entry
+    assert "DesktopNames=LXQt" in entry
+    assert "install_session_desktop" in DESKTOP.read_text()
+
+
+def test_console_login_provides_a_runtime_directory() -> None:
+    # sway and PipeWire refuse to start without XDG_RUNTIME_DIR, and a plain
+    # getty login has no logind to create one.
+    text = (REPO_ROOT / "etc" / "profile.d" / "00-grintion-runtime.sh").read_text()
+    assert "XDG_RUNTIME_DIR" in text
+    assert "/tmp/grintion-runtime-" in text
+    assert "SEATD_SOCK" in text
+
+
+def test_sway_installs_a_user_config_and_audio_hook() -> None:
+    desktop = DESKTOP.read_text()
+    assert "configure_sway_config" in desktop
+    assert "include /etc/sway/config.d/*" in desktop
+    snippet = (REPO_ROOT / "etc" / "sway" / "config.d" / "50-grintion-session.conf").read_text()
+    assert "exec grintion-audio --session" in snippet
+    entry = (REPO_ROOT / "etc" / "grintion" / "sessions" / "sway.desktop").read_text()
+    assert "Exec=sway" in entry
+
+
+def test_gnome_installation_is_refused_without_systemd() -> None:
+    # gnome-session 51 starts org.gnome.Shell through org.freedesktop.systemd1
+    # and aborts with "Failed to start unit" when it is missing. Verify the
+    # profile does not pretend to install a working desktop.
+    values = read_profile(PROFILES / "gnome.conf")
+    assert values.get("REQUIRES_SYSTEMD") == "1"
+    desktop = DESKTOP.read_text()
+    assert "requires the systemd user session manager" in desktop
+    assert "NOT SUPPORTED" in desktop
+
+
+def test_lxqt_uses_the_verified_lightdm_x11_path() -> None:
+    # SDDM was never rendered in this runit image. LightDM/Xorg is the path
+    # that is verified for XFCE and i3, and LXQt is an X11 session.
+    values = read_profile(PROFILES / "lxqt.conf")
+    assert values["DISPLAY_SERVER"] == "x11"
+    assert values["DM"] == "lightdm lightdm-gtk-greeter"
+    assert values["DM_BIN"] == "/usr/bin/lightdm"
+    assert values["XINITRC"] == "exec startlxqt"
+
+
+def test_audio_startup_is_shared_by_x11_and_wayland() -> None:
+    helper = AUDIO
+    assert helper.is_file()
+    assert os.access(helper, os.X_OK)
+    text = helper.read_text()
+    assert "for card in /proc/asound/card[0-9]*" in text
+    assert 'amixer -c "$index"' in text
+    assert not (REPO_ROOT / "etc" / "pipewire" / "pipewire.conf.d" / "50-grintion-alsa.conf").exists()
+
+    hook = (
+        REPO_ROOT / "etc" / "X11" / "xinit" / "xinitrc.d" / "20-grintion-audio.sh"
+    ).read_text()
+    assert "grintion-audio --session" in hook
+
+    autostart = (
+        REPO_ROOT / "etc" / "xdg" / "autostart" / "grintion-audio.desktop"
+    ).read_text()
+    assert "Exec=/usr/bin/grintion-audio --session" in autostart
+
+    session = SESSION.read_text()
+    assert "exec dbus-run-session --" in session
+    assert session.count("/etc/X11/xinit/xinitrc.d/20-grintion-audio.sh") >= 2
+
+
+def test_profiles_include_firmware_and_wireless_regulatory_data() -> None:
+    # A desktop profile without firmware cannot drive Intel/AMD/Realtek Wi-Fi
+    # or GPU blocks even when the kernel module is present.
+    for path in PROFILES.glob("*.conf"):
+        values = read_profile(path)
+        assert "linux-firmware" in values["PACKAGES"].split(), path
+        assert "wireless-regdb" in values["PACKAGES"].split(), path
+
+
+def test_kernel_has_common_wireless_drivers() -> None:
+    config = (REPO_ROOT / "config" / "kernel-hardened.config").read_text()
+    for symbol in (
+        "CONFIG_CFG80211=m",
+        "CONFIG_MAC80211=m",
+        "CONFIG_IWLWIFI=m",
+        "CONFIG_IWLMVM=m",
+        "CONFIG_RTW88=m",
+        "CONFIG_RTW89=m",
+        "CONFIG_MT7921E=m",
+        "CONFIG_ATH10K=m",
+        "CONFIG_ATH11K=m",
+        "CONFIG_BRCMFMAC=m",
+        "CONFIG_RTL8XXXU=m",
+    ):
+        assert symbol in config, symbol
+
+
+def test_build_installs_tools_only_in_usr_bin() -> None:
+    # Root's PATH searches /usr/sbin before /usr/bin. Installing every tool
+    # into both places meant an updated /usr/bin/grintion-desktop was shadowed
+    # by the stale /usr/sbin copy, so installer fixes never took effect.
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert 'install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/$tool"' in rootfs
+    assert '"$tool_path" "$ROOTFS/usr/sbin/$tool"' not in rootfs
+
+
+def test_installer_validates_desktop_before_disk_operations() -> None:
+    text = INSTALL.read_text()
+    validation = text.index('desktop_profile="$DESKTOP"')
+    first_partition = text.index('parted -s "$DISK" mklabel')
+    assert validation < first_partition
+    assert "unknown desktop environment" in text

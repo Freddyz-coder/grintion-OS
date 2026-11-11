@@ -7,17 +7,17 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.10.1
+- **Version:** 0.11.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
   configuration fragment
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
-- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers install with `grintion-desktop` or `garb`; XFCE and i3 are verified in QEMU/KVM with keyboard and pointer input, while KDE Plasma, GNOME, LXQt and Sway remain unverified
-- **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber and the PulseAudio compatibility daemon, started by the X11 session hook. Playback is verified end-to-end on XFCE and i3 with QEMU audio capture
+- **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
+- **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-Grintion-OS 0.10.1 is built from this tree. There is no hosted binary
+Grintion-OS 0.11.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Official
 release artifacts can be signed with `make sign-release` and verified with
 `bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
@@ -31,8 +31,8 @@ release artifacts can be signed with `make sign-release` and verified with
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
 | Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
-| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. XFCE and i3 (LightDM + Xorg) were rendered with working keyboard and pointer input in QEMU/KVM; KDE Plasma, GNOME, LXQt and Sway remain unverified. |
-| Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, `pipewire-pulse` and ALSA tools; the X11 session hook starts them and unmutes the card. A static `plughw:0,0` sink replaces udev enumeration. Playback through PipeWire and direct ALSA was verified on the i3 and XFCE probes. |
+| Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway were rendered in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires systemd. |
+| Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, firmware and ALSA tools. The shared `grintion-audio` helper is started by the X11 hook or XDG autostart, and unmutes every detected ALSA card; WirePlumber enumerates real sinks through udev instead of a hard-coded `plughw:0,0`. PipeWire playback was captured on the XFCE QEMU probe. Direct ALSA is only usable after PipeWire releases the PCM. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
@@ -50,6 +50,7 @@ Documentation:
 - [Hardware & Lab Validation](docs/HARDWARE-LAB.md)
 - [Package Ecosystem](docs/PACKAGE-ECOSYSTEM.md)
 - [Performance Baselines](docs/PERFORMANCE-BASELINES.md)
+- [Tracked Binary Provenance](docs/BINARY-PROVENANCE.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ---
@@ -123,12 +124,12 @@ Signing, the on-disk format, the threat model and delegation details are in
 
 Grintion-OS boots into a clean, minimal console prompt designed for pre-installation, partitioning, and system administration. Desktop environments and GPU drivers can be installed and configured:
 
-> **Verification status:** package transactions, D-Bus accounts, the
-> display-manager service and desktop audio are verified. XFCE and i3
-> (LightDM + Xorg) were rendered in QEMU/KVM with working keyboard and pointer
-> input, and a 440 Hz tone played through PipeWire was captured from the
-> emulated HDA device. KDE Plasma, GNOME, LXQt and Sway remain unverified; see
-> [docs/VERIFICATION.md](docs/VERIFICATION.md).
+> **Verification status:** XFCE and i3 (LightDM + Xorg) were rendered in
+> QEMU/KVM with working keyboard and pointer input, and a 440 Hz tone played
+> through PipeWire was captured from the emulated HDA device. KDE Plasma was
+> rendered on Wayland through SDDM, LXQt through LightDM, and Sway directly on
+> Wayland with `swaybg` and `swaybar`. GNOME is not supported: its session
+> manager requires systemd. See [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ### Pre-installing with the installer
 
@@ -144,21 +145,21 @@ Use `grintion-desktop` on the live overlay or an installed system to install env
 ```sh
 grintion-desktop list               # View supported desktop environments
 grintion-desktop install xfce       # Fast & lightweight traditional desktop (Recommended)
-grintion-desktop install gnome      # Modern Wayland desktop suite
-grintion-desktop install kde        # KDE Plasma - customizable and modular
-grintion-desktop install sway       # Lightweight Wayland tiling compositor
-grintion-desktop install lxqt       # Ultra-lightweight Qt desktop
+grintion-desktop install kde        # KDE Plasma - verified Wayland session
+grintion-desktop install lxqt       # Ultra-lightweight Qt desktop (verified)
+grintion-desktop install sway       # Wayland tiling compositor (verified)
 grintion-desktop drivers            # Auto-detect GPU and install graphics drivers
 ```
 
-Supported display managers (LightDM, SDDM, GDM) are supervised by runit (`/var/service/display-manager`). See [docs/DESKTOP-GUI.md](docs/DESKTOP-GUI.md) for full instructions.
+LightDM and SDDM are supervised by runit (`/var/service/display-manager`); GDM is not used because it requires systemd-logind. See [docs/DESKTOP-GUI.md](docs/DESKTOP-GUI.md) for full instructions.
 
 ---
 
 ## Tests
 
 ```sh
-make check       # syntax, config contracts, Python unit tests, package tests
+make check       # shellcheck, tracked-binary hashes, syntax, Python tests
+make rootfs-pinned # build the rootfs from the dated Arch Linux Archive snapshot
 make test-garb   # signed repository and transaction tests
 make test-boot   # boot the ISO under BIOS and UEFI in QEMU
 make test-network # boot five virtual NIC models under BIOS/QEMU
@@ -167,8 +168,11 @@ make test-install-uefi # install under UEFI/OVMF and reboot from it
 make test-all    # all of the above
 ```
 
-The runtime tests need KVM and OVMF (`edk2-ovmf`). Exact coverage and the
-results recorded for this release are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+The static gate runs in an Arch container in CI with shellcheck and pytest, and
+writes `output/junit.xml`. The runtime tests need KVM and OVMF (`edk2-ovmf`) and
+run on a self-hosted KVM runner; GitHub-hosted runners do not silently skip them.
+Exact coverage and the results recorded for this release are in
+[docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ---
 
@@ -178,11 +182,15 @@ Grintion-OS is independent in **integration**, not in the sense of writing every
 component from scratch:
 
 - The kernel, bootloader, init, C library and base utilities are upstream
-  projects, used unmodified except for configuration.
+  projects, used unmodified except for configuration. Tracked binaries are
+  listed with their provenance in [docs/BINARY-PROVENANCE.md](docs/BINARY-PROVENANCE.md)
+  and pinned by SHA-256 in `config/binaries.sha256`.
 - The live userland is **not** built from source by this repository. It is a
-  curated copy of the build host's packages, with every required command listed
-  in `config/rootfs.required-binaries` and every shared library resolved
-  explicitly.
+  curated set of distribution packages, with every required command listed in
+  `config/rootfs.required-binaries` and every shared library resolved
+  explicitly. `make rootfs-pinned` takes those packages from the dated Arch
+  Linux Archive snapshot in `config/arch-snapshot`; plain `make rootfs` still
+  uses the build host for fast local iteration.
 - `garb` packages are prebuilt file trees. There is no source build recipe, no
   compiler toolchain in the image, and no cross-compilation.
 - The optional `pacman` backend installs Arch packages from official
@@ -196,20 +204,20 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.10.1 |
+| Feature | 0.11.0 |
 | --- | --- |
-| x86_64 BIOS boot | Yes, tested in QEMU and bare-metal fleet |
-| x86_64 UEFI boot | Yes, tested in QEMU with OVMF and bare-metal fleet |
+| x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
-| Graphical desktop | XFCE and i3 verified in QEMU/KVM; Sway/Wayland, GNOME, KDE Plasma, and LXQt supported via `grintion-desktop`, `seatd` and `grintion-session` |
-| Audio | PipeWire playback verified end-to-end on XFCE and i3 (QEMU WAV capture), plus direct ALSA playback; PipeWire 1.6.10's `pipewire-alsa` client can hang on drain (fixed upstream in 1.6.11) |
+| Graphical desktop | XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM. GNOME is not supported because `gnome-session` 51 requires `org.freedesktop.systemd1` |
+| Audio | PipeWire playback verified end-to-end on XFCE (QEMU WAV capture) with a dynamically enumerated sink; all ALSA cards are unmuted. Direct ALSA playback requires suspending PipeWire first. PipeWire 1.6.11 is the current Arch stable version and includes the upstream `pipewire-alsa` drain fix |
 | Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
 | Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with Arch official repos) |
-| Hosted binary repository | Release channels (`grintion-channel`), delta updates (`garb delta-create`/`delta-apply`), and signed index metadata |
-| Signed release artifacts | Supported tooling; `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
+| Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
+| Signed release artifacts | Tooling and a tag-triggered release workflow exist; no signed release has been published yet. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
 Unsupported configurations are not "known broken"; they are simply outside what
 this release builds and tests.
@@ -243,7 +251,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.10.1 has not undergone an independent third-party
+and atomic rollback, but 0.11.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

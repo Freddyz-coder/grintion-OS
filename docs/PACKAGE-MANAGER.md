@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.10.1 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.11.0 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -39,7 +39,7 @@ ranking, and an fsck command.
 | `garb downgrade PKG VER` | Downgrade a package to a specific version. |
 | `garb mirror-rank` | Measure and rank repository mirror latencies. |
 | `garb delta-create --old A --new B --out D` | Create a binary delta patch between two package versions. |
-| `garb delta-apply --old A --delta D --out B` | Reconstruct a target package from an old package and a delta patch. |
+| `garb delta-apply --old A --delta D --out B --index INDEX --key PUBKEY [--package NAME]` | Reconstruct a target package from an old package and a delta patch. The rebuilt archive must match the signed index entry; the delta's own metadata is not trusted on its own. |
 | `garb history [--limit N] [--format json]` | Show the durable transaction journal (`started`, `committed`, `rolled-back`). |
 | `garb fsck [--hash] [--format json]` | Check database structure, duplicate ownership, missing/tampered files, incomplete journal records and leftover rollback backups. |
 | `garb build GARBFILE [-o DIR]` | Build one package archive from a `Garbfile`. |
@@ -51,6 +51,11 @@ ranking, and an fsck command.
 
 The global `--root` option must appear before the subcommand. All paths below
 are relative to that root.
+
+`garb delta-create` only accepts a new archive in the canonical `garb build`
+format, and `garb delta-apply` refuses to write `--out` unless the reconstructed
+archive's SHA-256 matches the package entry in a signed `index.json`. The delta
+metadata is untrusted input; `--index` and `--key` are required.
 
 `garb clean` empties `/var/cache/garb/repos/`; the installed database in
 `/var/lib/garb/db.json` is untouched. `garb update` refreshes the cache.

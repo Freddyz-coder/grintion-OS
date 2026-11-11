@@ -32,260 +32,106 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-VERSION = "0.10.1"
-SCHEMA = 1
-DEFAULT_DB = "var/lib/garb/db.json"
-DEFAULT_REPOS = "etc/garb/repos.d"
-DEFAULT_KEYS = "etc/garb/keys"
-DEFAULT_CACHE = "var/cache/garb"
-DEFAULT_TMP = "var/lib/garb/tmp"
-METADATA_NAME = "GARB_METADATA.json"
+_GARB_SCRIPT_DIR = Path(__file__).resolve().parent
+if not (_GARB_SCRIPT_DIR / "garblib").is_dir():
+    sys.path.insert(0, "/usr/lib/garb")
+
+from garblib.archive import (
+    build_package,
+    commit_package,
+    confined_tree_path,
+    extract_staged,
+    extract_tree,
+    file_conflicts,
+    read_garbfile,
+    read_metadata,
+    remove_path,
+    reverse_dependents,
+    validate_delta_tree,
+    verify_member,
+    verify_staged,
+    write_canonical_archive,
+)
+from garblib.backends import (
+    backend_kind,
+    backend_version,
+    conflict_paths,
+    external_argv,
+    external_backend_binary,
+    protected_overwrite,
+    run_external_backend,
+    run_streaming,
+)
+from garblib.common import (
+    GarbError,
+    METADATA_NAME,
+    SCHEMA,
+    SHA256_RE,
+    VERSION,
+    die,
+    epoch,
+    log,
+    normalise_member,
+    parse_mode,
+    safe_symlink_target,
+    sha256_file,
+    warn,
+)
+from garblib.delta import cmd_delta_apply, cmd_delta_create
+from garblib.deps import (
+    match_version,
+    parse_dep_spec,
+    resolve_dependencies,
+    safe_version_tuple,
+    version_tuple,
+)
+from garblib.repo import (
+    fetch_repo_file,
+    load_indexes,
+    load_repo_priorities,
+    read_repo_configs,
+    sign_bytes,
+    validate_index,
+    verify_signature,
+)
+from garblib.store import (
+    Database,
+    Paths,
+    TransactionLock,
+    journal_append,
+    read_journal,
+)
+
 EXTERNAL_COMMANDS = frozenset({"update", "search", "info", "install", "remove", "verify", "upgrade"})
 MUTATING_COMMANDS = frozenset({"install", "remove", "upgrade", "downgrade", "rollback-generation"})
 
 
-class GarbError(Exception):
-    pass
 
 
-def log(message: str) -> None:
-    print(f"[*] {message}")
 
 
-def warn(message: str) -> None:
-    print(f"[!] {message}", file=sys.stderr)
 
 
-def die(message: str) -> None:
-    print(f"[-] {message}", file=sys.stderr)
-    raise SystemExit(1)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
-def epoch() -> int:
-    try:
-        return int(os.environ.get("SOURCE_DATE_EPOCH", "") or time.time())
-    except ValueError:
-        return int(time.time())
 
 
-def normalise_member(name: str) -> str:
-    """Return a safe relative POSIX path or raise."""
-    if not name or "\x00" in name:
-        raise GarbError("empty or NUL-containing archive member")
-    pure = PurePosixPath(name)
-    if pure.is_absolute():
-        raise GarbError(f"absolute path in archive: {name}")
-    parts = []
-    for part in pure.parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            raise GarbError(f"parent traversal in archive: {name}")
-        parts.append(part)
-    if not parts:
-        raise GarbError(f"invalid archive member: {name}")
-    return "/".join(parts)
 
 
-def safe_symlink_target(link: str, base_dir: str = "") -> str:
-    if not link or "\x00" in link or os.path.isabs(link):
-        raise GarbError(f"unsafe symlink target: {link!r}")
-    depth = 0
-    for part in (PurePosixPath(base_dir) / link).parts:
-        if part in ("", "."):
-            continue
-        if part == "..":
-            depth -= 1
-            if depth < 0:
-                raise GarbError(f"symlink escapes the root: {link!r}")
-        else:
-            depth += 1
-    return link
 
 
-def parse_mode(value: object, default: int = 0o644) -> int:
-    if isinstance(value, int):
-        return value & 0o7777
-    if isinstance(value, str):
-        try:
-            return int(value, 8) & 0o7777
-        except ValueError:
-            pass
-    return default
 
 
-class Paths:
-    def __init__(self, root: Path) -> None:
-        self.root = root.resolve()
-        self.db = self.root / DEFAULT_DB
-        self.repos = self.root / DEFAULT_REPOS
-        self.keys = self.root / DEFAULT_KEYS
-        self.cache = self.root / DEFAULT_CACHE
-        self.tmp = self.root / DEFAULT_TMP
-        self.lock = self.root / "var/lib/garb/lock"
-        self.journal = self.root / "var/lib/garb/journal.jsonl"
-        self.generations = self.root / "var/lib/garb/generations"
-        self.holds = self.root / "etc/garb/holds.conf"
-        self.pins = self.root / "etc/garb/pins.conf"
-        self.preferences = self.root / "etc/garb/preferences.conf"
-
-    def ensure_runtime(self) -> None:
-        self.tmp.mkdir(parents=True, exist_ok=True)
-        self.cache.mkdir(parents=True, exist_ok=True)
-        self.db.parent.mkdir(parents=True, exist_ok=True)
-        self.generations.mkdir(parents=True, exist_ok=True)
-
-    def inside(self, rel: str) -> Path:
-        rel = normalise_member(rel)
-        target = (self.root / rel).resolve()
-        if target != self.root and self.root not in target.parents:
-            raise GarbError(f"path escapes the root: {rel}")
-        return target
 
 
-class Database:
-    def __init__(self, paths: Paths) -> None:
-        self.paths = paths
-        self.data = self._load()
-
-    def _load(self) -> dict:
-        if not self.paths.db.exists():
-            return {"schema": SCHEMA, "packages": {}}
-        try:
-            with open(self.paths.db, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            # Starting empty would forget which files belong to which package
-            # and let a later install overwrite them. Fail closed and point at
-            # fsck instead; the database is the only ownership record.
-            raise GarbError(
-                f"package database is corrupt or unreadable: {self.paths.db}: {exc}; "
-                "run 'garb fsck --format json' before mutating packages"
-            ) from exc
-        if not isinstance(data, dict) or not isinstance(data.get("packages"), dict):
-            raise GarbError(
-                f"package database has an unexpected structure: {self.paths.db}; "
-                "run 'garb fsck --format json' before mutating packages"
-            )
-        return data
-
-    def save(self) -> None:
-        self.paths.db.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.paths.db.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(self.data, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, self.paths.db)
-        try:
-            directory = os.open(self.paths.db.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        except OSError:
-            return
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-
-    def installed(self, name: str) -> dict | None:
-        return self.data["packages"].get(name)
-
-    def add(self, name: str, entry: dict) -> None:
-        self.data["packages"][name] = entry
-
-    def remove(self, name: str) -> None:
-        self.data["packages"].pop(name, None)
 
 
-class TransactionLock:
-    """One mutating native transaction per target root.
-
-    Package installation moves files into place and then updates the database.
-    Two concurrent garb processes can therefore interleave ownership records.
-    The lock is advisory but every native mutating path takes it, and it names
-    the holder so a blocked operator can find the other process.
-    """
-
-    def __init__(self, paths: Paths, command: str) -> None:
-        self.paths = paths
-        self.command = command
-        self.handle = None
-
-    def __enter__(self) -> "TransactionLock":
-        self.paths.lock.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = open(self.paths.lock, "a+", encoding="utf-8")
-        try:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.handle.seek(0)
-            holder = self.handle.read().strip() or "unknown holder"
-            self.handle.close()
-            self.handle = None
-            raise GarbError(
-                f"another garb transaction is running ({holder}); wait for it to finish"
-            )
-        self.handle.seek(0)
-        self.handle.truncate()
-        self.handle.write(f"pid={os.getpid()} command={self.command}\n")
-        self.handle.flush()
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> None:
-        if self.handle is None:
-            return
-        try:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            self.handle.close()
-            self.handle = None
 
 
-def journal_append(paths: Paths, record: dict) -> None:
-    """Append one durable transaction record.
-
-    A crash between "started" and the final record is visible to fsck. The
-    journal is append-only and mode 0600; it never stores file contents.
-    """
-    paths.journal.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-    descriptor = os.open(
-        paths.journal,
-        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-        0o600,
-    )
-    try:
-        os.write(descriptor, line)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
-def read_journal(paths: Paths) -> list[dict]:
-    if not paths.journal.exists():
-        return []
-    records = []
-    try:
-        lines = paths.journal.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        warn(f"cannot read transaction journal {paths.journal}: {exc}")
-        return []
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            warn(f"ignoring malformed journal line in {paths.journal}")
-            continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -489,149 +335,18 @@ def cmd_fsck(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------- repositories
-def read_repo_configs(paths: Paths) -> list[dict]:
-    repos = []
-    if not paths.repos.is_dir():
-        return repos
-    for conf in sorted(paths.repos.glob("*.conf")):
-        values = {}
-        for line in conf.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key.strip().lower()] = value.strip().strip('"')
-        if "url" not in values:
-            warn(f"ignoring {conf}: no url")
-            continue
-        repos.append({"name": values.get("name", conf.stem), "url": values["url"], "conf": conf})
-    return repos
 
 
-def fetch_repo_file(url: str, name: str) -> bytes:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme in ("", "file"):
-        base = Path(parsed.path if parsed.scheme == "file" else url)
-        return (base / name).read_bytes()
-    with urllib.request.urlopen(f"{url.rstrip('/')}/{name}", timeout=30) as response:
-        return response.read()
 
 
-def validate_index(index: dict, name: str, cached: Path) -> None:
-    """Reject unversioned, expired or replayed repository indexes."""
-    version = index.get("index_version")
-    if not isinstance(version, int) or isinstance(version, bool) or version <= 0:
-        raise GarbError(
-            f"{name}: index has no valid index_version; regenerate it with 'garb repo-index'"
-        )
-    expires = index.get("expires")
-    if not isinstance(expires, int) or isinstance(expires, bool):
-        raise GarbError(
-            f"{name}: index has no expiry timestamp; regenerate it with 'garb repo-index'"
-        )
-    now = int(time.time())
-    if expires <= now:
-        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
-        raise GarbError(
-            f"{name}: index expired at {stamp}; regenerate it with 'garb repo-index'"
-        )
-    cached_index = cached / "index.json"
-    if not cached_index.exists():
-        return
-    try:
-        previous = json.loads(cached_index.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    previous_version = previous.get("index_version") if isinstance(previous, dict) else None
-    if isinstance(previous_version, int) and not isinstance(previous_version, bool):
-        if version < previous_version:
-            raise GarbError(
-                f"{name}: refusing a replayed index (version {version} is older "
-                f"than the cached version {previous_version})"
-            )
 
 
-def verify_signature(index: bytes, signature: bytes, public_key: Path) -> None:
-    if not public_key.exists():
-        raise GarbError(f"trusted public key is missing: {public_key}")
-    with tempfile.TemporaryDirectory() as scratch:
-        index_path = Path(scratch) / "index.json"
-        sig_path = Path(scratch) / "index.json.sig"
-        index_path.write_bytes(index)
-        sig_path.write_bytes(signature)
-        result = subprocess.run(
-            [
-                "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(public_key),
-                "-rawin", "-in", str(index_path), "-sigfile", str(sig_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise GarbError(f"repository signature verification failed: {result.stderr.strip()}")
 
 
-def sign_bytes(data: bytes, private_key: Path) -> bytes:
-    with tempfile.TemporaryDirectory() as scratch:
-        data_path = Path(scratch) / "data"
-        sig_path = Path(scratch) / "data.sig"
-        data_path.write_bytes(data)
-        result = subprocess.run(
-            ["openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
-             "-in", str(data_path), "-out", str(sig_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise GarbError(f"signing failed: {result.stderr.strip()}")
-        return sig_path.read_bytes()
 
 
-def load_repo_priorities(paths: Paths) -> dict[str, int]:
-    if not paths.preferences.is_file():
-        return {}
-    priors: dict[str, int] = {}
-    for line in paths.preferences.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            try:
-                priors[k.strip()] = int(v.strip())
-            except ValueError:
-                pass
-    return priors
 
 
-def load_indexes(paths: Paths) -> dict:
-    packages: dict = {}
-    if not paths.cache.is_dir():
-        return packages
-    priors = load_repo_priorities(paths)
-    index_files = sorted(
-        paths.cache.glob("repos/*/index.json"),
-        key=lambda p: priors.get(p.parent.name, 500),
-        reverse=True,
-    )
-    for index_path in index_files:
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            warn(f"ignoring unreadable index: {index_path}")
-            continue
-        if not isinstance(data, dict):
-            warn(f"ignoring index that is not a JSON object: {index_path}")
-            continue
-        if data.get("schema") != SCHEMA:
-            warn(f"ignoring index with unsupported schema {data.get('schema')!r}: {index_path}")
-            continue
-        for name, entry in data.get("packages", {}).items():
-            entry = dict(entry)
-            entry["_repo"] = index_path.parent.name
-            packages.setdefault(name, entry)
-    return packages
 
 
 def cmd_version(_args: argparse.Namespace) -> None:
@@ -712,292 +427,28 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------- package files
-def read_metadata(archive: Path) -> dict:
-    with tarfile.open(archive, "r:*") as tar:
-        for member in tar:
-            if normalise_member(member.name) == METADATA_NAME:
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise GarbError("metadata member is not a file")
-                metadata = json.loads(handle.read().decode("utf-8"))
-                if not isinstance(metadata, dict):
-                    raise GarbError("package metadata is not a JSON object")
-                return metadata
-    raise GarbError(f"missing {METADATA_NAME} in {archive}")
 
 
-def verify_member(member: tarfile.TarInfo) -> None:
-    rel = normalise_member(member.name)
-    if member.isdir():
-        return
-    if member.isreg():
-        return
-    if member.issym():
-        safe_symlink_target(member.linkname, str(PurePosixPath(rel).parent))
-        return
-    raise GarbError(f"unsupported archive member type: {rel}")
 
 
-def extract_staged(archive: Path, staging: Path) -> tuple[dict, list[dict]]:
-    metadata: dict = {}
-    members: list[dict] = []
-    with tarfile.open(archive, "r:*") as tar:
-        for member in tar:
-            if normalise_member(member.name) == METADATA_NAME:
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise GarbError("metadata member is not a file")
-                metadata = json.loads(handle.read().decode("utf-8"))
-                if not isinstance(metadata, dict):
-                    raise GarbError("package metadata is not a JSON object")
-                continue
-            verify_member(member)
-            rel = normalise_member(member.name)
-            dest = staging / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if member.isdir():
-                dest.mkdir(parents=True, exist_ok=True)
-                continue
-            if member.issym():
-                if dest.exists() or dest.is_symlink():
-                    dest.unlink()
-                os.symlink(member.linkname, dest)
-                members.append({"path": rel, "type": "symlink", "target": member.linkname})
-                continue
-            handle = tar.extractfile(member)
-            if handle is None:
-                raise GarbError(f"cannot read member: {rel}")
-            with open(dest, "wb") as output:
-                shutil.copyfileobj(handle, output)
-            members.append({"path": rel, "type": "file"})
-    if not metadata:
-        raise GarbError("package metadata missing")
-    if metadata.get("schema", SCHEMA) != SCHEMA:
-        raise GarbError("unsupported package schema")
-    return metadata, members
 
 
-def verify_staged(staging: Path, metadata: dict) -> list[dict]:
-    declared = metadata.get("files")
-    if not isinstance(declared, list) or not declared:
-        raise GarbError("package metadata has no file list")
-    by_path = {}
-    for item in declared:
-        rel = normalise_member(item["path"])
-        by_path[rel] = item
-    seen = set()
-    for rel, item in by_path.items():
-        staged = staging / rel
-        if item.get("type") == "symlink":
-            if not staged.is_symlink():
-                raise GarbError(f"missing symlink: {rel}")
-            safe_symlink_target(item.get("target", ""), str(PurePosixPath(rel).parent))
-            if os.readlink(staged) != item.get("target"):
-                raise GarbError(f"symlink target mismatch: {rel}")
-        else:
-            if not staged.is_file() or staged.is_symlink():
-                raise GarbError(f"missing file: {rel}")
-            digest = sha256_file(staged)
-            if digest != item.get("sha256"):
-                raise GarbError(f"hash mismatch: {rel}")
-            mode = parse_mode(item.get("mode"), 0o644)
-            if mode & (stat.S_ISUID | stat.S_ISGID):
-                raise GarbError(
-                    f"package requests a setuid/setgid file: {rel} "
-                    "(packages may not install privileged binaries)"
-                )
-        seen.add(rel)
-    # Anything staged that is not declared is a malformed package.
-    for path in staging.rglob("*"):
-        rel = str(path.relative_to(staging))
-        if rel in seen:
-            continue
-        if path.is_dir():
-            continue
-        raise GarbError(f"undeclared file in package: {rel}")
-    return declared
 
 
-def remove_path(path: Path) -> None:
-    """Remove a file, symlink or directory tree if it exists."""
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
-        shutil.rmtree(path)
 
 
-def reverse_dependents(db: Database, name: str, ignore: set[str] | None = None) -> list[str]:
-    skip = ignore or set()
-    return sorted(
-        package
-        for package, entry in db.data["packages"].items()
-        if package != name
-        and package not in skip
-        and name in entry.get("dependencies", [])
-    )
 
 
-def file_conflicts(db: Database, name: str, files: list[dict]) -> dict[str, str]:
-    owners: dict[str, str] = {}
-    for package, entry in db.data["packages"].items():
-        if package == name:
-            continue
-        for item in entry.get("files", []):
-            owners.setdefault(item["path"], package)
-    conflicts = {}
-    for item in files:
-        owner = owners.get(item["path"])
-        if owner:
-            conflicts[item["path"]] = owner
-    return conflicts
 
 
-def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -> dict:
-    files = verify_staged(staging, metadata)
-    paths.tmp.mkdir(parents=True, exist_ok=True)
-    backup = Path(tempfile.mkdtemp(prefix="garb-backup-", dir=paths.tmp))
-    installed: list[dict] = []
-    backup_kept = False
-    try:
-        for item in files:
-            rel = normalise_member(item["path"])
-            src = staging / rel
-            dst = paths.inside(rel)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if dst.exists() or dst.is_symlink():
-                saved = backup / rel
-                saved.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(dst, saved)
-            if item.get("type") == "symlink":
-                os.symlink(item["target"], dst)
-            else:
-                os.replace(src, dst)
-                mode = parse_mode(item.get("mode"), 0o644) & ~(stat.S_ISUID | stat.S_ISGID)
-                os.chmod(dst, mode)
-            installed.append(item)
-    except Exception as exc:
-        problems: list[str] = []
-        for item in reversed(installed):
-            try:
-                remove_path(paths.inside(item["path"]))
-            except OSError as cleanup_exc:
-                problems.append(f"remove {item['path']}: {cleanup_exc}")
-        for saved in sorted(backup.rglob("*"), key=lambda path: len(path.parts)):
-            if not (saved.is_file() or saved.is_symlink()):
-                continue
-            rel = str(saved.relative_to(backup))
-            dst = paths.inside(rel)
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                # A non-empty directory at the destination used to make
-                # os.replace fail, after which the backup was deleted anyway.
-                remove_path(dst)
-                os.replace(saved, dst)
-            except OSError as restore_exc:
-                problems.append(f"restore {rel}: {restore_exc}")
-        if problems:
-            backup_kept = True
-            warn(f"rollback incomplete; backups kept in {backup}")
-            for problem in problems:
-                warn(f"  {problem}")
-        raise GarbError(f"transaction rolled back: {exc}") from exc
-    finally:
-        if not backup_kept:
-            shutil.rmtree(backup, ignore_errors=True)
-
-    return {
-        "name": metadata["name"],
-        "version": metadata.get("version", "0"),
-        "release": metadata.get("release", 1),
-        "description": metadata.get("description", ""),
-        "arch": metadata.get("arch", ["x86_64"]),
-        "dependencies": metadata.get("dependencies", []),
-        "files": files,
-        "archive_sha256": sha256_file(archive),
-        "installed_at": int(time.time()),
-    }
 
 
-def parse_dep_spec(dep: str) -> tuple[str, str, str]:
-    for op in (">=", "<=", "!=", ">", "<", "="):
-        if op in dep:
-            parts = dep.split(op, 1)
-            return parts[0].strip(), op, parts[1].strip()
-    return dep.strip(), "", ""
 
 
-def safe_version_tuple(val: str) -> tuple:
-    parts = []
-    for token in re.split(r"[._-]", str(val)):
-        if token.isdigit():
-            parts.append((0, int(token)))
-        else:
-            parts.append((1, token))
-    return tuple(parts)
 
 
-def match_version(actual: str, op: str, req: str) -> bool:
-    if not op or not req:
-        return True
-    a = safe_version_tuple(actual)
-    r = safe_version_tuple(req)
-    if op == ">=":
-        return a >= r
-    elif op == "<=":
-        return a <= r
-    elif op == ">":
-        return a > r
-    elif op == "<":
-        return a < r
-    elif op == "=":
-        return a == r
-    elif op == "!=":
-        return a != r
-    return True
 
 
-def resolve_dependencies(names: list[str], index: dict, db: Database, upgrading: bool = False) -> list[str]:
-    order: list[str] = []
-    visiting: set[str] = set()
-    done: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in done:
-            return
-        if name in visiting:
-            raise GarbError(f"dependency cycle involving {name}")
-        entry = index.get(name)
-        if entry is None:
-            raise GarbError(f"package not found in any repository: {name}")
-        if db.installed(name) and not upgrading:
-            done.add(name)
-            return
-
-        for conf in entry.get("conflicts", []) or []:
-            if db.installed(conf):
-                raise GarbError(f"package {name} conflicts with installed package {conf}")
-
-        visiting.add(name)
-        for raw_dep in entry.get("dependencies", []) or []:
-            dep_name, op, req_ver = parse_dep_spec(raw_dep)
-            if dep_name not in index:
-                for cand_name, cand_entry in index.items():
-                    if dep_name in (cand_entry.get("provides") or []):
-                        dep_name = cand_name
-                        break
-            if dep_name in index:
-                cand = index[dep_name]
-                if op and req_ver and not match_version(cand.get("version", "0"), op, req_ver):
-                    raise GarbError(f"{name} requires {raw_dep}, but available version is {cand.get('version')}")
-            visit(dep_name)
-        visiting.remove(name)
-        done.add(name)
-        if not (db.installed(name) and not upgrading):
-            order.append(name)
-
-    for name in names:
-        visit(name)
-    return order
 
 
 def fetch_archive(paths: Paths, name: str, entry: dict) -> Path:
@@ -1313,100 +764,11 @@ def cmd_clean(args: argparse.Namespace) -> None:
     print(f"[+] cleaned {removed} cached repositories; run 'garb update' to refresh")
 
 
-def version_tuple(value: str) -> tuple:
-    return tuple(int(part) if part.isdigit() else part for part in re.split(r"[._-]", value))
 
 
 # ---------------------------------------------------------------- repository build
-def read_garbfile(path: Path) -> dict:
-    with open(path, "rb") as handle:
-        data = tomllib.load(handle)
-    package = data.get("package", {})
-    if "name" not in package:
-        raise GarbError(f"{path}: [package] name is required")
-    deps = data.get("dependencies", {}).get("runtime", [])
-    return {
-        "name": package["name"],
-        "version": str(package.get("version", "0")),
-        "release": int(package.get("release", 1)),
-        "description": package.get("description", ""),
-        "license": package.get("license", ""),
-        "arch": package.get("arch", ["x86_64"]),
-        "dependencies": deps,
-        "build": data.get("build", {}),
-        "source": path,
-    }
 
 
-def build_package(manifest: Path, output_dir: Path) -> Path:
-    meta = read_garbfile(manifest)
-    source_root = manifest.parent / "root"
-    files = []
-    if source_root.is_dir():
-        for path in sorted(source_root.rglob("*")):
-            rel = str(path.relative_to(source_root))
-            # Check is_symlink() before is_dir(): is_dir() follows links, so a
-            # symlink to a directory used to be dropped silently.
-            if path.is_symlink():
-                files.append({"path": rel, "type": "symlink", "target": os.readlink(path)})
-            elif path.is_dir():
-                continue
-            elif path.is_file():
-                mode = stat.S_IMODE(path.stat().st_mode)
-                if mode & (stat.S_ISUID | stat.S_ISGID):
-                    raise GarbError(
-                        f"{manifest}: refusing to package setuid/setgid file: {rel}"
-                    )
-                files.append({
-                    "path": rel,
-                    "type": "file",
-                    "sha256": sha256_file(path),
-                    "mode": f"{mode:04o}",
-                })
-    if meta["build"]:
-        warn(f"{manifest}: [build] commands are not executed by garb 1.0; "
-             "package the resulting tree under root/ instead")
-    metadata = {
-        "schema": SCHEMA,
-        "name": meta["name"],
-        "version": meta["version"],
-        "release": meta["release"],
-        "description": meta["description"],
-        "license": meta["license"],
-        "arch": meta["arch"],
-        "dependencies": meta["dependencies"],
-        "files": files,
-    }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    archive = output_dir / f"{meta['name']}-{meta['version']}-{meta['release']}.garb"
-    stamp = epoch()
-    raw = io.BytesIO()
-    with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as gz:
-        with tarfile.open(fileobj=gz, mode="w") as tar:
-            payload = json.dumps(metadata, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-            info = tarfile.TarInfo(METADATA_NAME)
-            info.size = len(payload)
-            info.mtime = stamp
-            info.mode = 0o644
-            info.uid = info.gid = 0
-            info.uname = info.gname = "root"
-            tar.addfile(info, io.BytesIO(payload))
-            if source_root.is_dir():
-                for path in sorted(source_root.rglob("*")):
-                    if path.is_dir() and not path.is_symlink():
-                        continue
-                    rel = str(path.relative_to(source_root))
-                    info = tar.gettarinfo(str(path), arcname=rel)
-                    info.mtime = stamp
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = "root"
-                    if path.is_symlink():
-                        tar.addfile(info)
-                    else:
-                        with open(path, "rb") as handle:
-                            tar.addfile(info, handle)
-    archive.write_bytes(raw.getvalue())
-    return archive
 
 
 def cmd_repo_build(args: argparse.Namespace) -> None:
@@ -1699,357 +1061,38 @@ def cmd_mirror_rank(args: argparse.Namespace) -> None:
         print("=" * 60)
 
 
-def cmd_delta_create(args: argparse.Namespace) -> None:
-    old_archive = Path(args.old)
-    new_archive = Path(args.new)
-    out_delta = Path(args.out)
-    if not old_archive.is_file() or not new_archive.is_file():
-        die("old and new archives must exist")
-
-    old_files = {}
-    with tarfile.open(old_archive, "r:gz") as tar:
-        for member in tar.getmembers():
-            if member.isfile():
-                f = tar.extractfile(member)
-                if f:
-                    old_files[member.name] = hashlib.sha256(f.read()).hexdigest()
-
-    out_delta.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = Path(tempfile.mkdtemp(prefix="garb-delta-"))
-    try:
-        delta_members = []
-        with tarfile.open(new_archive, "r:gz") as new_tar:
-            for member in new_tar.getmembers():
-                if member.isfile():
-                    f = new_tar.extractfile(member)
-                    if f:
-                        content = f.read()
-                        h = hashlib.sha256(content).hexdigest()
-                        if old_files.get(member.name) != h:
-                            dest = temp_dir / member.name
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            dest.write_bytes(content)
-                            delta_members.append(member.name)
-
-        deleted_members = [m for m in old_files if m not in delta_members]
-        meta = {
-            "format": "garb-delta-v1",
-            "old_sha256": sha256_file(old_archive),
-            "new_sha256": sha256_file(new_archive),
-            "modified": delta_members,
-            "deleted": deleted_members,
-        }
-        (temp_dir / "GARB_DELTA_METADATA.json").write_text(json.dumps(meta, indent=2))
-
-        with tarfile.open(out_delta, "w:gz") as out_tar:
-            for root, dirs, files in os.walk(temp_dir):
-                for file in files:
-                    full_p = Path(root) / file
-                    rel_p = full_p.relative_to(temp_dir)
-                    out_tar.add(full_p, arcname=str(rel_p))
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    log(f"created delta update {out_delta} ({out_delta.stat().st_size} bytes)")
 
 
-def cmd_delta_apply(args: argparse.Namespace) -> None:
-    old_archive = Path(args.old)
-    delta_file = Path(args.delta)
-    out_archive = Path(args.out)
-
-    extract_old = Path(tempfile.mkdtemp(prefix="garb-apply-old-"))
-    extract_delta = Path(tempfile.mkdtemp(prefix="garb-apply-delta-"))
-    try:
-        with tarfile.open(old_archive, "r:gz") as tar:
-            tar.extractall(extract_old)
-        with tarfile.open(delta_file, "r:gz") as tar:
-            tar.extractall(extract_delta)
-
-        meta_file = extract_delta / "GARB_DELTA_METADATA.json"
-        if meta_file.is_file():
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            for d in meta.get("deleted", []):
-                del_path = extract_old / d
-                if del_path.exists():
-                    del_path.unlink()
-            meta_file.unlink()
-
-        for root, dirs, files in os.walk(extract_delta):
-            for file in files:
-                src = Path(root) / file
-                rel = src.relative_to(extract_delta)
-                dst = extract_old / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-
-        out_archive.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(out_archive, "w:gz") as tar:
-            for root, dirs, files in os.walk(extract_old):
-                for file in files:
-                    full_p = Path(root) / file
-                    rel_p = full_p.relative_to(extract_old)
-                    tar.add(full_p, arcname=str(rel_p))
-    finally:
-        shutil.rmtree(extract_old, ignore_errors=True)
-        shutil.rmtree(extract_delta, ignore_errors=True)
-
-    log(f"reconstructed archive {out_archive} from delta")
 
 
-PACMAN_VERSION_RE = re.compile(r"Pacman v(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
-APK_VERSION_RE = re.compile(r"apk-tools\s+(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
-SUPPORTED_BACKEND_MAJORS = {"pacman": frozenset({6, 7}), "apk": frozenset({2, 3})}
 
 
-def backend_kind(path: str) -> str:
-    name = Path(path).name.lower()
-    if "pacman" in name:
-        return "pacman"
-    if "apk" in name:
-        return "apk"
-    raise GarbError(f"GARB_BACKEND_BIN must point at pacman or apk, not: {path}")
 
 
-def backend_version(backend: str, binary: str) -> tuple[int, int, int]:
-    """Read and validate the external manager's version.
-
-    The translator is written against pacman 6/7 and apk-tools 2/3. A future
-    upstream release can keep the binary name while changing flags or database
-    layout. Failing closed with an actionable message is safer than passing an
-    unknown argument set to it.
-    """
-    try:
-        result = subprocess.run(
-            [binary, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise GarbError(f"cannot read {backend} version from {binary}: {exc}") from exc
-    text = f"{result.stdout}\n{result.stderr}"
-    pattern = PACMAN_VERSION_RE if backend == "pacman" else APK_VERSION_RE
-    match = pattern.search(text)
-    if result.returncode != 0 or match is None:
-        raise GarbError(
-            f"{backend} at {binary} did not report a supported version; "
-            "refusing to delegate (use --backend native after inspecting it)"
-        )
-    version = tuple(int(part) for part in match.groups())
-    if version[0] not in SUPPORTED_BACKEND_MAJORS[backend]:
-        supported = ", ".join(str(major) for major in sorted(SUPPORTED_BACKEND_MAJORS[backend]))
-        raise GarbError(
-            f"{backend} {version[0]}.{version[1]}.{version[2]} is outside the "
-            f"verified translator range (supported major versions: {supported}); "
-            "use --backend native or update garb before delegating"
-        )
-    return version
 
 
-def external_backend_binary(requested: str) -> tuple[str, str] | None:
-    """Return (backend, executable) for an explicit or auto-detected backend."""
-    explicit = os.environ.get("GARB_BACKEND_BIN")
-    names = [requested] if requested in ("pacman", "apk") else ["pacman", "apk"]
-    if explicit:
-        if not os.access(explicit, os.X_OK):
-            raise GarbError(f"GARB_BACKEND_BIN is not executable: {explicit}")
-        kind = backend_kind(explicit)
-        if requested in ("pacman", "apk") and kind != requested:
-            raise GarbError(
-                f"GARB_BACKEND_BIN points at {kind}, but --backend {requested} was requested"
-            )
-        return kind, explicit
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return name, found
-    return None
 
 
-def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[str]:
-    """Translate a garb command into the external manager's argument list."""
-    root = Path(args.root)
-    argv = [binary]
-    if str(root) != "/":
-        argv += ["--root", str(root)]
-
-    command = args.command
-    if backend == "pacman":
-        if command == "update":
-            if getattr(args, "key", None) or getattr(args, "allow_unsigned", False):
-                raise GarbError("--key/--allow-unsigned are native-garb options")
-            argv.append("-Sy")
-        elif command == "search":
-            argv += ["-Ss", args.query]
-        elif command == "info":
-            argv += ["-Qi" if getattr(args, "installed", False) else "-Si", args.package]
-        elif command == "install":
-            if args.force:
-                raise GarbError("--force is not supported by the pacman backend")
-            # `pacman -S` on an installed, current package prints
-            # "warning: <pkg> is up to date -- reinstalling" and rewrites it.
-            # `garb install` means "make sure it is present", so let pacman
-            # skip packages that are already installed. `garb upgrade` (or
-            # `garb install --upgrade`) is the explicit reinstall/upgrade path.
-            argv.append("-S")
-            if not getattr(args, "upgrade", False):
-                argv.append("--needed")
-            argv += ["--noconfirm", *args.package]
-        elif command == "remove":
-            if args.force:
-                raise GarbError("--force is not supported by the pacman backend")
-            argv += ["-R", "--noconfirm", *args.package]
-        elif command == "verify":
-            if getattr(args, "format", "text") != "text":
-                raise GarbError("--format json is a native-garb option")
-            argv.append("-Qk" if args.quick else "-Qkk")
-            argv += args.package
-        elif command == "upgrade":
-            if args.package:
-                argv += ["-S", "--noconfirm", *args.package]
-            else:
-                argv += ["-Su", "--noconfirm"]
-        else:
-            raise GarbError(f"pacman has no mapping for garb {command}")
-        return argv
-
-    if command == "update":
-        if getattr(args, "key", None) or getattr(args, "allow_unsigned", False):
-            raise GarbError("--key/--allow-unsigned are native-garb options")
-        argv.append("update")
-    elif command == "search":
-        argv += ["search", args.query]
-    elif command == "info":
-        argv += ["info", args.package]
-    elif command == "install":
-        if args.force:
-            raise GarbError("--force is not supported by the apk backend")
-        argv += ["add", *args.package]
-    elif command == "remove":
-        if args.force:
-            raise GarbError("--force is not supported by the apk backend")
-        argv += ["del", *args.package]
-    elif command == "verify":
-        if args.quick:
-            raise GarbError("--quick is not supported by the apk backend")
-        if getattr(args, "format", "text") != "text":
-            raise GarbError("--format json is a native-garb option")
-        argv += ["audit", *args.package]
-    elif command == "upgrade":
-        argv += ["upgrade", *args.package]
-    else:
-        raise GarbError(f"apk has no mapping for garb {command}")
-    return argv
 
 
-PROTECTED_OVERWRITE_PATHS = (
-    "/etc/passwd",
-    "/etc/passwd-",
-    "/etc/shadow",
-    "/etc/shadow-",
-    "/etc/group",
-    "/etc/group-",
-    "/etc/gshadow",
-    "/etc/gshadow-",
-    "/etc/sudoers",
-    "/etc/sudoers.d/",
-    "/etc/ssh/ssh_host_",
-    "/boot/",
-    "/usr/lib/modules/",
-)
-MAX_OVERWRITE_CONFLICTS = 1024
 
 
-def conflict_paths(output: str) -> list[str]:
-    paths = set()
-    for line in output.splitlines():
-        # pacman 6 prints "path exists in filesystem". pacman 7 prints
-        # "package: path exists in filesystem" (or, in some builds,
-        # "path: exists in filesystem"). The optional group is the package
-        # prefix; the path is always the token before "exists".
-        match = re.match(
-            r"^\s*(?:(\S+):\s+)?(\S+)\s+exists in filesystem\b", line
-        )
-        if match is None:
-            continue
-        path = match.group(2).rstrip(":")
-        paths.add(posixpath.normpath("/" + path.lstrip("/")))
-    return sorted(paths)
 
 
-def protected_overwrite(path: str) -> bool:
-    normalized = posixpath.normpath(path)
-    for protected in PROTECTED_OVERWRITE_PATHS:
-        if normalized == protected or normalized.startswith(protected):
-            return True
-    return False
 
 
-def run_streaming(argv: list[str]) -> tuple[int, str]:
-    process = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdout is not None
-    chunks: list[str] = []
-    for line in process.stdout:
-        chunks.append(line)
-        print(line, end="", flush=True)
-    return process.wait(), "".join(chunks)
 
 
-def run_external_backend(backend: str, binary: str, args: argparse.Namespace) -> int:
-    argv = external_argv(backend, binary, args)
-    warn(f"using the {backend} backend; garb signature and transaction checks do not apply")
-    print(f"[garb] {' '.join(argv)}", file=sys.stderr)
 
-    # Never pass a blanket --overwrite '*'. It lets an upstream package replace
-    # account, sudo, SSH host-key or boot files. Retry only the exact paths the
-    # transaction reported, and refuse the security-sensitive ones outright.
-    if backend != "pacman" or args.command not in ("install", "upgrade"):
-        return subprocess.run(argv).returncode
-    rc, output = run_streaming(argv)
-    if rc == 0:
-        if (
-            backend == "pacman"
-            and args.command == "install"
-            and "--needed" in argv
-            and "up to date -- skipping" in output
-        ):
-            log(
-                "all requested packages are already installed and up to date; "
-                "nothing to do (use 'garb upgrade' to reinstall)"
-            )
-        return 0
-    conflicts = conflict_paths(output)
-    if not conflicts:
-        return rc
-    protected = [path for path in conflicts if protected_overwrite(path)]
-    if protected:
-        raise GarbError(
-            "refusing to overwrite security-sensitive path(s): "
-            + ", ".join(protected[:8])
-        )
-    if len(conflicts) > MAX_OVERWRITE_CONFLICTS:
-        raise GarbError(
-            f"{len(conflicts)} file conflicts reported; refusing a blanket overwrite. "
-            "Use --backend native or remove the conflicting files first"
-        )
-    retry = list(argv)
-    for path in conflicts:
-        retry += ["--overwrite", path, "--overwrite", path.lstrip("/")]
-    warn(
-        f"retrying with overwrite limited to {len(conflicts)} reported conflict path(s); "
-        "security-sensitive paths remain protected"
-    )
-    print(f"[garb] {' '.join(retry)}", file=sys.stderr)
-    retry_rc, _ = run_streaming(retry)
-    return retry_rc
+
+
+
+
+
+
+
+
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2201,6 +1244,9 @@ def build_parser() -> argparse.ArgumentParser:
     dapply_p.add_argument("--old", required=True)
     dapply_p.add_argument("--delta", required=True)
     dapply_p.add_argument("--out", required=True)
+    dapply_p.add_argument("--index", required=True, help="signed repository index.json")
+    dapply_p.add_argument("--key", required=True, help="trusted Ed25519 public key (PEM)")
+    dapply_p.add_argument("--package", help="package name (default: from delta metadata)")
     dapply_p.set_defaults(func=cmd_delta_apply)
 
     return parser

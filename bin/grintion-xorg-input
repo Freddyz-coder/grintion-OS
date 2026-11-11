@@ -1,15 +1,14 @@
 #!/bin/sh
-# grintion-xorg-input - describe kernel input devices to Xorg without udev.
+# grintion-xorg-input - describe kernel input devices to Xorg as an evdev fallback.
 #
-# Grintion-OS runs mdev and has no udev. Xorg's libinput driver enumerates
-# devices through libudev, so without udev a session starts with only the
-# virtual XTEST pointer: the desktop draws, but the real mouse and keyboard do
-# nothing. The evdev driver can open /dev/input/eventN directly, so write an
-# xorg.conf.d snippet for the devices the kernel already knows about.
+# Grintion-OS starts standalone udev for libinput, but Xorg can launch before
+# that database has settled. The evdev driver can open /dev/input/eventN
+# directly, so write an xorg.conf.d snippet for the devices the kernel already
+# knows about. This keeps the real mouse and keyboard working even when the
+# libinput/udev path is unavailable.
 #
 # The display-manager service runs this before starting Xorg. Hot-plugged
-# devices need a display-manager restart, which matches the rest of this
-# mdev-based image.
+# devices need a display-manager restart.
 
 set -eu
 
@@ -29,9 +28,9 @@ awk '
         printf "Section \"InputDevice\"\n"
         printf "    Identifier \"grintion-%s\"\n", event
         printf "    Driver \"evdev\"\n"
-        # Without udev there is no config backend, so an InputDevice section
-        # stays inactive unless a ServerLayout references it. AutoServerLayout
-        # adds the device to the implied layout without inventing a Screen.
+        # A generated InputDevice section stays inactive unless a ServerLayout
+        # references it. AutoServerLayout adds the device to the implied layout
+        # without inventing a Screen.
         printf "    Option \"AutoServerLayout\" \"true\"\n"
         printf "    Option \"Device\" \"/dev/input/%s\"\n", event
         printf "EndSection\n\n"

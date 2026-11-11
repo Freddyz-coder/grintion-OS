@@ -63,7 +63,7 @@ def generate_spdx_sbom(packages: dict[str, dict], filter_pkg: str | None = None)
         "documentNamespace": f"https://grintion.org/spdx/{int(time.time())}",
         "creationInfo": {
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "creators": ["Tool: grintion-audit-0.10.1", "Organization: Grintion-OS Project"],
+            "creators": ["Tool: grintion-audit-0.11.0", "Organization: Grintion-OS Project"],
         },
         "packages": [],
         "files": [],
@@ -108,11 +108,11 @@ def generate_cyclonedx_sbom(packages: dict[str, dict], filter_pkg: str | None = 
         "version": 1,
         "metadata": {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "tools": [{"vendor": "Grintion-OS", "name": "grintion-audit", "version": "0.10.1"}],
+            "tools": [{"vendor": "Grintion-OS", "name": "grintion-audit", "version": "0.11.0"}],
             "component": {
                 "type": "operating-system",
                 "name": "Grintion-OS",
-                "version": "0.10.1",
+                "version": "0.11.0",
             },
         },
         "components": [],
@@ -152,33 +152,31 @@ def inspect_provenance(pkg_name: str, packages: dict[str, dict]) -> dict:
     }
 
 
+def default_feed_path() -> Path | None:
+    override = os.environ.get("GRINTION_CVE_FEED")
+    if override:
+        return Path(override)
+    candidate = Path("/etc/grintion/cve-feed.json")
+    return candidate if candidate.is_file() else None
+
+
 def scan_vulnerabilities(packages: dict[str, dict], feed_file: Path | None) -> list[dict]:
-    advisories = []
-    if feed_file and feed_file.is_file():
-        try:
-            advisories = json.loads(feed_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            print(f"[!] error reading vulnerability feed {feed_file}: {e}", file=sys.stderr)
-    else:
-        # Default security advisory feed
-        advisories = [
-            {
-                "id": "CVE-2026-0001",
-                "package": "openssl",
-                "affected": "<3.0.10",
-                "fixed": "3.0.10",
-                "severity": "CRITICAL",
-                "title": "Buffer overflow in legacy ASN.1 parser",
-            },
-            {
-                "id": "CVE-2026-0002",
-                "package": "sudo",
-                "affected": "<1.9.15",
-                "fixed": "1.9.15",
-                "severity": "HIGH",
-                "title": "Privilege boundary violation in pwfeedback option",
-            },
-        ]
+    # Previously this function silently fell back to two invented CVEs. That
+    # made an empty scan look meaningful and hid the fact that no feed is
+    # hosted. Fail closed and name the missing input instead.
+    feed_file = feed_file or default_feed_path()
+    if feed_file is None:
+        raise FileNotFoundError(
+            "no vulnerability feed configured; pass --feed FILE or set GRINTION_CVE_FEED"
+        )
+    if not feed_file.is_file():
+        raise FileNotFoundError(f"vulnerability feed not found: {feed_file}")
+    try:
+        advisories = json.loads(feed_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot parse vulnerability feed {feed_file}: {exc}") from exc
+    if not isinstance(advisories, list):
+        raise ValueError(f"vulnerability feed must be a JSON array: {feed_file}")
 
     findings = []
     for adv in advisories:
@@ -216,7 +214,10 @@ def main() -> None:
 
     # scan
     scan_p = sub.add_parser("scan", help="scan installed packages against vulnerability feed")
-    scan_p.add_argument("--feed", type=Path, help="path to custom advisory feed JSON")
+    scan_p.add_argument(
+        "--feed", type=Path,
+        help="path to advisory feed JSON (or set GRINTION_CVE_FEED); no feed is hosted yet",
+    )
     scan_p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
@@ -256,7 +257,11 @@ def main() -> None:
             print(f"[-] {e}", file=sys.stderr)
             sys.exit(1)
     elif cmd == "scan":
-        findings = scan_vulnerabilities(packages, args.feed)
+        try:
+            findings = scan_vulnerabilities(packages, args.feed)
+        except (OSError, ValueError) as exc:
+            print(f"[!] {exc}", file=sys.stderr)
+            sys.exit(2)
         if getattr(args, "json", False):
             print(json.dumps(findings, indent=2))
         else:

@@ -115,6 +115,15 @@ def test_garb_delta_create_and_apply(tmp_path: Path) -> None:
     delta_archive = tmp_path / "testpkg.garb-delta"
     reconstructed = tmp_path / "testpkg-reconstructed.garb"
 
+    # delta-apply verifies the result against a signed index, not just the
+    # delta's own metadata.
+    keys = tmp_path / "keys"
+    subprocess.run([str(GARB), "keygen", str(keys)], check=True, capture_output=True)
+    subprocess.run(
+        [str(GARB), "repo-index", str(repo), "--key", str(keys / "private.pem")],
+        check=True, capture_output=True,
+    )
+
     # Create delta
     r1 = subprocess.run([
         str(GARB), "delta-create",
@@ -131,6 +140,9 @@ def test_garb_delta_create_and_apply(tmp_path: Path) -> None:
         "--old", str(old_archive),
         "--delta", str(delta_archive),
         "--out", str(reconstructed),
+        "--index", str(repo / "index.json"),
+        "--key", str(keys / "public.pem"),
+        "--package", "testpkg",
     ], capture_output=True, text=True, check=False)
     assert r2.returncode == 0
     assert reconstructed.is_file()
@@ -141,6 +153,56 @@ def test_garb_delta_create_and_apply(tmp_path: Path) -> None:
     subprocess.run(["tar", "-xzf", str(reconstructed), "-C", str(extract_test)], check=True)
     assert (extract_test / "usr" / "share" / "extra.txt").is_file()
     assert "new updated content" in (extract_test / "usr" / "share" / "data.txt").read_text()
+
+
+def test_garb_delta_apply_rejects_traversal(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    source = tmp_path / "p1"
+    (source / "root" / "usr" / "share").mkdir(parents=True)
+    (source / "Garbfile").write_text(
+        '[package]\nname = "testpkg"\nversion = "1.0"\nrelease = 1\n'
+    )
+    (source / "root" / "usr" / "share" / "data.txt").write_text("old\n")
+    repo = tmp_path / "repo"
+    subprocess.run([str(GARB), "build", str(source / "Garbfile"), "-o", str(repo)], check=True)
+    old_archive = repo / "testpkg-1.0-1.garb"
+
+    delta = tmp_path / "evil.garb-delta"
+    meta = {
+        "format": "garb-delta-v2",
+        "package": "testpkg",
+        "new_sha256": "0" * 64,
+        "mtime": 0,
+        "tree": [{
+            "path": "../escape",
+            "type": "file",
+            "mode": 0o644,
+            "sha256": "0" * 64,
+        }],
+        "modified": ["../escape"],
+        "deleted": [],
+    }
+    payload = (json.dumps(meta) + "\n").encode("utf-8")
+    with tarfile.open(delta, "w:gz") as tar:
+        info = tarfile.TarInfo("GARB_DELTA_METADATA.json")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    output = tmp_path / "reconstructed.garb"
+    result = subprocess.run([
+        str(GARB), "delta-apply",
+        "--old", str(old_archive),
+        "--delta", str(delta),
+        "--out", str(output),
+        "--index", str(tmp_path / "missing-index.json"),
+        "--key", str(tmp_path / "missing.pem"),
+    ], capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "parent traversal" in result.stderr
+    assert not output.exists()
+    assert not (tmp_path / "escape").exists()
 
 
 def test_garb_version_constraints_and_conflicts(tmp_path: Path) -> None:

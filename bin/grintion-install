@@ -537,6 +537,22 @@ if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
     DESKTOP=${DESKTOP:-none}
 fi
 
+# Reject a typo before partitioning or formatting anything. Previously an
+# unknown profile was discovered only after the base system had been written,
+# leaving a console-only disk and a failed install.
+if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
+    desktop_profile="$DESKTOP"
+    if [ "$desktop_profile" = "plasma" ]; then
+        desktop_profile=kde
+    fi
+    case "$desktop_profile" in
+        xfce|gnome|kde|lxqt|sway|i3) ;;
+        *) die "unknown desktop environment: $DESKTOP (use none, xfce, gnome, kde, lxqt, sway, or i3)" ;;
+    esac
+    [ -f "/etc/grintion/desktops.d/$desktop_profile.conf" ] \
+        || die "desktop profile is missing: /etc/grintion/desktops.d/$desktop_profile.conf"
+fi
+
 if [ "$ROOT_PASSWORD_STDIN" -eq 1 ]; then
     IFS= read -r ROOT_PASSWORD || die "no root password was provided on standard input"
 elif [ -n "${GRINTION_ROOT_PASSWORD-}" ] && [ -z "$ROOT_PASSWORD" ]; then
@@ -1167,7 +1183,7 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
 fi
 
 if [ "$NO_BOOTLOADER" -eq 0 ]; then
-    for asset in limine limine-bios.sys BOOTX64.EFI BOOTAA64.EFI; do
+    for asset in limine limine-bios.sys BOOTX64.EFI; do
         [ -f "/usr/share/limine/$asset" ] || die "missing bootloader asset: $asset"
     done
     [ -f /usr/lib/grintion/boot/vmlinuz-grintion ] || die "kernel asset is missing from the live image"
@@ -1183,8 +1199,6 @@ if [ "$NO_BOOTLOADER" -eq 0 ]; then
         "$TARGET/boot/efi/limine-bios.sys"
     install -D -m 0644 /usr/share/limine/BOOTX64.EFI \
         "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
-    install -D -m 0644 /usr/share/limine/BOOTAA64.EFI \
-        "$TARGET/boot/efi/EFI/BOOT/BOOTAA64.EFI"
 
     ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
     if [ "$FILESYSTEM" = "btrfs" ]; then

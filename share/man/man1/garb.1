@@ -27,8 +27,13 @@ Roll back package files and database state to a previous generation.
 \fBhold\fR \fIPKG\fR / \fBunhold\fR \fIPKG\fR
 Prevent or permit package upgrades.
 .TP
-\fBdelta-create\fR \fIOLD\fR \fINEW\fR \fIOUT\fR
-Generate a binary delta archive between two package versions.
+\fBdelta-create\fR \fI--old OLD --new NEW --out DELTA\fR
+Generate a delta archive between two canonical .garb packages. The new archive
+must have been built by the current \fBgarb build\fR format.
+.TP
+\fBdelta-apply\fR \fI--old OLD --delta DELTA --out NEW --index INDEX --key PUBKEY\fR
+Reconstruct a package from a delta and verify the result's SHA-256 against the
+signed repository index before writing the output.
 .TP
 \fBmirror-rank\fR
 Benchmark and sort repository mirrors by network response speed.

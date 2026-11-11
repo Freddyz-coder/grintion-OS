@@ -1,0 +1,159 @@
+# Declarative account manifest for the live and installed image.
+#
+# build/gen-accounts.py renders /etc/passwd, /etc/shadow, /etc/group and
+# /etc/gshadow from this file. IDs are intentionally small and portable; do
+# not copy Arch's host-specific 900-range service UIDs into this file.
+#
+# password = "*" (no password, login disabled) or "!" (locked).
+# lastchg is fixed so the generated files are reproducible.
+
+[[user]]
+name = "root"
+uid = 0
+gid = 0
+gecos = "root"
+home = "/root"
+shell = "/bin/bash"
+password = "*"
+lastchg = 19000
+
+[[user]]
+name = "dhcpcd"
+uid = 101
+gid = 101
+gecos = "dhcpcd privilege separation"
+home = "/var/lib/dhcpcd"
+shell = "/bin/false"
+password = "!"
+
+[[user]]
+name = "lightdm"
+uid = 102
+gid = 102
+gecos = "LightDM daemon"
+home = "/var/lib/lightdm"
+shell = "/bin/false"
+password = "!"
+
+[[user]]
+name = "tss"
+uid = 103
+gid = 103
+gecos = "tss user for tpm2"
+home = "/"
+shell = "/bin/false"
+password = "!"
+
+[[user]]
+name = "nobody"
+uid = 65534
+gid = 65534
+gecos = "nobody"
+home = "/"
+shell = "/bin/false"
+password = "*"
+
+[[group]]
+name = "root"
+gid = 0
+
+[[group]]
+name = "wheel"
+gid = 998
+members = ["root"]
+
+[[group]]
+name = "users"
+gid = 100
+
+[[group]]
+name = "tty"
+gid = 5
+
+[[group]]
+name = "disk"
+gid = 6
+
+[[group]]
+name = "lp"
+gid = 7
+
+[[group]]
+name = "kmem"
+gid = 9
+
+[[group]]
+name = "video"
+gid = 44
+
+[[group]]
+name = "audio"
+gid = 63
+
+[[group]]
+name = "kvm"
+gid = 78
+
+[[group]]
+name = "render"
+gid = 989
+
+[[group]]
+name = "seat"
+gid = 985
+
+[[group]]
+name = "input"
+gid = 990
+
+[[group]]
+name = "uucp"
+gid = 14
+
+[[group]]
+name = "utmp"
+gid = 999
+
+[[group]]
+name = "clock"
+gid = 994
+
+[[group]]
+name = "optical"
+gid = 988
+
+[[group]]
+name = "sgx"
+gid = 986
+
+[[group]]
+name = "storage"
+gid = 984
+
+[[group]]
+name = "rfkill"
+gid = 980
+
+[[group]]
+name = "i2c"
+gid = 967
+
+[[group]]
+name = "dhcpcd"
+gid = 101
+
+[[group]]
+name = "lightdm"
+gid = 102
+
+[[group]]
+name = "tss"
+gid = 103
+
+[[group]]
+name = "nobody"
+gid = 65534
+
+[[group]]
+name = "nogroup"
+gid = 65533

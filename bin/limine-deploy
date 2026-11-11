@@ -43,7 +43,7 @@ done
 [ -f "$INITRAMFS_SRC" ] || { echo "[-] initramfs not found: $INITRAMFS_SRC" >&2; exit 1; }
 
 mkdir -p "$EFI_DIR/EFI/BOOT" "$EFI_DIR/EFI/grintion"
-for asset in limine-bios.sys BOOTX64.EFI BOOTAA64.EFI; do
+for asset in limine-bios.sys BOOTX64.EFI; do
     [ -f "$ASSET_DIR/$asset" ] || { echo "[-] missing asset: $ASSET_DIR/$asset" >&2; exit 1; }
     cp "$ASSET_DIR/$asset" "$EFI_DIR/EFI/BOOT/$asset"
 done

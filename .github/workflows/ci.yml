@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static gate (Arch, shellcheck, pytest)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 30
+    steps:
+      - name: Install gate dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git shellcheck python-pytest python \
+            bash coreutils util-linux e2fsprogs btrfs-progs dosfstools parted \
+            cryptsetup lvm2 procps-ng psmisc lsof pciutils usbutils kmod file \
+            which nano vim less ncurses grep sed gawk findutils diffutils \
+            tar gzip bzip2 xz unzip cpio \
+            openssh openssl gnupg pacman dbus seatd systemd glib2 \
+            fastfetch htop wget nftables rsync iw wpa_supplicant wireless_tools bind \
+            iproute2 net-tools iputils openbsd-netcat shadow sudo pam \
+            conntrack-tools
+
+      - uses: actions/checkout@v4
+
+      - name: make check
+        run: make check
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-static
+          path: output/junit.xml
+          if-no-files-found: warn
+
+  qemu:
+    name: QEMU boot and install (self-hosted KVM)
+    # KVM and OVMF must be installed on the runner; the runner is labelled
+    # explicitly so a GitHub-hosted runner never silently skips these tests.
+    runs-on: [self-hosted, linux, kvm]
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify KVM and OVMF
+        run: |
+          test -r /dev/kvm || { echo "::error::/dev/kvm is not available on this runner"; exit 1; }
+          test -f /usr/share/edk2/x64/OVMF_CODE.4m.fd \
+            || { echo "::error::edk2-ovmf is not installed"; exit 1; }
+
+      - name: Build the ISO
+        run: make iso
+
+      - name: Boot tests (BIOS + UEFI)
+        run: make test-boot
+
+      - name: Install test (BIOS)
+        run: make test-install
+
+      - name: Install test (UEFI)
+        run: make test-install-uefi
+
+      - name: Upload QEMU logs and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-results
+          path: |
+            output/junit.xml
+            build/work/*.log
+            build/work/**/*.log
+          if-no-files-found: warn

@@ -134,11 +134,11 @@ The network stack is orchestrated via `grintion-network`:
 
 Grintion-OS supports both Wayland and X11 without requiring systemd-logind.
 - **Seat Management**: Handled via `seatd` and `grintion-session`.
-- **Display Managers**: GDM, SDDM, LightDM, and greetd are supported with pre-configured PAM stacks.
-- **Desktop Profiles**:
+- **Display Managers**: SDDM (Wayland), LightDM (X11), and greetd are supported with pre-configured PAM stacks. GDM is not used because it requires systemd-logind.
+- **Desktop Profiles**: XFCE, i3, KDE Plasma, LXQt and Sway render in QEMU/KVM. GNOME is refused because `gnome-session` requires the systemd user session manager.
   ```bash
   grintion-desktop list
-  grintion-desktop set sway
+  grintion-desktop install sway
   ```
 
 ---

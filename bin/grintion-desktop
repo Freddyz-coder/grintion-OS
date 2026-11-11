@@ -42,7 +42,7 @@ load_profile() {
     esac
     file="$dir/$name.conf"
     [ -f "$file" ] || die "Unknown desktop environment: '$1'. Run 'grintion-desktop list' for options."
-    unset NAME DESCRIPTION PACKAGES DM DM_BIN XINITRC DISPLAY_SERVER
+    unset NAME DESCRIPTION PACKAGES DM DM_BIN XINITRC DISPLAY_SERVER REQUIRES_SYSTEMD
     # shellcheck disable=SC1090
     . "$file"
     [ -n "${NAME:-}" ] || die "profile has no NAME: $file"
@@ -64,8 +64,8 @@ Commands:
 
 Supported Desktops:
   xfce                  XFCE 4 (Lightweight, fast, full-featured desktop) [Recommended]
-  gnome                 GNOME Desktop (Modern, elegant, Wayland-ready)
-  kde | plasma          KDE Plasma (Feature-rich, customizable Qt desktop)
+  kde | plasma          KDE Plasma (Feature-rich, customizable Qt desktop, verified Wayland)
+  gnome                 GNOME (NOT SUPPORTED: requires the systemd user session manager)
   lxqt                  LXQt (Ultra-lightweight Qt desktop)
   sway                  Sway (Modern Wayland tiling compositor, i3-compatible)
   i3                    i3 Window Manager (Classic lightweight X11 tiling WM)
@@ -87,7 +87,7 @@ EOF
 }
 
 detect_gpu_drivers() {
-    local drivers=("mesa")
+    local drivers=("mesa" "linux-firmware" "wireless-regdb")
     local lspci_out=""
     if command -v lspci >/dev/null 2>&1; then
         lspci_out="$(lspci 2>/dev/null || true)"
@@ -166,14 +166,18 @@ pkg_install() {
     : > "$logfile"
 
     log "This downloads from Arch mirrors and can take several minutes. Package manager output follows (also saved to $logfile)."
-    # A single slow mirror used to abort the whole desktop install. Retry once:
-    # pacman keeps completed downloads in its cache and a failed transaction
-    # rolls back, so the second attempt only fetches what is missing.
+    # A single slow mirror used to abort the whole desktop install, and the
+    # seeded pacman database can contain files that the first transaction
+    # reports as conflicts. Retry up to three times: pacman keeps completed
+    # downloads in its cache and a failed transaction rolls back, so each
+    # attempt only fetches what is missing. Conflicts are re-read after every
+    # failure, because the next attempt can expose a different set (the old
+    # code stopped after one retry and left e.g. gtk4 conflicts unresolved).
     local rc=0 attempt
-    local overwrite=()
-    for attempt in 1 2; do
+    local overwrite=() seen_conflicts=" " conflict_total=0
+    for attempt in 1 2 3; do
         : > "$logfile"
-        log "Installing packages (attempt $attempt/2): ${pkgs[*]}"
+        log "Installing packages (attempt $attempt/3): ${pkgs[*]}"
         set +e
         "${manager[@]}" "${overwrite[@]}" "${pkgs[@]}" 2>&1 | tee -a "$logfile"
         rc=${PIPESTATUS[0]}
@@ -181,7 +185,7 @@ pkg_install() {
         if [ "$rc" -eq 0 ]; then
             break
         fi
-        if [ "$attempt" -ne 1 ]; then
+        if [ "$attempt" -eq 3 ]; then
             break
         fi
 
@@ -194,7 +198,7 @@ pkg_install() {
         # package name ("libxdmcp: /usr/lib/..."), pacman 6 does not; take the
         # token immediately before "exists in filesystem" in both forms.
         local conflicts=() path normalized sensitive=""
-        local conflict_file
+        local conflict_file new_conflicts=0
         conflict_file=$(mktemp /tmp/grintion-conflicts.XXXXXX)
         awk '/exists in filesystem/ {
                  for (i = 1; i <= NF; i++) {
@@ -210,20 +214,29 @@ pkg_install() {
                 /etc/passwd|/etc/passwd-|/etc/shadow|/etc/shadow-|/etc/group|/etc/group-|/etc/gshadow|/etc/gshadow-|/etc/sudoers|/etc/sudoers.d/*|/etc/ssh/ssh_host_*|/boot/*|/usr/lib/modules/*)
                     sensitive="$normalized"; break ;;
             esac
+            # Do not pass the same path to a later attempt again; it was
+            # already authorized and re-adding it only hides a no-progress
+            # failure behind an identical overwrite list.
+            case "$seen_conflicts" in
+                *" $normalized "*) continue ;;
+            esac
+            seen_conflicts+="$normalized "
+            new_conflicts=$((new_conflicts + 1))
             conflicts+=("--overwrite" "$path")
         done < "$conflict_file"
         rm -f "$conflict_file"
         [ -z "$sensitive" ] || die "refusing to overwrite security-sensitive path: $sensitive"
 
         if [ ${#conflicts[@]} -gt 0 ]; then
-            if [ ${#conflicts[@]} -gt 2048 ]; then
+            conflict_total=$((conflict_total + new_conflicts))
+            if [ "$conflict_total" -gt 1024 ]; then
                 die "package installation reported more than 1024 file conflicts; refusing a blanket overwrite"
             fi
-            overwrite=("${conflicts[@]}")
-            warn "package installation failed (exit $rc); retrying with overwrite limited to $(( ${#conflicts[@]} / 2 )) reported conflict path(s)"
+            overwrite+=("${conflicts[@]}")
+            warn "package installation failed (exit $rc); retrying with overwrite limited to $new_conflicts newly reported conflict path(s)"
             continue
         fi
-        warn "package installation failed (exit $rc); retrying once with the packages already downloaded"
+        warn "package installation failed (exit $rc); retrying with the packages already downloaded"
         sleep 5
     done
     [ "$rc" -eq 0 ] || die "package installation failed (exit $rc); full log: $logfile"
@@ -423,6 +436,150 @@ enable_dm_service() {
     log "Enabled $dm as runit display-manager service"
 }
 
+# Without logind there is no udev/pam ACL pass that grants the logged-in user
+# access to graphics, sound and input nodes. /dev/dri/card0 is root:video,
+# /dev/input/* is root:input and /dev/snd/* is root:audio, so a human account
+# that is only in "wheel" cannot start a Wayland compositor. Add every human
+# account to those groups, and to "seat" only for Wayland profiles so seatd
+# can hand out DRM/input descriptors.
+#
+# Older images shipped duplicate "render" and "input" group lines; usermod
+# then refused with "Multiple entries named 'render'" and the session could
+# never open the DRM device. Collapse duplicates first.
+grant_session_groups() {
+    local with_seat="${1:-0}"
+    local group_file="$TARGET_ROOT/etc/group"
+    local passwd_file="$TARGET_ROOT/etc/passwd"
+    [ -f "$group_file" ] && [ -f "$passwd_file" ] || return 0
+
+    python3 - "$group_file" "$passwd_file" "$with_seat" <<'PY'
+import pathlib
+import sys
+
+group_path = pathlib.Path(sys.argv[1])
+passwd_path = pathlib.Path(sys.argv[2])
+with_seat = sys.argv[3] == "1"
+
+lines = []
+seen = set()
+for line in group_path.read_text().splitlines():
+    name = line.split(":", 1)[0]
+    if not line.strip() or name in seen:
+        continue
+    seen.add(name)
+    lines.append(line)
+
+used_gids = set()
+for line in lines:
+    fields = line.split(":")
+    if len(fields) >= 3 and fields[2].isdigit():
+        used_gids.add(int(fields[2]))
+
+wanted = ["video", "audio", "input", "render"]
+if with_seat:
+    wanted.append("seat")
+next_gid = 985
+for name in wanted:
+    if name in seen:
+        continue
+    while next_gid in used_gids:
+        next_gid += 1
+    lines.append(f"{name}:x:{next_gid}:")
+    used_gids.add(next_gid)
+    seen.add(name)
+
+humans = []
+for line in passwd_path.read_text().splitlines():
+    fields = line.split(":")
+    if len(fields) < 4 or not fields[2].isdigit():
+        continue
+    if 1000 <= int(fields[2]) < 60000:
+        humans.append(fields[0])
+
+for index, line in enumerate(lines):
+    fields = line.split(":")
+    if not fields or fields[0] not in wanted:
+        continue
+    members = [m for m in (fields[3].split(",") if len(fields) > 3 and fields[3] else []) if m]
+    for user in humans:
+        if user not in members:
+            members.append(user)
+    fields[3] = ",".join(members)
+    lines[index] = ":".join(fields)
+
+group_path.write_text("\n".join(lines) + "\n")
+PY
+}
+
+# SDDM's Wayland sessions expect logind/pam_systemd to have created
+# XDG_RUNTIME_DIR. Without it KWin exits with "Could not create wayland
+# socket". Point SDDM at the tracked wrapper instead of its packaged script.
+configure_sddm_wayland() {
+    local wrapper="$TARGET_ROOT/etc/sddm/wayland-session-grintion"
+    [ -f "$wrapper" ] || die "tracked SDDM Wayland session wrapper is missing: $wrapper"
+    chmod 0755 "$wrapper"
+    mkdir -p "$TARGET_ROOT/etc/sddm.conf.d"
+    cat > "$TARGET_ROOT/etc/sddm.conf.d/20-grintion-wayland.conf" <<'EOF'
+# Grintion-OS has no logind/pam_systemd to create the per-user runtime
+# directory, so SDDM's default Wayland session script left KWin without a
+# writable XDG_RUNTIME_DIR. This wrapper provides it before exec'ing the
+# packaged session script.
+[Wayland]
+SessionCommand=/etc/sddm/wayland-session-grintion
+EOF
+    chmod 0644 "$TARGET_ROOT/etc/sddm.conf.d/20-grintion-wayland.conf"
+    log "Configured SDDM Wayland session runtime wrapper"
+}
+
+# Session files are what a greeter lists. Most desktops ship their own, but
+# lxqt does not, so LightDM had nothing to launch and the login looped back to
+# the greeter. Install the tracked entries when the package does not provide
+# one; never overwrite a package-owned file.
+install_session_desktop() {
+    local key="$1" name dest
+    case "$key" in
+        kde) name=plasma.desktop ;;
+        *) name="$key.desktop" ;;
+    esac
+    dest="$TARGET_ROOT/usr/share/xsessions"
+    case "${DISPLAY_SERVER:-}" in
+        *wayland*) dest="$TARGET_ROOT/usr/share/wayland-sessions" ;;
+    esac
+    if [ ! -f "$TARGET_ROOT/etc/grintion/sessions/$name" ]; then
+        return 0
+    fi
+    mkdir -p "$dest"
+    if [ ! -f "$dest/$name" ]; then
+        install -m 0644 "$TARGET_ROOT/etc/grintion/sessions/$name" "$dest/$name"
+        log "Installed session entry /usr/share/${dest##*/}/$name"
+    fi
+}
+
+# Sway reads one user config file; the package's /etc/sway/config is only a
+# template. Give each human a copy (with the Grintion drop-in included) so
+# 'sway' starts a usable session instead of the first-run wizard.
+configure_sway_config() {
+    local src="$TARGET_ROOT/etc/sway/config" home owner created=0
+    [ -f "$src" ] || return 0
+    for home in "$TARGET_ROOT"/home/*; do
+        [ -d "$home" ] || continue
+        owner=$(stat -c '%u:%g' "$home" 2>/dev/null || echo 0:0)
+        mkdir -p "$home/.config/sway"
+        chown "$owner" "$home/.config/sway" 2>/dev/null || true
+        if [ -f "$home/.config/sway/config" ]; then
+            continue
+        fi
+        install -m 0644 "$src" "$home/.config/sway/config"
+        if ! grep -q '^include /etc/sway/config.d/\*' "$home/.config/sway/config"; then
+            printf '\n# Grintion-OS session defaults (audio, seat helpers).\ninclude /etc/sway/config.d/*\n' \
+                >> "$home/.config/sway/config"
+        fi
+        chown "$owner" "$home/.config/sway/config" 2>/dev/null || true
+        created=$((created + 1))
+    done
+    log "Installed the default Sway config for $created account(s)"
+}
+
 # Wayland compositors use libseat to obtain DRM/input access. There is no
 # logind in this image, so seatd is the seat provider. Human users need to be
 # in the socket's group; service accounts must not be added.
@@ -472,11 +629,21 @@ for index, line in enumerate(lines):
 group_path.write_text("\n".join(lines) + "\n")
 PY
 
+    # seatd ships libseat.so.1; it is the seat library every wlroots
+    # compositor (sway, wayfire, river, ...) links against. The base image
+    # contains the seeded seatd binary, so pacman can treat the package as
+    # installed while the library is absent. Keep the profile's seatd entry
+    # (it forces a reinstall) and fail here instead of leaving a compositor
+    # that aborts with "libseat.so.1: cannot open shared object file".
+    if ! compgen -G "$TARGET_ROOT/usr/lib/libseat.so*" >/dev/null; then
+        die "seatd is installed but libseat.so is missing from $TARGET_ROOT/usr/lib"$'\n'"        remove the incomplete package or reinstall it: pacman -S seatd"
+    fi
+
     [ -f "$service_dir/run" ] || die "tracked seatd service is missing: $service_dir/run"
     chmod 0755 "$service_dir/run"
     mkdir -p "$(dirname "$TARGET_ROOT/var/service/seatd")"
     ln -sfn "/etc/sv/seatd" "$TARGET_ROOT/var/service/seatd"
-    log "Enabled seatd for Wayland seat management"
+    log "Enabled seatd and verified the libseat library for Wayland seat management"
 }
 
 cmd_list() {
@@ -515,21 +682,22 @@ Supported Desktop Environments and Window Managers in Grintion-OS:
       Description: Fast, lightweight, user-friendly traditional desktop.
       Recommended for: General desktop use, older hardware, lightweight setups.
 
-  [2] GNOME (gnome)
-      Type: Desktop Environment (Wayland / X11)
+  [2] GNOME (gnome) - NOT SUPPORTED
+      Type: Desktop Environment (Wayland)
       Default Display Manager: GDM
-      Description: Modern, sleek, touch and gesture friendly desktop suite.
-      Recommended for: Modern workstations and laptops.
+      Description: gnome-session 51 requires the systemd user session manager
+      (org.freedesktop.systemd1). Grintion-OS runs runit without systemd or
+      logind, so the session aborts before drawing. Installation is refused.
 
   [3] KDE Plasma (kde, plasma)
-      Type: Desktop Environment (Wayland / X11)
+      Type: Desktop Environment (Wayland)
       Default Display Manager: SDDM
       Description: Gorgeous, highly customizable, modular desktop environment.
       Recommended for: Power users who want customization and sleek aesthetics.
 
   [4] LXQt (lxqt)
       Type: Desktop Environment (X11)
-      Default Display Manager: SDDM
+      Default Display Manager: LightDM
       Description: Extremely lightweight Qt-based desktop.
       Recommended for: Minimum resource usage.
 
@@ -631,6 +799,21 @@ cmd_install() {
     load_profile "$target_de" "$profile_dir"
     target_de="$NAME"
 
+    # GNOME 51's gnome-session starts everything through
+    # org.freedesktop.systemd1 (gnome-session@gnome.target) and aborts with
+    # "Failed to start unit" when it is absent. There is no systemd user
+    # manager or logind in this image, so refuse before downloading ~1.5 GB
+    # of packages that cannot produce a desktop.
+    if [ "${REQUIRES_SYSTEMD:-0}" = "1" ]; then
+        die "$NAME requires the systemd user session manager (org.freedesktop.systemd1); Grintion-OS runs runit without systemd/logind and gnome-session exits before drawing"$'\n'"        install xfce, lxqt, kde or sway instead"
+    fi
+
+    local wayland=0
+    case "${DISPLAY_SERVER:-}" in
+        *wayland*) wayland=1 ;;
+    esac
+    grant_session_groups "$wayland"
+
     local base_pkgs=()
     local de_pkgs=()
     local dm_pkg="${DM:-}"
@@ -701,6 +884,11 @@ cmd_install() {
     fi
     verify_binaries "${expected[@]}"
 
+    install_session_desktop "$NAME"
+    if [ "$NAME" = "sway" ]; then
+        configure_sway_config
+    fi
+
     # The packages just installed expect systemd-sysusers to have created their
     # service accounts; without them dbus-daemon warns on the console and the
     # daemons cannot start.
@@ -734,6 +922,9 @@ EOF
     # 3. Configure Display Manager if applicable
     if [ -n "$dm_bin" ]; then
         enable_dm_service "$dm_bin"
+        if [ "$dm_bin" = "/usr/bin/sddm" ] && [ "$wayland" -eq 1 ]; then
+            configure_sddm_wayland
+        fi
     fi
     if [[ "${DISPLAY_SERVER:-}" == *wayland* ]]; then
         [ -x "$TARGET_ROOT/usr/bin/seatd" ] || die "Wayland profile did not provide seatd"

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# grintion-audio - start the per-user PipeWire stack without systemd.
+#
+# This image has no systemd user manager, so pipewire.socket,
+# pipewire-pulse.socket and wireplumber.service are never activated. Start the
+# three processes explicitly and unmute every detected ALSA card before
+# PipeWire opens a PCM. The helper is used by the X11 session hook and by the
+# XDG autostart entry, which covers GNOME, KDE, LXQt and XFCE without relying
+# on a particular desktop's own audio integration.
+set -Eeuo pipefail
+
+QUIET=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --session) shift ;;
+        --quiet) QUIET=1; shift ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: grintion-audio [--session] [--quiet]
+
+Start PipeWire, WirePlumber and pipewire-pulse for the current user, and
+unmute the controls on every ALSA card exposed by the kernel.
+EOF
+            exit 0
+            ;;
+        *)
+            printf 'grintion-audio: unknown option: %s\n' "$1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+log() {
+    [ "$QUIET" -eq 1 ] || printf '[*] %s\n' "$*" >&2
+}
+warn() {
+    [ "$QUIET" -eq 1 ] || printf '[!] %s\n' "$*" >&2
+}
+
+uid="$(id -u)"
+runtime="${XDG_RUNTIME_DIR:-}"
+if [ -z "$runtime" ] || [ ! -d "$runtime" ] \
+    || [ "$(stat -c %u "$runtime" 2>/dev/null || echo -1)" != "$uid" ]; then
+    runtime="/tmp/grintion-runtime-$uid"
+    mkdir -p "$runtime"
+fi
+chmod 700 "$runtime" 2>/dev/null || true
+export XDG_RUNTIME_DIR="$runtime"
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    warn "no D-Bus session bus is available; start this from a graphical session or dbus-run-session"
+fi
+
+# Card numbering is not stable across machines. In particular, HDMI can be
+# card 0 while the analog speakers are card 1, so only touching card 0 leaves
+# real laptops silent. Unmute the common controls on every card; controls that
+# do not exist are ignored.
+if command -v amixer >/dev/null 2>&1; then
+    for card in /proc/asound/card[0-9]*; do
+        [ -d "$card" ] || continue
+        index="${card##*card}"
+        for control in Master PCM Headphone Speaker Front Surround; do
+            amixer -c "$index" sset "$control" unmute 100% >/dev/null 2>&1 || true
+        done
+    done
+fi
+
+logfile="$runtime/grintion-audio.log"
+start_daemon() {
+    local name="$1"
+    command -v "$name" >/dev/null 2>&1 || return 0
+    pgrep -u "$uid" -x "$name" >/dev/null 2>&1 && return 0
+    "$name" >>"$logfile" 2>&1 &
+}
+
+start_daemon pipewire
+i=0
+while [ ! -S "$runtime/pipewire-0" ] && [ "$i" -lt 20 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+start_daemon wireplumber
+start_daemon pipewire-pulse
+
+if [ -S "$runtime/pipewire-0" ]; then
+    log "PipeWire audio started for uid $uid (runtime: $runtime)"
+else
+    warn "PipeWire did not create $runtime/pipewire-0; see $logfile"
+fi

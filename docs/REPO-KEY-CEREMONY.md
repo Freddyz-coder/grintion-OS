@@ -56,7 +56,7 @@ openssl pkey -in repo-2026.key -pubout -out repo-2026.pub
 
 - **Root Private Key:** Stored on encrypted offline USB tokens stored in tamper-evident physical safes.
 - **Repository Private Key:** Stored in hardware security modules (HSM) or dedicated build orchestrators.
-- **Client Public Keys:** Pre-installed in `/etc/garb/keys/` and compiled into `bin/garb`.
+- **Client Public Keys:** Pre-installed in `/etc/garb/keys/` and read at runtime by `garb`.
 
 ## Key Rotation Procedure
 
@@ -67,6 +67,28 @@ openssl pkey -in repo-2026.key -pubout -out repo-2026.pub
    - The old key is retired.
 
 2. **Emergency Key Revocation:**
-   - In case of key compromise, a signed revocation statement is published to the CDN and DNSSEC TXT records.
+   - In case of key compromise, a signed revocation statement is published alongside the release artifacts.
    - Clients running `garb update` refuse any index signed with the revoked key.
+
+## Publishing a signed release
+
+No signed release has been published yet. The tag-triggered workflow
+`.github/workflows/release.yml` is the release path once the offline key
+exists:
+
+1. Set the repository secret `GRINTION_RELEASE_KEY` to the Ed25519 private key
+   (PEM). A run without it fails instead of publishing unsigned artifacts.
+2. Tag the release (`git tag -a v0.11.0 -m 'Grintion-OS 0.11.0'`) and push the
+   tag. The workflow builds with `make iso-pinned`, so the live userland comes
+   from the dated Arch Linux Archive snapshot, not the runner's host packages.
+3. The release contains `grintion-os-x86_64.iso`, `SHA256SUMS`,
+   `SHA256SUMS.sig`, `BUILD-INFO`, `grintion-release-public.pem` and
+   `junit.xml`.
+
+Verify a downloaded release with:
+
+```sh
+grintion-release-verify grintion-os-x86_64.iso \
+    --sha256-file SHA256SUMS --key grintion-release-public.pem --require-signature
+```
 

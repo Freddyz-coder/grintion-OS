@@ -8,9 +8,9 @@ SHELL := /bin/bash
 VERSION := $(shell cat VERSION)
 ISO := output/grintion-os-x86_64.iso
 
-.PHONY: all help tools kernel install-initramfs rootfs iso check test test-garb \
+.PHONY: all help tools kernel install-initramfs rootfs rootfs-pinned iso iso-pinned check test test-garb \
         test-boot test-display test-network test-install test-install-uefi test-all packages clean distclean release \
-        sign-release verify-release
+        sign-release verify-release check-upstream
 
 all: iso
 
@@ -22,8 +22,11 @@ help:
 	@echo "  make kernel            build the pinned vanilla Linux kernel and modules"
 	@echo "  make install-initramfs build the tiny installed-system initramfs"
 	@echo "  make rootfs            assemble the live rootfs and live initramfs"
+	@echo "  make rootfs-pinned     build the rootfs in a dated Arch Linux Archive container"
 	@echo "  make iso               build output/grintion-os-x86_64.iso (default)"
-	@echo "  make check             static checks, Python tests, package tests"
+	@echo "  make iso-pinned        build the ISO with the dated Arch snapshot rootfs"
+	@echo "  make check             static checks, shellcheck, Python tests, package tests"
+	@echo "  make check-upstream    report newer 6.12.x kernels available upstream"
 	@echo "  make test              alias for check"
 	@echo "  make test-garb         package-manager integration tests"
 	@echo "  make test-boot         boot the ISO in QEMU (BIOS + UEFI)"
@@ -51,11 +54,24 @@ install-initramfs:
 rootfs: tools kernel install-initramfs
 	@./build/make-rootfs.sh
 
+# Reproducible path: the host userland is replaced by packages from the dated
+# Arch Linux Archive snapshot in config/arch-snapshot.
+rootfs-pinned: tools kernel install-initramfs
+	@./build/container-rootfs.sh
+
 iso: tools kernel install-initramfs rootfs
+	@./build/build-iso.sh
+
+# Release path: the live userland comes from the pinned ALA snapshot rather
+# than from whatever the build host has installed.
+iso-pinned: tools kernel install-initramfs rootfs-pinned
 	@./build/build-iso.sh
 
 check:
 	@./build/check.sh
+
+check-upstream:
+	@./build/check-upstream.sh
 
 test: check
 

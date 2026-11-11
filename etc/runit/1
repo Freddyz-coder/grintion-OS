@@ -80,8 +80,9 @@ if [ -s /var/lib/random-seed ]; then
     cat /var/lib/random-seed > /dev/urandom 2>/dev/null || true
 fi
 
-# devtmpfs creates the nodes; mdev applies /etc/mdev.conf and is the hotplug
-# helper. There is no udev in Grintion-OS by design.
+# devtmpfs creates the nodes; mdev applies /etc/mdev.conf and is the early
+# hotplug helper. The standalone udev service starts later and populates the
+# database libinput and desktop tools use.
 if [ -x /usr/bin/mdev ]; then
     /usr/bin/mdev -s 2>/dev/null || true
     if [ -w /proc/sys/kernel/hotplug ]; then
