@@ -19,6 +19,8 @@ from garblib.archive import (  # noqa: E402
     build_package,
     extract_tree,
     read_metadata,
+    validate_archive,
+    verify_staged,
     write_canonical_archive,
 )
 from garblib.backends import (  # noqa: E402
@@ -64,18 +66,71 @@ def test_store_confines_target_paths_and_fails_closed_on_corrupt_db(tmp_path: Pa
         Database(paths)
 
 
-def test_repo_rejects_expired_and_replayed_indexes(tmp_path: Path) -> None:
+def test_repo_rejects_expired_replayed_and_overlong_indexes(tmp_path: Path) -> None:
     now = int(time.time())
-    validate_index({"index_version": 2, "expires": now + 60}, "test", tmp_path)
+    valid = {"index_version": 2, "expires": now + 60, "packages": {}}
+    validate_index(valid, "test", tmp_path)
     with pytest.raises(GarbError, match="expired"):
-        validate_index({"index_version": 2, "expires": now - 60}, "test", tmp_path)
+        validate_index({**valid, "expires": now - 60}, "test", tmp_path)
+    with pytest.raises(GarbError, match="more than 90 days"):
+        validate_index({**valid, "expires": now + 91 * 86400}, "test", tmp_path)
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "index.json").write_text(
-        json.dumps({"index_version": 3, "expires": now + 60}), encoding="utf-8"
+        json.dumps({**valid, "index_version": 3}), encoding="utf-8"
     )
     with pytest.raises(GarbError, match="replayed"):
-        validate_index({"index_version": 2, "expires": now + 60}, "test", cache)
+        validate_index(valid, "test", cache)
+    (cache / "index.json").write_text("{", encoding="utf-8")
+    with pytest.raises(GarbError, match="cached index is unreadable"):
+        validate_index(valid, "test", cache)
+
+
+def _archive_with_metadata(path: Path, metadata: dict, members: list[tuple[str, bytes]]) -> None:
+    payload = json.dumps(metadata).encode()
+    with tarfile.open(path, "w:gz") as tar:
+        info = tarfile.TarInfo("GARB_METADATA.json")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+
+def test_archive_validation_rejects_duplicates_and_oversized_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata = {"schema": 1, "name": "demo", "version": "1", "files": []}
+    duplicate = tmp_path / "duplicate.garb"
+    _archive_with_metadata(duplicate, metadata, [("usr/bin/x", b"x"), ("usr/bin/x", b"x")])
+    with pytest.raises(GarbError, match="duplicate archive member"):
+        validate_archive(duplicate)
+
+    oversized = tmp_path / "oversized.garb"
+    _archive_with_metadata(oversized, {**metadata, "padding": "x" * 200}, [])
+    monkeypatch.setattr("garblib.archive.MAX_METADATA_BYTES", 10)
+    with pytest.raises(GarbError, match="metadata exceeds"):
+        validate_archive(oversized)
+
+
+def test_verify_staged_rejects_setuid_payload(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    tool = staging / "usr/bin/tool"
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"tool\n")
+    metadata = {
+        "files": [
+            {
+                "path": "usr/bin/tool",
+                "type": "file",
+                "mode": "4755",
+                "sha256": sha256_file(tool),
+            }
+        ]
+    }
+    with pytest.raises(GarbError, match="setuid/setgid"):
+        verify_staged(staging, metadata)
 
 
 def test_repo_signature_roundtrip(tmp_path: Path) -> None:

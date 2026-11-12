@@ -8,12 +8,26 @@ Grintion-OS supports four system security profiles managed via `grintion-securit
 
 | Profile | Target Environment | Firewall Policy | AppArmor Mode | USB Policy | Network | Audit Trail |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`workstation`** | Desktop / Workstation | Drop unsolicited inbound | Enforce on daemons, complain on user apps | Allowed | Enabled | Sudo I/O + Auth |
-| **`server`** | Hardened Headless Server | Strict drop, SSH/whitelisted only | Enforce all | Data-block enabled | Enabled | Full Auditd |
-| **`kiosk`** | Display / Single-app Kiosk | Strict drop, loopback only | Enforce all | Input devices only | Controlled | Full Auditd |
-| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled | Strict Auditd |
+| **`workstation`** | Desktop / Workstation | Drop unsolicited inbound | Enforce shipped daemon profiles | Allowed | Enabled | Rules staged; no daemon |
+| **`server`** | Hardened Headless Server | Strict inbound drop; no service ports opened by default | Enforce all | Data-block enabled | Enabled | Rules staged; no daemon |
+| **`kiosk`** | Display / Single-app Kiosk | Strict inbound drop | Enforce all | Data-block enabled | Enabled | Rules staged; no daemon |
+| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled | Rules staged; no daemon |
 
 The security profile can be chosen during installation via `grintion-install --security-profile <PROF>` and inspected at any time with `grintion-security status` or `grintion-security-report`.
+
+`grintion-security set <PROF>` applies live controls by default: USB policy,
+AppArmor load plus `verify`, and a generated nftables ruleset. It writes
+configuration only after those steps succeed and then re-checks the running
+state; a failed control rolls back the profile files and the previous firewall.
+Use `--config-only` when staging an image or in tests that cannot load kernel
+policy. `verify` checks the active `nft list ruleset` chain marker, AppArmor
+enforcement, the USB config, and auditd availability instead of trusting the
+configuration file alone.
+
+**Auditd is not shipped in the current base image.** The rules and service file
+are staged for a future package, but `auditd`/`auditctl` userspace is absent, so
+the profile reports a warning. Do not read the profile table as a claim that an
+audit daemon is running.
 
 ## 2. Mandatory Access Control (AppArmor)
 
@@ -57,16 +71,17 @@ profile file that is not loaded confines nothing, so do not treat the files in
 
 ## 4. Audit Logging & Privileged Tracing
 
-- Supervised `auditd` service runs under runit (`/etc/sv/auditd/run`) with rules in `/etc/audit/audit.rules`.
-- Monitors `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation (`su`/`sudo`), and MAC policy changes.
-- Sudo I/O logging is enabled via `/etc/sudoers.d/audit-log` saving session input/output to `/var/log/sudo-io`.
-- Inspected using `grintion-audit-log` or `grintion-audit-log --sudo`.
+- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` are staged and describe monitoring for `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes.
+- The current base image does **not** include the `auditd`/`auditctl` userspace. The security profile reports auditd as a warning; it does not claim that a daemon is consuming those rules. Kernel audit support may still be present.
+- Sudo I/O logging is configured separately via `/etc/sudoers.d/audit-log` and does not depend on auditd.
+- Inspect available logs with `grintion-audit-log` or `grintion-audit-log --sudo` when the relevant daemon or sudo I/O files exist.
 
 ## 5. File Integrity Baseline (`grintion-integrity`)
 
-- Uses SHA-256 baseline hashing across critical system binaries (`/bin`, `/sbin`, `/usr/bin`, `/etc/grintion`, `/etc/shadow`).
-- Initialized with `grintion-integrity init`.
-- Verified at boot or on-demand with `grintion-integrity check`. Any unauthorized modification causes a non-zero exit and security failure report.
+- Records SHA-256, mode, owner, group and size for critical binaries and configuration (`/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/etc/grintion`, PAM/sudo/AppArmor configuration, `/etc/shadow`, `/boot`).
+- Initialized with `grintion-integrity init`; the baseline is written atomically with mode 0600 and refuses to save if a monitored file cannot be hashed.
+- Verified at boot or on-demand with `grintion-integrity check`. It reports modified, added, removed, size-changed and mode-changed files separately. A newly added setuid/setgid bit is reported as a privilege change even when the file hash is unchanged.
+- A missing or corrupt baseline exits with status 2 rather than being treated as clean.
 
 ## 6. Anti-Malware & SUID Scans (`grintion-scan`)
 
@@ -115,4 +130,20 @@ profile file that is not loaded confines nothing, so do not treat the files in
   These controls stop remote and other-user connections; they do not isolate a
   compromised X11 client from the rest of the session. Use the Wayland
   profiles or `grintion-sandbox` when client isolation is required.
+
+## 12. Boot Health and Auto-Revert (`grintion-boot-health`)
+
+- The `boot-health` service records one attempt at boot and marks the boot good
+  after a session is confirmed or a stable window passes.
+- Attempt counters are updated under a lock, parsed as bounded numbers, and
+  replaced atomically. A corrupt or partial counter cannot turn into an
+  unbounded boot loop.
+- Three failed attempts write `failed`, log the result, and rewrite the Limine
+  default entry to an existing snapshot or recovery entry. The edit is
+  validated and replaced atomically, with a `.pre-boot-health` backup.
+- This is a bootloader selection change only. It does not restore a root
+  filesystem, verify that the alternate entry boots, or replace
+  `grintion-snapshot` rollback. The variable overrides
+  `GRINTION_BOOT_HEALTH_STATE` and `GRINTION_LIMINE_CONF` exist for tests and
+  recovery environments.
 

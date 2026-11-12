@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.1] - 2026-11-12
+
+### Security
+
+- **Security profiles are fail-closed instead of config-only.** `grintion-security
+  set` now applies the USB policy, loads AppArmor and verifies enforcement, then
+  validates and applies a generated nftables ruleset before writing profile
+  state. A failed control rolls back the profile configuration and firewall;
+  `--config-only` is the explicit image-build path. `verify` inspects the active
+  nftables chain, AppArmor JSON, USB state and auditd availability. The base
+  image does not ship auditd userspace, so it is reported as a warning rather
+  than a passing control.
+- **Package archives and repository metadata are bounded.** `garb` rejects
+  duplicate archive paths, more than 200,000 members, metadata over 4 MiB,
+  expanded payloads over 8 GiB, unsafe symlinks and setuid/setgid payloads.
+  Downloads stream to a temporary file, are checked against the declared size
+  and SHA-256, and are atomically renamed. Indexes and signatures have 64 MiB /
+  16 KiB caps; index expiries are limited to 90 days; unreadable cached indexes
+  fail closed. Installation preflights free space.
+- **Integrity checks detect privilege changes, not only content changes.**
+  `grintion-integrity` baselines mode, owner, group and size alongside SHA-256,
+  reports newly added setuid/setgid bits, canonicalizes monitored roots, uses
+  `lstat`, and writes the baseline atomically with mode 0600.
+- **Boot-health state is atomic and locked.** Invalid counters are bounded
+  instead of parsed as shell arithmetic; attempts are replaced atomically under
+  a lock; auto-revert edits Limine through a validated temporary file with a
+  backup. It still only changes the default boot entry and does not restore a
+  filesystem.
+- **Firewall boot fallback.** The firewall service prefers the active profile
+  ruleset and falls back to `/etc/nftables.conf` when generation or application
+  fails, so a bad profile update cannot silently leave no rules loaded. Added
+  `kernel.kexec_load_disabled=1` and `vm.mmap_min_addr=65536`, and stage 1 now
+  logs sysctl failures to `/var/log/sysctl.log`.
+
+### Verification
+
+- `make check`: **181 passed**, including new coverage for archive/index limits,
+  setuid rejection, transactional profile apply and rollback, mode-aware
+  integrity detection, and boot-health auto-revert.
+- These changes were source-checked only. No ISO was rebuilt and no firmware or
+  hardware boot test was run for this unreleased hardening pass.
+
+---
+
 ## [0.13.0] - 2026-11-12
 
 ### Added

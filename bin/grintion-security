@@ -1,16 +1,36 @@
 #!/usr/bin/env python3
-"""grintion-security - manage system security profiles (workstation, server, kiosk, air-gapped)."""
+"""grintion-security - apply and verify system security profiles.
+
+A profile is not considered applied merely because /etc/grintion/security.conf
+was written. The default path applies the firewall, loads the AppArmor policy,
+sets the USB data policy, and then verifies the result. Use --config-only when
+staging an image or testing without a live kernel.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-PROFILE_FILE = Path(os.environ.get("GRINTION_SECURITY_PROFILE", "/etc/grintion/security-profile"))
-CONF_FILE = Path(os.environ.get("GRINTION_SECURITY_CONF", "/etc/grintion/security.conf"))
+PROFILE_FILE = Path(
+    os.environ.get("GRINTION_SECURITY_PROFILE", "/etc/grintion/security-profile")
+)
+CONF_FILE = Path(
+    os.environ.get("GRINTION_SECURITY_CONF", "/etc/grintion/security.conf")
+)
+USB_CONF = Path(os.environ.get("GRINTION_USB_CONF", "/etc/grintion/usb.conf"))
+FIREWALL_FILE = Path(
+    os.environ.get("GRINTION_FIREWALL_FILE", "/etc/grintion/firewall.nft")
+)
+SERVICE_DIR = Path(os.environ.get("GRINTION_SERVICE_DIR", "/var/service"))
+APPARMOR_SERVICE = Path(
+    os.environ.get("GRINTION_APPARMOR_SERVICE", "/etc/sv/apparmor")
+)
 
 PROFILES = {
     "workstation": {
@@ -23,7 +43,7 @@ PROFILES = {
         "auditd_enabled": True,
     },
     "server": {
-        "description": "Hardened server profile: restricted listeners, USB data blocking, full audit trail.",
+        "description": "Hardened server profile: restricted listeners, USB data blocking, audit rules.",
         "firewall_default": "strict_drop",
         "apparmor_mode": "enforce_all",
         "usb_data_block": True,
@@ -32,7 +52,7 @@ PROFILES = {
         "auditd_enabled": True,
     },
     "kiosk": {
-        "description": "Locked-down kiosk mode: sandboxed session, zero external listeners, input-only USB.",
+        "description": "Locked-down kiosk mode: strict inbound drop and USB data blocking.",
         "firewall_default": "strict_drop",
         "apparmor_mode": "enforce_all",
         "usb_data_block": True,
@@ -41,7 +61,7 @@ PROFILES = {
         "auditd_enabled": True,
     },
     "air-gapped": {
-        "description": "Offline isolated station: all network interfaces blocked, USB storage blocked, strict audit.",
+        "description": "Offline isolated station: all network traffic blocked, USB storage blocked.",
         "firewall_default": "drop_all",
         "apparmor_mode": "enforce_all",
         "usb_data_block": True,
@@ -51,73 +71,476 @@ PROFILES = {
     },
 }
 
+FIREWALL_POLICIES = ("drop_inbound", "strict_drop", "drop_all")
+
+
+class SecurityError(RuntimeError):
+    pass
+
+
+def atomic_write(path: Path, text: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def read_text(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return default
+
+
+def config_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in read_text(CONF_FILE).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
 
 def get_current_profile() -> str:
-    if PROFILE_FILE.is_file():
-        try:
-            val = PROFILE_FILE.read_text(encoding="utf-8").strip()
-            if val in PROFILES:
-                return val
-        except OSError:
-            pass
-    return "workstation"
+    value = read_text(PROFILE_FILE).strip()
+    return value if value in PROFILES else "workstation"
 
 
-def apply_profile(name: str) -> bool:
-    if name not in PROFILES:
-        return False
+def _tool(env_name: str, sibling: str, command: str) -> str | None:
+    override = os.environ.get(env_name)
+    if override:
+        path = Path(override)
+        return override if path.is_file() and os.access(path, os.X_OK) else None
+    local = Path(__file__).resolve().with_name(sibling)
+    if local.is_file() and os.access(local, os.X_OK):
+        return str(local)
+    return shutil.which(command)
 
-    spec = PROFILES[name]
-    PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_FILE.write_text(f"{name}\n", encoding="utf-8")
 
+def nft_binary() -> str | None:
+    return _tool("GRINTION_NFT_BIN", "nft", "nft")
+
+
+def apparmor_binary() -> str | None:
+    return _tool("GRINTION_APPARMOR_BIN", "grintion-apparmor", "grintion-apparmor")
+
+
+def usb_binary() -> str | None:
+    return _tool("GRINTION_USB_BIN", "grintion-usb", "grintion-usb")
+
+
+def auditd_binary() -> str | None:
+    return _tool("GRINTION_AUDITD_BIN", "auditd", "auditd")
+
+
+def run(argv: list[str], timeout: int = 60, input_text: str | None = None):
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            input=input_text,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SecurityError(f"cannot run {argv[0]}: {exc}") from exc
+
+
+def firewall_rules(policy: str) -> str:
+    if policy not in FIREWALL_POLICIES:
+        raise SecurityError(f"unknown firewall policy: {policy}")
+    marker = f"input_grintion_{policy.replace('-', '_')}"
     lines = [
-        f"PROFILE={name}",
-        f"DESCRIPTION={spec['description']}",
-        f"FIREWALL_POLICY={spec['firewall_default']}",
-        f"APPARMOR_POLICY={spec['apparmor_mode']}",
-        f"USB_DATA_BLOCK={'1' if spec['usb_data_block'] else '0'}",
-        f"ALLOW_NETWORK={'1' if spec['allow_network'] else '0'}",
-        f"SUDO_IO_LOG={'1' if spec['sudo_io_log'] else '0'}",
-        f"AUDITD_ENABLED={'1' if spec['auditd_enabled'] else '0'}",
+        "#!/usr/sbin/nft -f",
+        f"# Generated by grintion-security for policy {policy}.",
+        "flush ruleset",
+        "",
+        "table inet filter {",
+        # Keep a dedicated marker chain so verification can identify the
+        # active profile without renaming the conventional input chain that
+        # boot scripts, privacy checks and administrator muscle memory expect.
+        f"    chain {marker} {{",
+        "    }",
+        "    chain input {",
+        "        type filter hook input priority filter; policy drop;",
+        "        iif lo accept",
+        "        ct state established,related accept",
+        "        ct state invalid drop",
     ]
-    CONF_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if policy in ("drop_inbound", "strict_drop"):
+        lines += [
+            "        udp sport 67 udp dport 68 accept",
+            "        udp sport 547 udp dport 546 accept",
+            "        ip6 nexthdr ipv6-icmp accept",
+        ]
+    if policy == "drop_inbound":
+        lines.append("        ip protocol icmp accept")
+    lines += [
+        "    }",
+        "    chain forward {",
+        "        type filter hook forward priority filter; policy drop;",
+        "    }",
+        "    chain output {",
+        "        type filter hook output priority filter; policy "
+        + ("drop;" if policy == "drop_all" else "accept;"),
+    ]
+    if policy == "drop_all":
+        lines.append("        oif lo accept")
+    lines += ["    }", "}", ""]
+    return "\n".join(lines)
 
-    # Apply USB policy
-    usb_bin = Path(__file__).parent / "grintion-usb"
-    if usb_bin.is_file() and os.access(usb_bin, os.X_OK):
-        subcmd = "block-data" if spec["usb_data_block"] else "allow-data"
-        subprocess.run([str(usb_bin), subcmd], check=False)
 
-    return True
+def apply_firewall(policy: str) -> None:
+    binary = nft_binary()
+    if not binary:
+        raise SecurityError("nftables is not installed; cannot apply the firewall profile")
+    rules = firewall_rules(policy)
+    check = run([binary, "-c", "-f", "-"], input_text=rules)
+    if check.returncode != 0:
+        raise SecurityError(
+            "nftables rejected the generated profile: "
+            + (check.stderr.strip() or f"exit {check.returncode}")
+        )
+    apply = run([binary, "-f", "-"], input_text=rules)
+    if apply.returncode != 0:
+        raise SecurityError(
+            "nftables failed to apply the profile: "
+            + (apply.stderr.strip() or f"exit {apply.returncode}")
+        )
+    atomic_write(FIREWALL_FILE, rules)
+
+
+def apply_usb(spec: dict) -> None:
+    binary = usb_binary()
+    if not binary:
+        raise SecurityError("grintion-usb is not installed; cannot apply the USB policy")
+    action = "block-data" if spec["usb_data_block"] else "allow-data"
+    result = run([binary, action])
+    if result.returncode != 0:
+        raise SecurityError(
+            f"grintion-usb {action} failed: "
+            + (result.stderr.strip() or f"exit {result.returncode}")
+        )
+
+
+def apparmor_status() -> dict:
+    binary = apparmor_binary()
+    if not binary:
+        return {"compliant": False, "issues": ["grintion-apparmor is not installed"]}
+    result = run([binary, "verify", "--json"])
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if result.returncode != 0 or not isinstance(payload, dict) or not payload.get("compliant"):
+        issues = payload.get("issues", []) if isinstance(payload, dict) else []
+        if not issues:
+            issues = [result.stderr.strip() or "AppArmor verification failed"]
+        return {"compliant": False, "issues": issues}
+    return payload
+
+
+def apply_apparmor() -> None:
+    binary = apparmor_binary()
+    if not binary:
+        raise SecurityError("grintion-apparmor is not installed; cannot enforce AppArmor")
+    loaded = run([binary, "load-all"], timeout=120)
+    if loaded.returncode != 0:
+        raise SecurityError(
+            "AppArmor policy failed to load: "
+            + (loaded.stderr.strip() or f"exit {loaded.returncode}")
+        )
+    status = apparmor_status()
+    if not status.get("compliant"):
+        issues = status.get("issues") or ["unknown AppArmor verification failure"]
+        raise SecurityError("AppArmor is not enforcing: " + "; ".join(issues[:5]))
+
+
+def auditd_running() -> bool:
+    binary = auditd_binary()
+    if not binary:
+        return False
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", Path(binary).name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def auditd_service(enabled: bool, spec: dict) -> None:
+    """Stage the auditd service when userspace is available.
+
+    The base image does not currently ship the audit daemon. Do not create a
+    service link to a program that cannot run; report the limitation instead.
+    """
+    if not spec.get("auditd_enabled"):
+        link = SERVICE_DIR / "auditd"
+        if link.is_symlink():
+            link.unlink()
+        return
+    if not auditd_binary():
+        print(
+            "[!] auditd userspace is not installed; kernel audit remains available "
+            "but the profile cannot start the daemon",
+            file=sys.stderr,
+        )
+        return
+    target = Path("/etc/sv/auditd")
+    if not target.is_dir():
+        print(f"[!] auditd service directory is missing: {target}", file=sys.stderr)
+        return
+    link = SERVICE_DIR / "auditd"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.exists():
+        if not link.is_symlink() or link.resolve() != target.resolve():
+            print(f"[!] {link} already exists and is not managed by this profile", file=sys.stderr)
+            return
+    else:
+        link.symlink_to(target)
+
+
+def firewall_check(policy: str) -> tuple[bool, str]:
+    binary = nft_binary()
+    if not binary:
+        return False, "nftables is not installed"
+    try:
+        result = subprocess.run(
+            [binary, "list", "ruleset"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"cannot query nftables: {exc}"
+    if result.returncode != 0:
+        return False, result.stderr.strip() or "nftables ruleset is unavailable"
+    marker = f"input_grintion_{policy.replace('-', '_')}"
+    if marker not in result.stdout:
+        return False, f"active ruleset does not contain {marker}"
+    return True, marker
+
+
+def usb_check(expected: bool) -> tuple[bool, bool]:
+    actual = "data_block=1" in read_text(USB_CONF) or "data_block=true" in read_text(USB_CONF)
+    return actual == expected, actual
 
 
 def check_compliance(name: str) -> dict:
     spec = PROFILES.get(name, PROFILES["workstation"])
-    checks = []
+    checks: list[dict] = []
 
-    # Check USB block mode if required
-    usb_conf = Path("/etc/grintion/usb.conf")
-    usb_blocked = False
-    if usb_conf.is_file():
-        txt = usb_conf.read_text(encoding="utf-8", errors="replace")
-        usb_blocked = "data_block=1" in txt
+    def add(item: str, status: str, detail: str, actual: object = None) -> None:
+        checks.append({"item": item, "status": status, "detail": detail, "actual": actual})
 
-    if spec["usb_data_block"]:
-        status = "ok" if usb_blocked else "fail"
-        checks.append({"item": "usb_data_block", "status": status, "expected": True, "actual": usb_blocked})
+    active = get_current_profile()
+    if active == name:
+        add("profile", "ok", f"active profile is {name}", active)
     else:
-        checks.append({"item": "usb_data_block", "status": "ok", "expected": False, "actual": usb_blocked})
+        add("profile", "fail", f"active profile is {active}, expected {name}", active)
 
-    # Check network allowance
-    checks.append({"item": "network_isolation", "status": "ok", "policy": spec["firewall_default"]})
+    values = config_values()
+    expected_values = {
+        "PROFILE": name,
+        "FIREWALL_POLICY": spec["firewall_default"],
+        "APPARMOR_POLICY": spec["apparmor_mode"],
+        "USB_DATA_BLOCK": "1" if spec["usb_data_block"] else "0",
+    }
+    mismatches = [
+        f"{key}={values.get(key, '<missing>')} (expected {value})"
+        for key, value in expected_values.items()
+        if values.get(key) != value
+    ]
+    if CONF_FILE.is_file() and not mismatches:
+        add("profile-config", "ok", "profile configuration matches", values)
+    else:
+        add(
+            "profile-config",
+            "fail",
+            "profile configuration differs: " + "; ".join(mismatches),
+            values,
+        )
 
-    all_ok = all(c["status"] == "ok" for c in checks)
+    actual_usb, usb_blocked = usb_check(spec["usb_data_block"])
+    add(
+        "usb_data_block",
+        "ok" if actual_usb else "fail",
+        f"USB data blocking is {'enabled' if usb_blocked else 'disabled'}",
+        usb_blocked,
+    )
+
+    firewall_ok, firewall_detail = firewall_check(spec["firewall_default"])
+    add(
+        "firewall",
+        "ok" if firewall_ok else "fail",
+        (
+            f"nftables is enforcing {spec['firewall_default']}"
+            if firewall_ok
+            else firewall_detail
+        ),
+        spec["firewall_default"],
+    )
+
+    apparmor = apparmor_status()
+    if apparmor.get("compliant"):
+        add(
+            "apparmor",
+            "ok",
+            f"AppArmor is enforcing {apparmor.get('kernel_enforce', 0)} profile(s)",
+            apparmor.get("kernel_enforce"),
+        )
+    else:
+        issues = apparmor.get("issues") or ["AppArmor verification failed"]
+        add("apparmor", "fail", "; ".join(issues[:4]), issues)
+
+    if spec["auditd_enabled"]:
+        if not auditd_binary():
+            add(
+                "auditd",
+                "warn",
+                "auditd userspace is not installed; kernel audit only",
+                "unavailable",
+            )
+        elif auditd_running():
+            add("auditd", "ok", "auditd is running", True)
+        else:
+            add("auditd", "fail", "auditd is installed but not running", False)
+
+    failures = [check for check in checks if check["status"] == "fail"]
+    warnings = [check for check in checks if check["status"] == "warn"]
     return {
         "profile": name,
-        "compliant": all_ok,
+        "compliant": not failures,
         "checks": checks,
+        "failures": len(failures),
+        "warnings": len(warnings),
     }
+
+
+def _restore_file(path: Path, previous: str | None, mode: int = 0o644) -> None:
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        atomic_write(path, previous, mode=mode)
+
+
+def apply_profile(name: str, config_only: bool = False) -> bool:
+    if name not in PROFILES:
+        return False
+    spec = PROFILES[name]
+    profile_text = f"{name}\n"
+    conf_text = "\n".join(
+        [
+            f"PROFILE={name}",
+            f"DESCRIPTION={spec['description']}",
+            f"FIREWALL_POLICY={spec['firewall_default']}",
+            f"APPARMOR_POLICY={spec['apparmor_mode']}",
+            f"USB_DATA_BLOCK={'1' if spec['usb_data_block'] else '0'}",
+            f"ALLOW_NETWORK={'1' if spec['allow_network'] else '0'}",
+            f"SUDO_IO_LOG={'1' if spec['sudo_io_log'] else '0'}",
+            f"AUDITD_ENABLED={'1' if spec['auditd_enabled'] else '0'}",
+        ]
+    ) + "\n"
+
+    previous_profile = read_text(PROFILE_FILE) if PROFILE_FILE.exists() else None
+    previous_conf = read_text(CONF_FILE) if CONF_FILE.exists() else None
+    previous_usb = read_text(USB_CONF) if USB_CONF.exists() else None
+    previous_firewall = read_text(FIREWALL_FILE) if FIREWALL_FILE.exists() else None
+    firewall_applied = False
+    try:
+        if not config_only:
+            apply_usb(spec)
+            apply_apparmor()
+            # Mark this before the call: apply_firewall may load rules and then
+            # fail while durably recording them, and that partial state still
+            # needs the rollback path.
+            firewall_applied = True
+            apply_firewall(spec["firewall_default"])
+        atomic_write(PROFILE_FILE, profile_text)
+        atomic_write(CONF_FILE, conf_text)
+        if not config_only:
+            auditd_service(bool(spec["auditd_enabled"]), spec)
+            verdict = check_compliance(name)
+            if not verdict["compliant"]:
+                failures = [
+                    f"{check['item']}: {check['detail']}"
+                    for check in verdict["checks"]
+                    if check["status"] == "fail"
+                ]
+                raise SecurityError(
+                    "post-apply verification failed: " + "; ".join(failures)
+                )
+    except (SecurityError, OSError) as exc:
+        _restore_file(PROFILE_FILE, previous_profile)
+        _restore_file(CONF_FILE, previous_conf)
+        _restore_file(USB_CONF, previous_usb, mode=0o644)
+        if firewall_applied:
+            try:
+                if previous_firewall is not None:
+                    binary = nft_binary()
+                    if binary:
+                        run([binary, "-f", "-"], input_text=previous_firewall)
+                    atomic_write(FIREWALL_FILE, previous_firewall)
+                else:
+                    FIREWALL_FILE.unlink(missing_ok=True)
+                    default = Path("/etc/nftables.conf")
+                    binary = nft_binary()
+                    if default.is_file() and binary:
+                        run([binary, "-f", str(default)])
+            except (SecurityError, OSError):
+                print("[!] firewall rollback was incomplete", file=sys.stderr)
+        print(f"[-] security profile {name} was not applied: {exc}", file=sys.stderr)
+        return False
+    if config_only:
+        print(
+            f"[!] security profile {name} configuration written; controls were "
+            "not applied (--config-only)"
+        )
+    else:
+        print(f"[+] security profile {name} applied and verified")
+    return True
+
+
+def active_firewall_policy() -> str:
+    values = config_values()
+    policy = values.get("FIREWALL_POLICY", "")
+    if policy in FIREWALL_POLICIES:
+        return policy
+    return PROFILES[get_current_profile()]["firewall_default"]
+
+
+def cmd_apply_firewall(as_json: bool) -> int:
+    policy = active_firewall_policy()
+    try:
+        apply_firewall(policy)
+    except (SecurityError, OSError) as exc:
+        print(f"[-] firewall policy {policy} was not applied: {exc}", file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps({"policy": policy, "active": True, "file": str(FIREWALL_FILE)}))
+    else:
+        print(f"[+] firewall policy {policy} applied")
+    return 0
 
 
 def main() -> int:
@@ -127,34 +550,54 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="grintion-security",
         parents=[common],
-        description="Manage Grintion-OS security hardening profiles.",
+        description="Apply and verify Grintion-OS security hardening profiles.",
     )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("list", parents=[common], help="List available security profiles")
     sub.add_parser("status", parents=[common], help="Show current profile and compliance")
 
-    p_set = sub.add_parser("set", parents=[common], help="Apply a security profile")
+    p_set = sub.add_parser("set", parents=[common], help="Apply and verify a security profile")
     p_set.add_argument("profile", choices=list(PROFILES.keys()), help="Target security profile")
+    p_set.add_argument(
+        "--config-only",
+        action="store_true",
+        help="write profile files without applying firewall/AppArmor/USB controls",
+    )
 
     sub.add_parser("verify", parents=[common], help="Verify system compliance against active profile")
+    sub.add_parser(
+        "apply-firewall",
+        parents=[common],
+        help="apply the firewall policy selected in security.conf (used at boot)",
+    )
 
     args = parser.parse_args()
+
+    if args.command == "apply-firewall":
+        return cmd_apply_firewall(bool(getattr(args, "json", False)))
 
     if args.command in (None, "status"):
         curr = get_current_profile()
         comp = check_compliance(curr)
         if getattr(args, "json", False):
-            print(json.dumps({
-                "current_profile": curr,
-                "profile_details": PROFILES[curr],
-                "compliance": comp,
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "current_profile": curr,
+                        "profile_details": PROFILES[curr],
+                        "compliance": comp,
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(f"Active Security Profile: {curr.upper()}")
             print(f"Description: {PROFILES[curr]['description']}")
             comp_str = "COMPLIANT" if comp["compliant"] else "NON-COMPLIANT"
             print(f"Compliance:  {comp_str}")
+            if comp["warnings"]:
+                print(f"Warnings:    {comp['warnings']}")
         return 0
 
     if args.command == "list":
@@ -167,8 +610,7 @@ def main() -> int:
         return 0
 
     if args.command == "set":
-        if apply_profile(args.profile):
-            print(f"Security profile '{args.profile}' successfully applied.")
+        if apply_profile(args.profile, config_only=args.config_only):
             return 0
         return 1
 
@@ -179,9 +621,13 @@ def main() -> int:
             print(json.dumps(comp, indent=2))
         else:
             print(f"Verifying security compliance for profile '{curr}'...")
-            for c in comp["checks"]:
-                label = "[ ok ]" if c["status"] == "ok" else "[FAIL]"
-                print(f"  {label} {c['item']}")
+            for check in comp["checks"]:
+                label = {
+                    "ok": "[ ok ]",
+                    "warn": "[WARN]",
+                    "fail": "[FAIL]",
+                }.get(check["status"], "[????]")
+                print(f"  {label} {check['item']}: {check['detail']}")
         return 0 if comp["compliant"] else 1
 
     parser.print_help()

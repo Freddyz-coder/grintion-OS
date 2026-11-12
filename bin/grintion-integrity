@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""grintion-integrity - file integrity checker and AIDE baseline manager."""
+"""grintion-integrity - file integrity checker and baseline manager.
+
+The baseline records mode, ownership and size in addition to SHA-256. Hash-only
+checking misses privilege escalation through a new setuid bit on an otherwise
+unchanged binary, which is exactly the change a rootkit wants to hide.
+"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 DEFAULT_DB = Path(os.environ.get("GRINTION_INTEGRITY_DB", "/var/lib/aide/integrity-baseline.json"))
@@ -16,57 +23,129 @@ MONITORED_PATHS = [
     Path("/usr/bin"),
     Path("/usr/sbin"),
     Path("/etc/grintion"),
+    Path("/etc/pam.d"),
+    Path("/etc/security"),
+    Path("/etc/apparmor.d"),
+    Path("/etc/garb/keys"),
+    Path("/etc/sudoers"),
+    Path("/etc/sudoers.d"),
     Path("/etc/shadow"),
     Path("/etc/passwd"),
-    Path("/etc/sudoers"),
+    Path("/etc/group"),
+    Path("/etc/nftables.conf"),
+    Path("/boot"),
 ]
+SUID_BITS = stat.S_ISUID | stat.S_ISGID
 
 
 def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
+    digest = hashlib.sha256()
     try:
-        with path.open("rb") as f:
-            while chunk := f.read(65536):
-                h.update(chunk)
-        return h.hexdigest()
+        with path.open("rb") as handle:
+            while chunk := handle.read(65536):
+                digest.update(chunk)
+        return digest.hexdigest()
     except OSError:
         return ""
 
 
+def mode_bits(value: object) -> int | None:
+    """Accept the old ``0o100644`` form and the compact ``0644`` form."""
+    if isinstance(value, int):
+        return stat.S_IMODE(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return stat.S_IMODE(int(value, 8))
+    except ValueError:
+        return None
+
+
+def entry_for(path: Path) -> dict:
+    info = path.lstat()
+    digest = sha256_file(path)
+    return {
+        "hash": digest,
+        "size": info.st_size,
+        "mode": f"{stat.S_IMODE(info.st_mode):04o}",
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "mtime": info.st_mtime,
+    }
+
+
 def scan_paths(roots: list[Path]) -> dict[str, dict]:
     entries: dict[str, dict] = {}
+    seen_roots: set[Path] = set()
     for root in roots:
-        if not root.exists():
+        try:
+            resolved = root.resolve(strict=True)
+        except OSError:
             continue
-        if root.is_file():
-            stat = root.stat()
-            entries[str(root)] = {
-                "hash": sha256_file(root),
-                "size": stat.st_size,
-                "mode": oct(stat.st_mode),
-                "mtime": stat.st_mtime,
-            }
-        elif root.is_dir():
-            for item in sorted(root.glob("**/*")):
-                if item.is_file() and not item.is_symlink():
-                    try:
-                        stat = item.stat()
-                        entries[str(item)] = {
-                            "hash": sha256_file(item),
-                            "size": stat.st_size,
-                            "mode": oct(stat.st_mode),
-                            "mtime": stat.st_mtime,
-                        }
-                    except OSError:
-                        continue
+        if resolved in seen_roots:
+            continue
+        seen_roots.add(resolved)
+        if resolved.is_file() and not resolved.is_symlink():
+            entries[str(resolved)] = entry_for(resolved)
+        elif resolved.is_dir():
+            for item in sorted(resolved.rglob("*")):
+                if item.is_symlink() or not item.is_file():
+                    continue
+                try:
+                    entries[str(item)] = entry_for(item)
+                except OSError:
+                    entries[str(item)] = {
+                        "hash": "",
+                        "size": -1,
+                        "mode": "",
+                        "uid": -1,
+                        "gid": -1,
+                        "mtime": 0,
+                    }
     return entries
 
 
+def atomic_write_baseline(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def cmd_init(db_path: Path, paths: list[Path]) -> int:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
     entries = scan_paths(paths)
-    data = {"version": 1, "created": os.uname().nodename, "entries": entries}
-    db_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    unreadable = sorted(path for path, meta in entries.items() if not meta["hash"])
+    if unreadable:
+        print(
+            "Error: cannot hash every monitored file; refusing an incomplete baseline:",
+            file=sys.stderr,
+        )
+        for path in unreadable[:20]:
+            print(f"  {path}", file=sys.stderr)
+        return 1
+    data = {
+        "schema": 2,
+        "created": os.uname().nodename,
+        "paths": [str(path) for path in paths],
+        "entries": entries,
+    }
+    atomic_write_baseline(db_path, data)
     print(f"Integrity baseline initialized with {len(entries)} file records at {db_path}")
     return 0
 
@@ -78,38 +157,62 @@ def cmd_check(db_path: Path, paths: list[Path]) -> tuple[int, dict]:
 
     try:
         baseline = json.loads(db_path.read_text(encoding="utf-8"))
-        entries = baseline.get("entries", {})
-    except Exception as e:
-        print(f"Error reading baseline database: {e}", file=sys.stderr)
+        if not isinstance(baseline, dict) or baseline.get("schema") not in (1, 2):
+            raise ValueError("unsupported baseline schema")
+        entries = baseline.get("entries")
+        if not isinstance(entries, dict):
+            raise ValueError("baseline has no entries object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error reading baseline database: {exc}", file=sys.stderr)
         return 2, {"status": "corrupt_db"}
 
     current = scan_paths(paths)
 
-    added = []
-    removed = []
-    modified = []
+    added: list[str] = []
+    removed: list[str] = []
+    modified: list[str] = []
+    mode_changed: list[str] = []
+    privilege_changed: list[str] = []
+    size_changed: list[str] = []
 
     for path, meta in current.items():
-        if path not in entries:
+        previous = entries.get(path)
+        if previous is None:
             added.append(path)
-        elif meta["hash"] != entries[path]["hash"]:
+            current_mode = mode_bits(meta.get("mode"))
+            if current_mode is not None and current_mode & SUID_BITS:
+                privilege_changed.append(path)
+            continue
+        if meta.get("hash") != previous.get("hash"):
             modified.append(path)
+        if meta.get("size") != previous.get("size"):
+            size_changed.append(path)
+        expected_mode = mode_bits(previous.get("mode"))
+        actual_mode = mode_bits(meta.get("mode"))
+        if expected_mode is not None and actual_mode is not None:
+            if actual_mode != expected_mode:
+                mode_changed.append(path)
+            if actual_mode & SUID_BITS and not expected_mode & SUID_BITS:
+                privilege_changed.append(path)
 
     for path in entries:
         if path not in current:
             removed.append(path)
 
+    changed = bool(
+        added or removed or modified or mode_changed or privilege_changed or size_changed
+    )
     report = {
-        "status": "clean" if not (added or removed or modified) else "tampered",
+        "status": "tampered" if changed else "clean",
         "added": sorted(added),
         "removed": sorted(removed),
         "modified": sorted(modified),
+        "mode_changed": sorted(mode_changed),
+        "privilege_changed": sorted(set(privilege_changed)),
+        "size_changed": sorted(size_changed),
         "total_monitored": len(current),
     }
-
-    if added or removed or modified:
-        return 1, report
-    return 0, report
+    return (1 if changed else 0), report
 
 
 def main() -> int:
@@ -145,13 +248,17 @@ def main() -> int:
             if code == 0:
                 print(f"[ ok ] All {report['total_monitored']} monitored files match baseline.")
             else:
-                print(f"[FAIL] System integrity check failed! Modifications detected:")
-                for m in report.get("modified", []):
-                    print(f"  [MODIFIED] {m}")
-                for a in report.get("added", []):
-                    print(f"  [ADDED]    {a}")
-                for r in report.get("removed", []):
-                    print(f"  [REMOVED]  {r}")
+                print("[FAIL] System integrity check failed! Modifications detected:")
+                for path in report.get("modified", []):
+                    print(f"  [MODIFIED] {path}")
+                for path in report.get("mode_changed", []):
+                    print(f"  [MODE]     {path}")
+                for path in report.get("privilege_changed", []):
+                    print(f"  [PRIVILEGE]{path}")
+                for path in report.get("added", []):
+                    print(f"  [ADDED]    {path}")
+                for path in report.get("removed", []):
+                    print(f"  [REMOVED]  {path}")
         return code
 
     parser.print_help()

@@ -88,6 +88,18 @@ def test_grintion_integrity_baseline_and_tamper_detection(tmp_path: Path):
     assert tamper_data["status"] == "tampered"
     assert str(f1) in tamper_data["modified"]
 
+    # Restore the contents, then add setuid. A hash-only checker would call
+    # this clean; the mode-aware baseline must flag the privilege change.
+    f1.write_text("secure binary content")
+    f1.chmod(0o4755)
+    res_mode = run_bin(
+        "grintion-integrity", "check", "--db", str(db_file), "--path", str(test_dir), "--json"
+    )
+    assert res_mode.returncode == 1
+    mode_data = json.loads(res_mode.stdout)
+    assert str(f1) in mode_data["mode_changed"]
+    assert str(f1) in mode_data["privilege_changed"]
+
 
 def test_grintion_scan_rogue_suid_detection(tmp_path: Path):
     # Standard clean scan
@@ -189,6 +201,10 @@ def test_grintion_security_profiles_and_report_integration(tmp_path: Path):
     env = {
         "GRINTION_SECURITY_PROFILE": str(prof_file),
         "GRINTION_SECURITY_CONF": str(conf_file),
+        "GRINTION_USB_CONF": str(tmp_path / "usb.conf"),
+        "GRINTION_FIREWALL_FILE": str(tmp_path / "firewall.nft"),
+        "GRINTION_SERVICE_DIR": str(tmp_path / "service"),
+        "GRINTION_AUDITD_BIN": "/bin/true",
     }
 
     # List profiles
@@ -199,11 +215,112 @@ def test_grintion_security_profiles_and_report_integration(tmp_path: Path):
     assert "server" in data
     assert "air-gapped" in data
 
-    # Set server profile
-    res_set = run_bin("grintion-security", "set", "server", env=env)
+    # Set server profile without assuming the test host can load nftables or
+    # AppArmor; the full apply path is covered separately with fake tools.
+    res_set = run_bin("grintion-security", "set", "server", "--config-only", env=env)
     assert res_set.returncode == 0
+    assert "configuration written" in res_set.stdout
     assert prof_file.read_text().strip() == "server"
     assert "PROFILE=server" in conf_file.read_text()
+    assert "USB_DATA_BLOCK=1" in conf_file.read_text()
+
+
+def test_grintion_security_applies_and_verifies_controls(tmp_path: Path):
+    prof_file = tmp_path / "security-profile"
+    conf_file = tmp_path / "security.conf"
+    usb_conf = tmp_path / "usb.conf"
+    firewall_file = tmp_path / "firewall.nft"
+
+    nft = tmp_path / "nft"
+    nft.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "list" ]; then\n'
+        '  echo "chain input_grintion_strict_drop {"\n'
+        "  exit 0\n"
+        "fi\n"
+        "cat >/dev/null\n"
+        "exit 0\n"
+    )
+    nft.chmod(0o755)
+    apparmor = tmp_path / "apparmor"
+    apparmor.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "verify" ]; then\n'
+        "  echo '{\"compliant\": true, \"kernel_enforce\": 7, \"issues\": []}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    apparmor.chmod(0o755)
+    usb = tmp_path / "usb"
+    usb.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" > \"$GRINTION_USB_LOG\"\n"
+        "[ \"$1\" = block-data ] && printf 'data_block=1\\n' > \"$GRINTION_USB_CONF\"\n"
+        "exit 0\n"
+    )
+    usb.chmod(0o755)
+
+    env = {
+        "GRINTION_SECURITY_PROFILE": str(prof_file),
+        "GRINTION_SECURITY_CONF": str(conf_file),
+        "GRINTION_USB_CONF": str(usb_conf),
+        "GRINTION_FIREWALL_FILE": str(firewall_file),
+        "GRINTION_SERVICE_DIR": str(tmp_path / "service"),
+        "GRINTION_NFT_BIN": str(nft),
+        "GRINTION_APPARMOR_BIN": str(apparmor),
+        "GRINTION_USB_BIN": str(usb),
+        "GRINTION_USB_LOG": str(tmp_path / "usb.log"),
+        "GRINTION_AUDITD_BIN": "/nonexistent/auditd",
+    }
+    res = run_bin("grintion-security", "set", "server", env=env)
+    assert res.returncode == 0, res.stderr
+    assert "applied and verified" in res.stdout
+    assert "input_grintion_strict_drop" in firewall_file.read_text()
+    assert (tmp_path / "usb.log").read_text().strip() == "block-data"
+    assert prof_file.read_text().strip() == "server"
+
+
+def test_grintion_security_rolls_back_when_a_control_fails(tmp_path: Path):
+    prof_file = tmp_path / "security-profile"
+    conf_file = tmp_path / "security.conf"
+    prof_file.write_text("workstation\n")
+    conf_file.write_text("PROFILE=workstation\n")
+
+    nft = tmp_path / "nft"
+    nft.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-f" ]; then echo "injected failure" >&2; exit 1; fi\n'
+        "cat >/dev/null\n"
+        "exit 0\n"
+    )
+    nft.chmod(0o755)
+    apparmor = tmp_path / "apparmor"
+    apparmor.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "verify" ]; then echo \'{"compliant": true}\'; exit 0; fi\n'
+        "exit 0\n"
+    )
+    apparmor.chmod(0o755)
+    usb = tmp_path / "usb"
+    usb.write_text("#!/bin/sh\nexit 0\n")
+    usb.chmod(0o755)
+
+    env = {
+        "GRINTION_SECURITY_PROFILE": str(prof_file),
+        "GRINTION_SECURITY_CONF": str(conf_file),
+        "GRINTION_USB_CONF": str(tmp_path / "usb.conf"),
+        "GRINTION_FIREWALL_FILE": str(tmp_path / "firewall.nft"),
+        "GRINTION_SERVICE_DIR": str(tmp_path / "service"),
+        "GRINTION_NFT_BIN": str(nft),
+        "GRINTION_APPARMOR_BIN": str(apparmor),
+        "GRINTION_USB_BIN": str(usb),
+    }
+    res = run_bin("grintion-security", "set", "server", env=env)
+    assert res.returncode != 0
+    assert "was not applied" in res.stderr
+    assert prof_file.read_text().strip() == "workstation"
+    assert conf_file.read_text() == "PROFILE=workstation\n"
 
 
 def test_grintion_privacy_dashboard():

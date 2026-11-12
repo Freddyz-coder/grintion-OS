@@ -693,6 +693,61 @@ def test_grintion_boot_health_advanced() -> None:
     assert "session_verified" in data
 
 
+def test_boot_health_counter_is_bounded_and_auto_revert_is_atomic(tmp_path: Path) -> None:
+    health_tool = REPO_ROOT / "bin" / "grintion-boot-health"
+    state = tmp_path / "health"
+    limine = tmp_path / "limine.conf"
+    limine.write_text(
+        "timeout: 5\n"
+        "default_entry: /Grintion-OS\n"
+        "/Grintion-OS\n"
+        "    kernel_path: boot():/EFI/grintion/vmlinuz-grintion\n"
+        "/Grintion-OS snapshot\n"
+        "    kernel_path: boot():/EFI/grintion/vmlinuz-grintion\n"
+    )
+    env = os.environ.copy()
+    env.update({
+        "GRINTION_BOOT_HEALTH_STATE": str(state),
+        "GRINTION_LIMINE_CONF": str(limine),
+    })
+
+    for _ in range(3):
+        res = subprocess.run(
+            [str(health_tool), "record"], capture_output=True, text=True, check=False, env=env
+        )
+        assert res.returncode == 0, res.stderr
+
+    assert (state / "attempts").read_text().strip() == "3"
+    assert (state / "failed").exists()
+    assert "default_entry: /Grintion-OS snapshot" in limine.read_text()
+    assert (state / "revert.log").is_file()
+
+    corrupt = subprocess.run(
+        [str(health_tool), "status", "--json"],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    assert corrupt.returncode == 0
+    report = __import__("json").loads(corrupt.stdout)
+    assert report["attempts"] == 3
+    assert report["failed"] is True
+    assert report["auto_reverted"] is True
+
+    (state / "attempts").write_text("not-a-number\n")
+    recovered = subprocess.run(
+        [str(health_tool), "status", "--json"],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    assert recovered.returncode == 0
+    assert __import__("json").loads(recovered.stdout)["attempts"] == 0
+
+    good = subprocess.run(
+        [str(health_tool), "mark-good"], capture_output=True, text=True, check=False, env=env
+    )
+    assert good.returncode == 0, good.stderr
+    assert (state / "attempts").read_text().strip() == "0"
+    assert not (state / "failed").exists()
+
+
 def test_grintion_backup_lifecycle(tmp_path: Path) -> None:
     backup_tool = REPO_ROOT / "bin" / "grintion-backup"
     help_res = subprocess.run([str(backup_tool), "--help"], capture_output=True, text=True, check=False)

@@ -64,10 +64,15 @@ from garblib.backends import (
 )
 from garblib.common import (
     GarbError,
+    MAX_INDEX_LIFETIME,
+    MAX_PACKAGE_BYTES,
+    MAX_REPO_INDEX_BYTES,
+    MAX_REPO_SIGNATURE_BYTES,
     METADATA_NAME,
     SCHEMA,
     SHA256_RE,
     VERSION,
+    atomic_write_bytes,
     die,
     epoch,
     log,
@@ -87,6 +92,7 @@ from garblib.deps import (
 )
 from garblib.repo import (
     fetch_repo_file,
+    fetch_repo_file_to,
     load_indexes,
     load_repo_priorities,
     read_repo_configs,
@@ -361,31 +367,41 @@ def cmd_update(args: argparse.Namespace) -> None:
     if not configs:
         warn(f"no repositories configured in {paths.repos}")
         return
-    for repo in configs:
-        name, url = repo["name"], repo["url"]
-        log(f"updating repository {name}")
-        index = fetch_repo_file(url, "index.json")
-        public_key = paths.keys / f"{name}.pub"
-        if args.key:
-            public_key = Path(args.key)
-        if args.allow_unsigned:
-            warn(f"accepting unsigned repository {name}")
-            signature = b""
-        else:
-            signature = fetch_repo_file(url, "index.json.sig")
-            verify_signature(index, signature, public_key)
-        parsed = json.loads(index)
-        if parsed.get("schema") != SCHEMA:
-            raise GarbError(f"{name}: unsupported index schema {parsed.get('schema')}")
-        target = paths.cache / "repos" / name
-        validate_index(parsed, name, target)
-        target.mkdir(parents=True, exist_ok=True)
-        (target / "index.json").write_bytes(index)
-        if signature:
-            (target / "index.json.sig").write_bytes(signature)
-        else:
-            (target / "index.json.sig").unlink(missing_ok=True)
-        log(f"{name}: {len(parsed.get('packages', {}))} packages")
+    if Path(args.root).resolve() == Path("/") and os.geteuid() != 0:
+        raise GarbError("refreshing the system repository cache requires root")
+    with TransactionLock(paths, "update"):
+        for repo in configs:
+            name, url = repo["name"], repo["url"]
+            log(f"updating repository {name}")
+            index = fetch_repo_file(url, "index.json", max_bytes=MAX_REPO_INDEX_BYTES)
+            public_key = paths.keys / f"{name}.pub"
+            if args.key:
+                public_key = Path(args.key)
+            if args.allow_unsigned:
+                warn(f"accepting unsigned repository {name}")
+                signature = b""
+            else:
+                signature = fetch_repo_file(
+                    url, "index.json.sig", max_bytes=MAX_REPO_SIGNATURE_BYTES
+                )
+                verify_signature(index, signature, public_key)
+            try:
+                parsed = json.loads(index)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise GarbError(f"{name}: index is not valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise GarbError(f"{name}: index is not a JSON object")
+            if parsed.get("schema") != SCHEMA:
+                raise GarbError(f"{name}: unsupported index schema {parsed.get('schema')}")
+            target = paths.cache / "repos" / name
+            validate_index(parsed, name, target)
+            target.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(target / "index.json", index)
+            if signature:
+                atomic_write_bytes(target / "index.json.sig", signature)
+            else:
+                (target / "index.json.sig").unlink(missing_ok=True)
+            log(f"{name}: {len(parsed.get('packages', {}))} packages")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -453,9 +469,18 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 def fetch_archive(paths: Paths, name: str, entry: dict) -> Path:
     filename = entry.get("filename") or f"{name}-{entry.get('version')}-{entry.get('release', 1)}.garb"
+    filename = str(filename)
+    try:
+        rel = normalise_member(filename)
+    except GarbError as exc:
+        raise GarbError(f"unsafe archive filename in index for {name}: {exc}") from exc
     repo = paths.cache / "repos" / entry["_repo"]
-    target = repo / filename
+    target = repo / rel
+    if target.is_symlink():
+        target.unlink()
     if target.exists():
+        if not target.is_file():
+            raise GarbError(f"cached archive is not a regular file: {target}")
         if sha256_file(target) != entry.get("sha256"):
             target.unlink()
         else:
@@ -464,13 +489,34 @@ def fetch_archive(paths: Paths, name: str, entry: dict) -> Path:
     url = configs.get(entry["_repo"])
     if not url:
         raise GarbError(f"no configured URL for repository {entry['_repo']}")
+    declared_size = entry.get("size")
+    if not isinstance(declared_size, int) or isinstance(declared_size, bool) or declared_size <= 0:
+        declared_size = None
+    if declared_size is not None and declared_size > MAX_PACKAGE_BYTES:
+        raise GarbError(
+            f"{name}: declared archive size {declared_size} exceeds the "
+            f"{MAX_PACKAGE_BYTES}-byte limit"
+        )
+    limit = declared_size or MAX_PACKAGE_BYTES
     log(f"fetching {name} from {entry['_repo']}")
-    data = fetch_repo_file(url, filename)
-    actual = hashlib.sha256(data).hexdigest()
+    try:
+        actual, size = fetch_repo_file_to(url, filename, target, max_bytes=limit)
+    except GarbError as exc:
+        if declared_size is not None and "exceeds" in str(exc):
+            target.unlink(missing_ok=True)
+            raise GarbError(
+                f"archive size mismatch for {name}: index says {declared_size} "
+                "bytes; the download exceeded that bound, so its checksum cannot match"
+            ) from exc
+        raise
+    if declared_size is not None and size != declared_size:
+        target.unlink(missing_ok=True)
+        raise GarbError(
+            f"archive size mismatch for {name}: index says {declared_size}, got {size}"
+        )
     if actual != entry.get("sha256"):
+        target.unlink(missing_ok=True)
         raise GarbError(f"archive checksum mismatch for {name}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
     return target
 
 
@@ -811,6 +857,11 @@ def cmd_repo_index(args: argparse.Namespace) -> None:
         die("--index-version must be positive")
     if args.valid_days <= 0:
         die("--valid-days must be positive")
+    if args.valid_days * 86400 > MAX_INDEX_LIFETIME:
+        die(
+            f"--valid-days cannot exceed {MAX_INDEX_LIFETIME // 86400}; "
+            "short-lived indexes limit replay and key-compromise windows"
+        )
     index = {
         "schema": SCHEMA,
         "generated": epoch(),
@@ -820,11 +871,11 @@ def cmd_repo_index(args: argparse.Namespace) -> None:
     }
     raw = (json.dumps(index, indent=2, sort_keys=True) + "\n").encode("utf-8")
     index_path = directory / "index.json"
-    index_path.write_bytes(raw)
+    atomic_write_bytes(index_path, raw)
     print(f"[+] index: {index_path} ({len(packages)} packages)")
     if args.key:
         signature = sign_bytes(raw, Path(args.key))
-        (directory / "index.json.sig").write_bytes(signature)
+        atomic_write_bytes(directory / "index.json.sig", signature)
         print(f"[+] signature: {directory / 'index.json.sig'}")
 
 
@@ -843,7 +894,7 @@ def cmd_keygen(args: argparse.Namespace) -> None:
 def cmd_sign_index(args: argparse.Namespace) -> None:
     index_path = Path(args.index)
     signature = sign_bytes(index_path.read_bytes(), Path(args.key))
-    Path(str(index_path) + ".sig").write_bytes(signature)
+    atomic_write_bytes(Path(str(index_path) + ".sig"), signature)
     print(f"[+] signed {index_path}")
 
 
@@ -1187,7 +1238,7 @@ def build_parser() -> argparse.ArgumentParser:
     repo_index.add_argument("--key")
     repo_index.add_argument(
         "--valid-days", type=int, default=30,
-        help="days before the signed index expires (default: 30)",
+        help="days before the signed index expires (default: 30; maximum: 90)",
     )
     repo_index.add_argument(
         "--index-version", type=int,

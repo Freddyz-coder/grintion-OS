@@ -6,7 +6,7 @@ grintion-security \- Security hardening profile manager
 [\fIOPTIONS\fR] \fICOMMAND\fR [\fIARGS\fR...]
 .SH DESCRIPTION
 .B grintion-security
-manages and applies defense-in-depth system security profiles for Grintion-OS, orchestrating firewall policies, AppArmor enforcement modes, USB data-blocking, and audit logging.
+manages and applies defense-in-depth system security profiles for Grintion-OS, orchestrating firewall policies, AppArmor enforcement, USB data-blocking, and audit availability.
 .SH COMMANDS
 .TP
 \fBstatus\fR
@@ -15,11 +15,23 @@ Show active profile and compliance state.
 \fBlist\fR
 List available security profiles (workstation, server, kiosk, air-gapped).
 .TP
-\fBset\fR \fIPROFILE\fR
-Apply specified profile rules to the system.
+\fBset\fR \fIPROFILE\fR [\fB--config-only\fR]
+Apply the profile firewall, AppArmor and USB policy, write profile state, and
+verify the running result. A failed control rolls back the profile files and
+firewall. \fB--config-only\fR writes configuration without activating controls.
 .TP
 \fBverify\fR
-Validate system compliance against active profile constraints.
+Validate the active firewall chain, AppArmor enforcement, USB state and auditd
+availability. Auditd is reported as a warning when its userspace is not
+installed in the base image.
+.TP
+\fBapply-firewall\fR
+Apply the policy recorded in \fBsecurity.conf\fR. Used by the boot firewall
+service; exits non-zero when validation or application fails.
+.SH OPTIONS
+.TP
+\fB--json\fR
+Emit machine-readable output where supported.
 .SH AUTHORS
 Grintion-OS Core Team.
 

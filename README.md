@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.13.0
+- **Version:** 0.13.1
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,13 +17,13 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.13.0 is a minor release on top of 0.12.1. It adds optional LTS/HWE/DKMS
-kernel selection, repairs unowned base libraries before package transactions,
-suppresses duplicate relative VM mice when an absolute tablet is present, and
-keeps the 0.12.1 boot, installer, and desktop fixes. See
+0.13.1 is a security and stability release on top of 0.13.0. It bounds package
+archives and repository metadata, makes security-profile application
+transactional, adds mode-aware integrity checks, and makes boot-health state
+atomic. It keeps the 0.13.0 kernel, boot, installer, and desktop fixes. See
 [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.13.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.13.1 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -44,7 +44,7 @@ with `make sign-release` and verified with `bin/grintion-release-verify` (see
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot, Bubblewrap application sandboxing, USBGuard data-blocking, auditd logging with sudo I/O trails, file integrity verification (`grintion-integrity`), and customizable security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot, Bubblewrap application sandboxing, USBGuard data-blocking, audit rules and sudo I/O trails staged (the base image does not ship the auditd daemon), mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots, and automated self-healing (`grintion-doctor --fix`). |
 
@@ -212,7 +212,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.13.0 |
+| Feature | 0.13.1 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |

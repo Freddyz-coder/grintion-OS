@@ -1,7 +1,23 @@
 #!/bin/sh
+# Grintion-OS runit service: firewall
+#
+# Apply the profile selected by grintion-security. If that fails, fall back to
+# the static default ruleset so a failed profile update cannot leave the system
+# with no firewall at all. Stay alive and retry instead of crash-looping.
 exec 2>&1
-if [ ! -f /etc/nftables.conf ]; then
-    exec sleep 86400
+
+if command -v grintion-security >/dev/null 2>&1; then
+    if grintion-security apply-firewall; then
+        exec sleep 86400
+    fi
+    echo "firewall: profile ruleset failed; loading the static default"
 fi
-nft -f /etc/nftables.conf || exit 1
-exec sleep 86400
+
+if command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ]; then
+    if nft -f /etc/nftables.conf; then
+        exec sleep 86400
+    fi
+fi
+
+echo "firewall: no ruleset could be loaded; retrying in 60 seconds"
+exec sleep 60

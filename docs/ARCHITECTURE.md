@@ -114,7 +114,7 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 | `agetty-ttyS0` | serial console |
 | `network` | applies `/etc/grintion/network.conf` (DHCP or static), or auto-detects wired interfaces for DHCP when no interface sections exist |
 | `wpa_supplicant` | opt-in Wi-Fi association for the `[wifi]` section; enabled by `grintion-network connect` |
-| `firewall` | loads `/etc/nftables.conf` with `nft -f`, then sleeps |
+| `firewall` | applies the active profile via `grintion-security apply-firewall`, falling back to `/etc/nftables.conf` if validation or apply fails, then sleeps |
 | `syslog` | `busybox syslogd -n -O /var/log/messages` |
 | `seatd` | provides `/run/seatd.sock` for Wayland compositors without logind |
 | `udev` | runs standalone `systemd-udevd`, not systemd, so libinput can enumerate devices |

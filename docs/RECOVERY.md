@@ -81,7 +81,11 @@ grintion-boot-health auto-revert
 
 `auto-revert` inspects available snapshot boot entries and recovery entries in
 `/boot/efi/limine.conf`, sets the default bootloader entry to the most recent
-working snapshot or recovery partition entry, and logs the reversion.
+snapshot or recovery entry, and logs the reversion. The edit is written through
+a validated temporary file with a `.pre-boot-health` backup. This changes only
+the default boot entry: it does not restore files or prove that the alternate
+entry boots on the current hardware. Use `grintion-snapshot rollback` for the
+actual filesystem rollback.
 
 ---
 
@@ -95,7 +99,7 @@ sudo grintion-boot list
 sudo grintion-boot list --json
 
 # Set default boot entry
-sudo grintion-boot set-default "Grintion-OS 0.13.0"
+sudo grintion-boot set-default "Grintion-OS 0.13.1"
 
 # Set boot menu timeout in seconds
 sudo grintion-boot set-timeout 5

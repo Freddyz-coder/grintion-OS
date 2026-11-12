@@ -16,7 +16,12 @@ from pathlib import Path, PurePosixPath
 
 from .common import (
     GarbError,
+    MAX_ARCHIVE_MEMBERS,
+    MAX_DECLARED_FILES,
+    MAX_EXTRACTED_BYTES,
+    MAX_METADATA_BYTES,
     METADATA_NAME,
+    MIN_FREE_BYTES,
     SCHEMA,
     SHA256_RE,
     epoch,
@@ -29,18 +34,66 @@ from .common import (
 from .store import Database, Paths
 
 
-def read_metadata(archive: Path) -> dict:
+def validate_archive(archive: Path) -> dict:
+    """Validate the complete member table before any file is extracted.
+
+    Signature verification proves who produced an archive, not that it is
+    bounded or structurally sane. Scanning first means a duplicate path, an
+    oversized member or a decompression bomb cannot leave a partially
+    extracted tree behind.
+    """
+    metadata: dict | None = None
+    seen: set[str] = set()
+    total = 0
+    members = 0
     with tarfile.open(archive, "r:*") as tar:
         for member in tar:
-            if normalise_member(member.name) == METADATA_NAME:
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise GarbError("metadata member is not a file")
-                metadata = json.loads(handle.read().decode("utf-8"))
-                if not isinstance(metadata, dict):
-                    raise GarbError("package metadata is not a JSON object")
-                return metadata
-    raise GarbError(f"missing {METADATA_NAME} in {archive}")
+            members += 1
+            if members > MAX_ARCHIVE_MEMBERS:
+                raise GarbError(
+                    f"archive has more than {MAX_ARCHIVE_MEMBERS} members; refusing it"
+                )
+            rel = normalise_member(member.name)
+            if rel in seen:
+                raise GarbError(f"duplicate archive member: {rel}")
+            seen.add(rel)
+            if member.isreg():
+                if member.size < 0:
+                    raise GarbError(f"negative member size: {rel}")
+                total += member.size
+                if total > MAX_EXTRACTED_BYTES:
+                    raise GarbError(
+                        "archive expands beyond the allowed size limit "
+                        f"({MAX_EXTRACTED_BYTES} bytes)"
+                    )
+            verify_member(member)
+            if rel != METADATA_NAME:
+                continue
+            if not member.isreg():
+                raise GarbError("metadata member is not a regular file")
+            if member.size > MAX_METADATA_BYTES:
+                raise GarbError(
+                    f"package metadata exceeds {MAX_METADATA_BYTES} bytes"
+                )
+            handle = tar.extractfile(member)
+            if handle is None:
+                raise GarbError("metadata member is not readable")
+            try:
+                parsed = json.loads(handle.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise GarbError(f"package metadata is not valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise GarbError("package metadata is not a JSON object")
+            metadata = parsed
+    if metadata is None:
+        raise GarbError(f"missing {METADATA_NAME} in {archive}")
+    if metadata.get("schema", SCHEMA) != SCHEMA:
+        raise GarbError("unsupported package schema")
+    return metadata
+
+
+def read_metadata(archive: Path) -> dict:
+    return validate_archive(archive)
 
 
 def verify_member(member: tarfile.TarInfo) -> None:
@@ -56,41 +109,39 @@ def verify_member(member: tarfile.TarInfo) -> None:
 
 
 def extract_staged(archive: Path, staging: Path) -> tuple[dict, list[dict]]:
-    metadata: dict = {}
+    metadata = validate_archive(archive)
     members: list[dict] = []
     with tarfile.open(archive, "r:*") as tar:
         for member in tar:
             if normalise_member(member.name) == METADATA_NAME:
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise GarbError("metadata member is not a file")
-                metadata = json.loads(handle.read().decode("utf-8"))
-                if not isinstance(metadata, dict):
-                    raise GarbError("package metadata is not a JSON object")
                 continue
             verify_member(member)
             rel = normalise_member(member.name)
-            dest = staging / rel
+            dest = confined_tree_path(staging, rel)
             dest.parent.mkdir(parents=True, exist_ok=True)
             if member.isdir():
-                dest.mkdir(parents=True, exist_ok=True)
+                if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                    raise GarbError(f"archive directory conflicts with an existing entry: {rel}")
+                dest.mkdir(exist_ok=True)
                 continue
             if member.issym():
                 if dest.exists() or dest.is_symlink():
+                    if dest.is_dir() and not dest.is_symlink():
+                        raise GarbError(f"archive symlink conflicts with a directory: {rel}")
                     dest.unlink()
                 os.symlink(member.linkname, dest)
                 members.append({"path": rel, "type": "symlink", "target": member.linkname})
                 continue
+            if dest.is_dir() and not dest.is_symlink():
+                raise GarbError(f"archive file conflicts with a directory: {rel}")
+            if dest.exists() or dest.is_symlink():
+                dest.unlink()
             handle = tar.extractfile(member)
             if handle is None:
                 raise GarbError(f"cannot read member: {rel}")
-            with open(dest, "wb") as output:
+            with open(dest, "xb") as output:
                 shutil.copyfileobj(handle, output)
             members.append({"path": rel, "type": "file"})
-    if not metadata:
-        raise GarbError("package metadata missing")
-    if metadata.get("schema", SCHEMA) != SCHEMA:
-        raise GarbError("unsupported package schema")
     return metadata, members
 
 
@@ -98,9 +149,22 @@ def verify_staged(staging: Path, metadata: dict) -> list[dict]:
     declared = metadata.get("files")
     if not isinstance(declared, list) or not declared:
         raise GarbError("package metadata has no file list")
+    if len(declared) > MAX_DECLARED_FILES:
+        raise GarbError(
+            f"package declares more than {MAX_DECLARED_FILES} files; refusing it"
+        )
     by_path = {}
+    total = 0
     for item in declared:
-        rel = normalise_member(item["path"])
+        if not isinstance(item, dict):
+            raise GarbError("package metadata has a malformed file entry")
+        rel = normalise_member(str(item.get("path", "")))
+        if rel == METADATA_NAME:
+            raise GarbError(f"package tries to install metadata as a payload file: {rel}")
+        if rel in by_path:
+            raise GarbError(f"duplicate declared file: {rel}")
+        if item.get("type") not in ("file", "symlink"):
+            raise GarbError(f"unsupported declared file type for {rel}: {item.get('type')!r}")
         by_path[rel] = item
     seen = set()
     for rel, item in by_path.items():
@@ -114,6 +178,10 @@ def verify_staged(staging: Path, metadata: dict) -> list[dict]:
         else:
             if not staged.is_file() or staged.is_symlink():
                 raise GarbError(f"missing file: {rel}")
+            size = staged.stat().st_size
+            total += size
+            if total > MAX_EXTRACTED_BYTES:
+                raise GarbError("declared payload exceeds the allowed size limit")
             digest = sha256_file(staged)
             if digest != item.get("sha256"):
                 raise GarbError(f"hash mismatch: {rel}")
@@ -124,15 +192,46 @@ def verify_staged(staging: Path, metadata: dict) -> list[dict]:
                     "(packages may not install privileged binaries)"
                 )
         seen.add(rel)
-    # Anything staged that is not declared is a malformed package.
+    # Anything staged that is not declared is a malformed package. Check
+    # is_symlink() before is_dir(): a symlink to a directory otherwise looks
+    # like a declared container and escapes the undeclared-entry check.
     for path in staging.rglob("*"):
         rel = str(path.relative_to(staging))
         if rel in seen:
             continue
+        if path.is_symlink() or path.is_file():
+            raise GarbError(f"undeclared file in package: {rel}")
         if path.is_dir():
             continue
-        raise GarbError(f"undeclared file in package: {rel}")
+        raise GarbError(f"unsupported staged entry in package: {rel}")
     return declared
+
+
+def ensure_free_space(root: Path, staging: Path, files: list[dict]) -> None:
+    """Refuse a commit that would exhaust the target filesystem.
+
+    Files are moved from staging, but the database, journal and filesystem
+    metadata still need room. A corrupt package must not be able to turn a
+    failed install into a full root filesystem.
+    """
+    required = 0
+    for item in files:
+        rel = normalise_member(item["path"])
+        if item.get("type") != "file":
+            continue
+        try:
+            required += (staging / rel).stat().st_size
+        except OSError as exc:
+            raise GarbError(f"cannot measure staged file {rel}: {exc}") from exc
+    try:
+        available = shutil.disk_usage(root).free
+    except OSError as exc:
+        raise GarbError(f"cannot determine free space for {root}: {exc}") from exc
+    if available < required + MIN_FREE_BYTES:
+        raise GarbError(
+            f"not enough free space under {root}: need {required + MIN_FREE_BYTES} bytes, "
+            f"have {available}"
+        )
 
 
 def remove_path(path: Path) -> None:
@@ -171,6 +270,7 @@ def file_conflicts(db: Database, name: str, files: list[dict]) -> dict[str, str]
 
 def commit_package(paths: Paths, staging: Path, metadata: dict, archive: Path) -> dict:
     files = verify_staged(staging, metadata)
+    ensure_free_space(paths.root, staging, files)
     paths.tmp.mkdir(parents=True, exist_ok=True)
     backup = Path(tempfile.mkdtemp(prefix="garb-backup-", dir=paths.tmp))
     installed: list[dict] = []
@@ -265,7 +365,9 @@ def build_package(manifest: Path, output_dir: Path) -> Path:
             # Check is_symlink() before is_dir(): is_dir() follows links, so a
             # symlink to a directory used to be dropped silently.
             if path.is_symlink():
-                files.append({"path": rel, "type": "symlink", "target": os.readlink(path)})
+                target = os.readlink(path)
+                safe_symlink_target(target, str(PurePosixPath(rel).parent))
+                files.append({"path": rel, "type": "symlink", "target": target})
             elif path.is_dir():
                 continue
             elif path.is_file():
@@ -344,11 +446,29 @@ def extract_tree(archive: Path, dest: Path, *, manifest: bool = False) -> list[d
     package does not lose empty directories or directory symlinks.
     """
     entries: list[dict] = []
+    seen: set[str] = set()
+    total = 0
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:*") as tar:
-        for member in tar:
+        for count, member in enumerate(tar, start=1):
+            if count > MAX_ARCHIVE_MEMBERS:
+                raise GarbError(
+                    f"archive has more than {MAX_ARCHIVE_MEMBERS} members; refusing it"
+                )
             verify_member(member)
             rel = normalise_member(member.name)
+            if rel in seen:
+                raise GarbError(f"duplicate archive member: {rel}")
+            seen.add(rel)
+            if member.isreg():
+                if member.size < 0:
+                    raise GarbError(f"negative member size: {rel}")
+                total += member.size
+                if total > MAX_EXTRACTED_BYTES:
+                    raise GarbError(
+                        "archive expands beyond the allowed size limit "
+                        f"({MAX_EXTRACTED_BYTES} bytes)"
+                    )
             target = confined_tree_path(dest, rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             mode = member.mode & 0o7777

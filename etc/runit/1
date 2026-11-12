@@ -73,7 +73,9 @@ fi
 if [ -d /etc/sysctl.d ]; then
     for file in /etc/sysctl.d/*.conf; do
         [ -f "$file" ] || continue
-        sysctl -p "$file" >/dev/null 2>&1 || true
+        if ! sysctl -p "$file" >>/var/log/sysctl.log 2>&1; then
+            printf '[!] sysctl profile %s did not apply cleanly; see /var/log/sysctl.log\n' "$file" >&2
+        fi
     done
 fi
 

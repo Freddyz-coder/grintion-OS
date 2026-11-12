@@ -2,12 +2,14 @@
 
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
-0.13.0 release actually provides, what it does not, and how to report a problem.
+current source tree provides; the latest published ISO is 0.13.1. It also
+records the limits of that protection and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
+| 0.13.x | Security fixes on a best-effort basis |
 | 0.12.x | Security fixes on a best-effort basis |
 | Earlier versions | No |
 
@@ -66,6 +68,8 @@ include:
 | `kernel.yama.ptrace_scope` | 2 |
 | `kernel.perf_event_paranoid` | 3 |
 | `kernel.unprivileged_bpf_disabled` | 1 |
+| `kernel.kexec_load_disabled` | 1 |
+| `vm.mmap_min_addr` | 65536 |
 | io_uring | Disabled at runtime (`kernel.io_uring_disabled=2`) |
 | binfmt_misc | Compiled out (`CONFIG_BINFMT_MISC=n`) |
 | `fs.protected_symlinks`, `fs.protected_hardlinks` | 1 |
@@ -76,7 +80,35 @@ include:
 `devtmpfs` creates the initial device nodes and BusyBox `mdev` applies
 `/etc/mdev.conf`. The standalone udev service later populates `/run/udev` for
 libinput and desktop tools. The setuid list is explicit in
-`config/rootfs.setuid` and applied at build time.
+`config/rootfs.setuid` and applied at build time. Stage 1 writes sysctl
+failures to `/var/log/sysctl.log` and reports them on the console; it no longer
+silently ignores a profile that partly failed to apply.
+
+### Security profiles
+
+`grintion-security set <profile>` is a fail-closed operation for the
+`workstation`, `server`, `kiosk` and `air-gapped` profiles:
+
+1. It applies the USB data policy and loads the AppArmor profiles.
+2. It validates the generated nftables ruleset with `nft -c`, applies it, and
+   writes `/etc/grintion/firewall.nft` only after the kernel accepts it.
+3. It writes the profile file and `security.conf` atomically.
+4. It re-checks the active profile, firewall chain, AppArmor enforcement, USB
+   state and audit availability. A failed control rolls back the profile
+   configuration and the previously active firewall rules.
+
+`--config-only` writes the profile files without applying live controls. Image
+builds and tests use it; it is not a claim that the controls are active.
+`grintion-security apply-firewall` is the boot-service entry point and applies
+the policy recorded in `security.conf`. The firewall service falls back to
+`/etc/nftables.conf` if the profile ruleset cannot be generated, so a broken
+profile update does not leave the system with no ruleset.
+
+**Audit limitation:** the base image stages audit rules and an auditd service
+file, but does not currently include the `auditd`/`auditctl` userspace. The
+profile therefore reports auditd as a warning, not a passing control. Kernel
+audit support and sudo I/O logging are separate and may still work depending on
+the installed packages.
 
 ### Accounts and access
 
@@ -99,7 +131,9 @@ libinput and desktop tools. The setuid list is explicit in
 
 - The default nftables ruleset drops unsolicited inbound traffic, allows
   loopback, established/related traffic, DHCP replies and ICMP, and permits all
-  outbound traffic.
+  outbound traffic. A security profile can replace it with a stricter
+  generated ruleset; `grintion-security verify` checks the active chain marker,
+  not just the file on disk.
 - The network daemons enabled at boot are `dhcpcd` on the detected wired
   interfaces and, when `grintion-network connect` has configured Wi-Fi, the
   supervised `wpa_supplicant` service. Wi-Fi credentials live in
@@ -114,11 +148,20 @@ libinput and desktop tools. The setuid list is explicit in
   parsing it. Trust is rooted in `/etc/garb/keys/*.pub`.
 - A signed index carries an `index_version` and an `expires` timestamp. `garb
   update` refuses missing, expired or replayed (older-version) indexes, so a
-  captured old index cannot be served to downgrade clients.
-- Package archives are verified against the index SHA-256. Every declared file
-  is re-hashed during installation; undeclared files and path traversal are
-  rejected. Packages may not install setuid or setgid files; the base image's
-  setuid list is applied separately by the build.
+  captured old index cannot be served to downgrade clients. Expiries more than
+  90 days in the future are rejected, and `repo-index --valid-days` is capped
+  at 90. Index, signature and cache writes are atomic, and an unreadable cached
+  index fails closed rather than being silently replaced.
+- Repository indexes and signatures are read through size caps (64 MiB and
+  16 KiB). Package archives are streamed to a temporary file, checked against
+  the declared size and SHA-256, and atomically renamed into the cache. The
+  downloader rejects archives larger than 2 GiB.
+- Archive validation rejects duplicate paths, more than 200,000 members,
+  metadata larger than 4 MiB, more than 8 GiB of expanded payload, unsafe
+  symlinks and setuid/setgid payloads before extraction. Every declared file is
+  re-hashed; undeclared files and path traversal are rejected. Installation
+  preflights free space and refuses to fill the target filesystem. The base
+  image's setuid list is applied separately by the build.
 - A failed transaction restores replaced files and removes files installed
   during the attempt; an incomplete restore keeps the backup and reports its
   path. Installs refuse files owned by another package, and removal refuses to
@@ -169,6 +212,19 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 - **The pacman backend trusts Arch upstream.** It trusts Arch official repositories
   and the copied Arch public keyring rather than a dedicated Grintion key. Upstream
   packages and hooks may assume systemd for service enablement.
+- **No audit daemon in the base image.** Kernel audit support and audit rules
+  may exist, but the shipped image does not include `auditd`/`auditctl`
+  userspace. A security profile marks auditd as unavailable rather than
+  claiming a running audit trail.
+- **Auto-revert is a bootloader edit, not a filesystem rollback.**
+  `grintion-boot-health` can switch Limine to an existing snapshot/recovery
+  entry after repeated failures, but it does not restore files or prove that
+  the alternate entry boots on the current hardware.
+- **Security-profile application is not one atomic kernel transaction.**
+  nftables rules are validated before loading and configuration is rolled back
+  on failure, but a power loss between loading rules and writing state can
+  leave the running firewall and the on-disk profile out of sync. Re-run
+  `grintion-security set` or `apply-firewall` after an interrupted change.
 - **No independent security audit.** The code has not been independently reviewed
   by a third-party security firm.
 - **Physical access without encryption defeats the model.** When LUKS2 encryption is not

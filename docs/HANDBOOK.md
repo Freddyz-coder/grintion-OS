@@ -162,10 +162,15 @@ Grintion-OS supports both Wayland and X11 without requiring systemd-logind.
 ## 9. Security Hardening & Profiles
 
 Grintion-OS provides four switchable security profiles via `grintion-security`:
-- **`workstation`**: Default interactive profile with inbound firewall drop and daemon AppArmor enforcement.
-- **`server`**: Hardened server profile with USB data-block mode, strict firewalls, and auditd logging.
-- **`kiosk`**: Locked-down single-application mode with input-only USB and restricted user sessions.
-- **`air-gapped`**: Offline profile with isolated network namespaces and disabled outbound traffic.
+- **`workstation`**: Default interactive profile with inbound firewall drop and shipped daemon AppArmor enforcement.
+- **`server`**: Hardened server profile with USB data-block mode and strict inbound firewall rules. Audit rules are staged, but the base image does not include the auditd daemon.
+- **`kiosk`**: Locked-down single-application mode with USB data-blocking and restricted inbound traffic.
+- **`air-gapped`**: Offline profile with all network traffic dropped.
+
+`grintion-security set <profile>` applies the firewall, AppArmor and USB policy
+before writing profile state and verifies the running result. Use
+`--config-only` only when staging an image without booting it; that flag does
+not activate any control.
 
 ### Application Sandboxing
 Run untrusted software in an isolated Bubblewrap container:
