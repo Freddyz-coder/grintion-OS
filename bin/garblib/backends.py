@@ -216,7 +216,42 @@ def run_streaming(argv: list[str]) -> tuple[int, str]:
     return process.wait(), "".join(chunks)
 
 
+def _repair_mtab(root: Path) -> None:
+    """Repair the mount table pacman's CheckSpace reads before delegation.
+
+    Arch and Grintion expect /etc/mtab to point at /proc/self/mounts. A regular
+    or stale file makes pacman fail with "could not open file: /etc/mtab:
+    Permission denied" and aborts before the transaction. Running as root is
+    already required, so restore the canonical symlink instead of asking the
+    user to debug a file that the image owns.
+    """
+    mtab = root / "etc/mtab"
+    expected = "/proc/self/mounts"
+    try:
+        if mtab.is_symlink() and os.readlink(mtab) == expected:
+            return
+        if mtab.exists() or mtab.is_symlink():
+            mtab.unlink()
+        mtab.parent.mkdir(parents=True, exist_ok=True)
+        mtab.symlink_to(expected)
+        warn("repaired /etc/mtab -> /proc/self/mounts before pacman")
+    except OSError as exc:
+        raise GarbError(
+            f"cannot repair {mtab}: {exc}; create it with: "
+            "ln -sfn /proc/self/mounts /etc/mtab"
+        ) from exc
+
+
 def run_external_backend(backend: str, binary: str, args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    if root == Path("/") and os.geteuid() != 0:
+        packages = " ".join(getattr(args, "package", []) or [])
+        raise GarbError(
+            "package transactions on / require root; rerun with: sudo garb "
+            f"{args.command} {packages}".rstrip()
+        )
+    if backend == "pacman" and getattr(args, "command", "") in ("install", "remove", "upgrade"):
+        _repair_mtab(root)
     argv = external_argv(backend, binary, args)
     warn(f"using the {backend} backend; garb signature and transaction checks do not apply")
     print(f"[garb] {' '.join(argv)}", file=sys.stderr)

@@ -20,6 +20,8 @@ PASSWORD_STDIN=0
 ROOT_PASSWORD_STDIN=0
 DESKTOP=""
 DESKTOP_READY=1
+KERNEL_FLAVOR="lts"
+KERNEL_READY=1
 UNATTENDED=0
 DRY_RUN=0
 NO_BOOTLOADER=0
@@ -82,6 +84,9 @@ Options:
   --password-stdin      Read the user password from standard input
   --root-password-stdin Read the root password from standard input
   --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, i3, none)
+  --kernel FLAVOR       Kernel flavor: lts (default), hwe, or dkms
+                        hwe/dkms install Arch's current kernel and a separate
+                        Limine entry; LTS remains available as a fallback
   --security-profile PROF Security profile: workstation (default), server, kiosk, air-gapped
   --swap-size MIB       Add a linux-swap partition at the end of the disk (default: 0)
   --swap-file MIB       Create a swapfile on root of the given size in MiB
@@ -121,6 +126,7 @@ in the process list and in shell history. Use the interactive prompt,
 Examples:
   grintion-install --disk /dev/vda
   grintion-install --disk /dev/vda --user grintion --desktop xfce
+  grintion-install --disk /dev/vda --desktop kde --kernel hwe
   printf '%s\n' 'secret' | grintion-install --unattended --disk /dev/vda \
       --hostname box --user grintion --password-stdin
 EOF
@@ -200,6 +206,7 @@ PY
     _value=$(config_value hostname);        [ -n "$_value" ] && HOSTNAME=$_value
     _value=$(config_value user);            [ -n "$_value" ] && USER_NAME=$_value
     _value=$(config_value desktop);         [ -n "$_value" ] && DESKTOP=$_value
+    _value=$(config_value kernel);          [ -n "$_value" ] && KERNEL_FLAVOR=$_value
     _value=$(config_value security_profile); [ -n "$_value" ] && SECURITY_PROFILE=$_value
     _value=$(config_value filesystem);      [ -n "$_value" ] && FILESYSTEM=$_value
     _value=$(config_value swap_size);       [ -n "$_value" ] && SWAP_SIZE_MIB=$_value
@@ -233,6 +240,7 @@ while [ $# -gt 0 ]; do
         --password-stdin) PASSWORD_STDIN=1; shift ;;
         --root-password-stdin) ROOT_PASSWORD_STDIN=1; shift ;;
         --desktop)       DESKTOP=${2:-}; shift 2 ;;
+        --kernel)        KERNEL_FLAVOR=${2:-}; shift 2 ;;
         --security-profile) SECURITY_PROFILE=${2:-}; shift 2 ;;
         --swap-size)     SWAP_SIZE_MIB=${2:-}; shift 2 ;;
         --encrypt)       ENCRYPT=1; shift ;;
@@ -343,6 +351,19 @@ run_guided_tui() {
         5) DESKTOP="gnome" ;;
         6) DESKTOP="kde" ;;
         *) DESKTOP="none" ;;
+    esac
+
+    echo
+    echo "6. Kernel flavor:"
+    echo "   [1] LTS  (source-built 6.12 kernel, no extra download) [default]"
+    echo "   [2] HWE  (Arch current kernel + headers for newer hardware)"
+    echo "   [3] DKMS (HWE kernel + headers + dynamic module builds)"
+    printf "Choose kernel flavor [1]: "
+    read -r kernel_choice
+    case "${kernel_choice:-1}" in
+        2|hwe) KERNEL_FLAVOR="hwe" ;;
+        3|dkms) KERNEL_FLAVOR="dkms" ;;
+        *) KERNEL_FLAVOR="lts" ;;
     esac
 
     echo
@@ -531,6 +552,14 @@ case "$SECURITY_PROFILE" in
     *) die "invalid security profile: $SECURITY_PROFILE (must be workstation, server, kiosk, or air-gapped)" ;;
 esac
 
+case "$KERNEL_FLAVOR" in
+    lts|hwe|dkms) ;;
+    *) die "invalid kernel flavor: $KERNEL_FLAVOR (must be lts, hwe, or dkms)" ;;
+esac
+if [ "$KERNEL_FLAVOR" != "lts" ] && [ "$NO_BOOTLOADER" -eq 1 ]; then
+    die "--kernel $KERNEL_FLAVOR requires the Limine bootloader; remove --no-bootloader or use --kernel lts"
+fi
+
 if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
     printf "Pre-install Desktop Environment (none/xfce/gnome/kde/lxqt/sway) [none]: "
     read -r DESKTOP
@@ -615,7 +644,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
             "$CUSTOM_PARTITIONS" "${ROOT_PART_SPEC:-}" "${ESP_PART_SPEC:-}" "${SWAP_PART_SPEC:-}" \
             "${HOME_PART_SPEC:-}" "$ENCRYPT_HOME" "$HOME_SIZE_MIB" "$SWAP_FILE_MIB" \
             "$SECURE_ERASE" "$KEEP_HOME" "$REMOVABLE" "$RECOVERY_PARTITION" "$RECOVERY_SIZE_MIB" \
-            "$SECURITY_PROFILE" <<'PY'
+            "$SECURITY_PROFILE" "$KERNEL_FLAVOR" <<'PY'
 import json
 import sys
 
@@ -623,7 +652,7 @@ import sys
  user, desktop, no_bootloader, serial, target,
  custom, root_part, esp_part, swap_part, home_part, encrypt_home,
  home_size, swap_file, secure_erase, keep_home, removable,
- recovery_partition, recovery_size, security_profile) = sys.argv[1:]
+ recovery_partition, recovery_size, security_profile, kernel_flavor) = sys.argv[1:]
 
 plan = {
     "schema": 2,
@@ -659,6 +688,7 @@ plan = {
     "hostname": hostname,
     "user": user,
     "desktop": desktop or "none",
+    "kernel": kernel_flavor,
     "bootloader": "skipped" if no_bootloader == "1" else "limine-bios-uefi",
     "serial_console": serial == "1",
     "target": target,
@@ -679,6 +709,7 @@ Plan:
   removable:  $([ "$REMOVABLE" -eq 1 ] && echo 'yes (USB/removable EFI fallback)' || echo no)
   hostname:   $HOSTNAME
   user:       $USER_NAME (wheel)
+  kernel:     $KERNEL_FLAVOR$([ "$KERNEL_FLAVOR" != "lts" ] && echo ' (downloads Arch kernel + headers, keeps LTS fallback)')
   bootloader: $([ "$NO_BOOTLOADER" -eq 1 ] && echo skipped || echo Limine BIOS+UEFI)
   target:     $TARGET
 Dry run complete; nothing was changed.
@@ -1284,6 +1315,34 @@ EOF
     fi
 fi
 
+if [ "$KERNEL_FLAVOR" != "lts" ]; then
+    log "installing optional kernel flavor: $KERNEL_FLAVOR"
+    mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
+    mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
+    mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
+    mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
+    mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
+    mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
+    if [ -f /etc/resolv.conf ]; then
+        cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+    fi
+    if [ ! -x "$TARGET/usr/bin/grintion-kernel" ]; then
+        KERNEL_READY=0
+        warn "grintion-kernel is missing from the target; $KERNEL_FLAVOR was not installed"
+    elif ! chroot "$TARGET" /usr/bin/grintion-kernel install "$KERNEL_FLAVOR" --yes; then
+        KERNEL_READY=0
+        warn "$KERNEL_FLAVOR kernel setup did not complete; the LTS entry remains bootable"
+    fi
+    if [ -f "$TARGET/boot/efi/limine.conf" ] && [ -d "$TARGET/boot/efi/EFI/BOOT" ]; then
+        cp "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"
+    fi
+    for path in run dev/pts dev sys proc; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount -l "$TARGET/$path" 2>/dev/null || true
+        fi
+    done
+fi
+
 SELF_TEST_OK=1
 if [ "$SKIP_SELF_TEST" -eq 0 ]; then
     if command -v grintion-verify-install >/dev/null 2>&1; then
@@ -1305,7 +1364,7 @@ trap - EXIT
 
 echo
 echo "=============================================================="
-if [ "$DESKTOP_READY" -eq 1 ] && [ "$SELF_TEST_OK" -eq 1 ]; then
+if [ "$DESKTOP_READY" -eq 1 ] && [ "$KERNEL_READY" -eq 1 ] && [ "$SELF_TEST_OK" -eq 1 ]; then
     echo "[+] Grintion-OS $VERSION installed"
 else
     echo "[!] Grintion-OS $VERSION installation incomplete"
@@ -1327,6 +1386,7 @@ fi
 echo "self-test: $([ "$SELF_TEST_OK" -eq 1 ] && echo passed || echo FAILED)"
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
+echo "kernel:    $KERNEL_FLAVOR$([ "$KERNEL_READY" -eq 1 ] || echo ' (NOT installed; LTS remains available)')"
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
     if [ "$DESKTOP_READY" -eq 1 ]; then
         echo "desktop:   $DESKTOP (ready on boot)"
@@ -1342,6 +1402,6 @@ echo
 echo "Remove the installation media and reboot."
 echo "=============================================================="
 
-if [ "$DESKTOP_READY" -ne 1 ] || [ "$SELF_TEST_OK" -ne 1 ]; then
+if [ "$DESKTOP_READY" -ne 1 ] || [ "$KERNEL_READY" -ne 1 ] || [ "$SELF_TEST_OK" -ne 1 ]; then
     exit 1
 fi

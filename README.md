@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.12.1
+- **Version:** 0.13.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,14 +17,13 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.12.1 is a bug-fix release on top of 0.12.0's security work. It pins package
-installs to the dated Arch snapshot the image was built from, fixes the missing
-`colord` and `spice-webdavd` udev groups, keeps udev/NTP diagnostics off the
-login console, reports a failed desktop installation as incomplete, disables
-the archive low-speed cutoff, and prevents a KDE install from filling a small
-live RAM overlay. See [CHANGELOG.md](CHANGELOG.md).
+0.13.0 is a minor release on top of 0.12.1. It adds optional LTS/HWE/DKMS
+kernel selection, repairs unowned base libraries before package transactions,
+suppresses duplicate relative VM mice when an absolute tablet is present, and
+keeps the 0.12.1 boot, installer, and desktop fixes. See
+[CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.12.1 is built from this tree. There is no hosted binary
+Grintion-OS 0.13.0 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Official
 release artifacts can be signed with `make sign-release` and verified with
 `bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
@@ -212,18 +211,19 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.12.1 |
+| Feature | 0.13.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
 | Graphical desktop | XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM. GNOME is not supported because `gnome-session` 51 requires `org.freedesktop.systemd1` |
+| Kernel flavors | LTS (`6.12.114-grintion`) is the default source-built kernel. The installer and `grintion-kernel` can optionally add `hwe` (Arch current kernel + headers) or `dkms` (HWE headers + module builds) from the pinned snapshot as separate Limine entries. HWE/DKMS require network access and are not boot-verified in this tree. |
 | Audio | PipeWire playback verified end-to-end on XFCE (QEMU WAV capture) with a dynamically enumerated sink; all ALSA cards are unmuted. Direct ALSA playback requires suspending PipeWire first. PipeWire 1.6.11 is the current Arch stable version and includes the upstream `pipewire-alsa` drain fix |
 | Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
 | Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
-| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot) |
+| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). Library-only base packages are seeded as owners so Firefox and desktop installs do not fail on unowned `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
 | Signed release artifacts | Tooling and a tag-triggered release workflow exist; no signed release has been published yet. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
@@ -259,7 +259,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.12.1 has not undergone an independent third-party
+and atomic rollback, but 0.13.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

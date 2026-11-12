@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-11-12
+
+### Added
+
+- **Optional LTS, HWE and DKMS kernel selection.** The installer accepts
+  `--kernel lts|hwe|dkms` and the guided wizard asks for a flavor. LTS is the
+  source-built 6.12 kernel. HWE and DKMS install Arch's current kernel, matching
+  headers and (for DKMS) module-build support from the pinned snapshot, build a
+  Grintion-specific initramfs, and add a separate Limine entry. The LTS entry is
+  retained as a fallback. HWE/DKMS have not been boot-verified in this tree.
+- **VM pointer synchronization.** XFCE, KDE, LXQt and i3 profiles now install
+  `xf86-input-libinput`, and the display-manager service runs
+  `grintion-pointer-sync` before Xorg/KWin. When QEMU/libvirt/VirtualBox exposes
+  both an absolute tablet and a relative PS/2 mouse, the relative duplicate is
+  marked `LIBINPUT_IGNORE_DEVICE=1`; without a tablet it remains enabled.
+
+### Fixed
+
+- **Firefox and other package installs no longer collide with seeded X
+  libraries.** `build/seed-pacman-db.py` now records library-only packages whose
+  complete `.so` set is present, including `libxss`; a later `firefox`
+  transaction no longer fails with `exists in filesystem`.
+- **Pacman mount-table and privilege failures are handled explicitly.** The
+  pacman backend repairs `/etc/mtab` to `/proc/self/mounts` before mutating
+  transactions and refuses a non-root `/` install with an actionable message
+  instead of pacman's misleading `/etc/mtab: Permission denied`.
+- **Xorg no longer loads explicit evdev fallbacks beside libinput.** The
+  fallback is only generated when udev's control socket or the libinput driver
+  is unavailable, avoiding two competing pointer devices in a VM.
+
+---
+
 ## [0.12.1] - 2026-11-12
 
 ### Fixed

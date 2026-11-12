@@ -147,6 +147,32 @@ def test_rootfs_seeds_pacman_after_library_resolution() -> None:
     assert script.index("resolve-libs.py") < script.index("seed-pacman-db.py")
 
 
+def test_seed_database_records_library_only_owners(tmp_path: Path) -> None:
+    # libxss was copied into the base image but absent from pacman's local DB,
+    # so Firefox's dependency transaction failed with "exists in filesystem".
+    seed = load_seed_module()
+    root = tmp_path / "root"
+    (root / "usr/lib").mkdir(parents=True)
+    for name in ("libXss.so", "libXss.so.1", "libXss.so.1.0.0"):
+        (root / "usr/lib" / name).write_bytes(b"lib")
+    entry = tmp_path / "db" / "libxss-1.2.5-1"
+    entry.mkdir(parents=True)
+    (entry / "desc").write_text("%NAME%\nlibxss\n")
+    (entry / "files").write_text(
+        "%FILES%\nusr/\nusr/lib/\nusr/lib/libXss.so\n"
+        "usr/lib/libXss.so.1\nusr/lib/libXss.so.1.0.0\n"
+    )
+    assert seed.library_owner_packages({"libxss": entry}, root) == {"libxss"}
+
+
+def test_garb_repairs_mtab_before_mutating_pacman_transaction() -> None:
+    backend = (REPO_ROOT / "bin" / "garblib" / "backends.py").read_text()
+    assert "def _repair_mtab" in backend
+    assert 'mtab.symlink_to(expected)' in backend
+    assert 'getattr(args, "command", "") in ("install", "remove", "upgrade")' in backend
+    assert "require root; rerun with: sudo garb" in backend
+
+
 def test_profile_defines_append_path_for_package_snippets(tmp_path: Path) -> None:
     # Packages install /etc/profile.d snippets (perl, jre, flatpak) that call
     # Arch's append_path helper. Without it, every login shell after a desktop
@@ -447,9 +473,15 @@ def test_installer_does_not_report_incomplete_desktop_as_installed() -> None:
     # summary must not start with "[+] ... installed" and the installer must
     # exit nonzero so scripts and users see the failure.
     installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
-    assert 'if [ "$DESKTOP_READY" -eq 1 ] && [ "$SELF_TEST_OK" -eq 1 ]; then' in installer
+    assert (
+        'if [ "$DESKTOP_READY" -eq 1 ] && [ "$KERNEL_READY" -eq 1 ] '
+        '&& [ "$SELF_TEST_OK" -eq 1 ]; then'
+    ) in installer
     assert 'echo "[!] Grintion-OS $VERSION installation incomplete"' in installer
-    assert 'if [ "$DESKTOP_READY" -ne 1 ] || [ "$SELF_TEST_OK" -ne 1 ]; then' in installer
+    assert (
+        'if [ "$DESKTOP_READY" -ne 1 ] || [ "$KERNEL_READY" -ne 1 ] '
+        '|| [ "$SELF_TEST_OK" -ne 1 ]; then'
+    ) in installer
 
 
 def test_installer_never_accepts_password_argv() -> None:
@@ -566,6 +598,29 @@ def test_installer_phase2_flags_and_dry_run_json() -> None:
     assert data["recovery"]["size_mib"] == 1024
     assert data["secure_erase"] is True
     assert data["removable"] is True
+    assert data["kernel"] == "lts"
+
+
+def test_installer_accepts_kernel_flavor_in_dry_run() -> None:
+    res = subprocess.run(
+        [
+            str(INSTALLER),
+            "--dry-run",
+            "--json",
+            "--unattended",
+            "--disk", "/dev/vda",
+            "--user", "testuser",
+            "--kernel", "hwe",
+            "--password-stdin",
+        ],
+        input="secret\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    data = __import__("json").loads(res.stdout)
+    assert data["kernel"] == "hwe"
 
 
 def test_installer_custom_partitioning_dry_run() -> None:

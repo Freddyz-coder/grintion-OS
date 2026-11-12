@@ -25,7 +25,7 @@ BACKEND_PACKAGES = {
     "acl", "archlinux-keyring", "bash", "brotli", "bzip2", "curl", "gpgme",
     "gnupg", "krb5", "libarchive", "libidn2", "libpsl", "libseccomp",
     "libssh2", "libxml2", "lz4", "nghttp2", "nghttp3", "ngtcp2", "openssl",
-    "pacman", "sqlite", "xz", "zlib", "zstd",
+    "pacman", "sqlite", "systemd", "xz", "zlib", "zstd",
 }
 
 
@@ -70,6 +70,33 @@ def declared_libraries(entry: Path) -> list[str]:
     return [path for path in recorded_files(entry)
             if path.startswith(("usr/lib/", "lib/"))
             and ".so" in path.rsplit("/", 1)[-1]]
+
+
+def library_owner_packages(entries: dict[str, Path], root: Path) -> set[str]:
+    """Return library-only packages whose complete shared-library set exists.
+
+    resolve-libs.py copies dependencies from the host after the curated rootfs
+    is assembled. Those library files can otherwise be unowned by pacman even
+    though their package is present on disk. Installing a later package that
+    depends on the same library then aborts with "exists in filesystem":
+    libxss owned /usr/lib/libXss.so* while Firefox tried to install it.
+
+    Only packages with no declared binaries are selected here. Packages that
+    ship binaries are already seeded through the command inventory, and adding
+    a package with a missing binary would make pacman skip the package that
+    should restore it.
+    """
+    owners: set[str] = set()
+    for name, entry in entries.items():
+        libraries = declared_libraries(entry)
+        if not libraries or declared_binaries(entry):
+            continue
+        if all(
+            (root / path).is_file() or (root / path).is_symlink()
+            for path in libraries
+        ):
+            owners.add(name)
+    return owners
 
 
 def installed_packages(selected: dict[str, Path], root: Path) -> tuple[dict[str, Path], list[str]]:
@@ -276,6 +303,11 @@ def main() -> int:
         )
         if result.returncode == 0:
             wanted.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+    # Library-only packages already copied into the rootfs must be recorded as
+    # owners. Otherwise a later package that depends on the same .so reports a
+    # file conflict even though the library is part of the base image.
+    wanted.update(library_owner_packages(entries, args.root))
 
     selected: dict[str, Path] = {}
     missing: set[str] = set()

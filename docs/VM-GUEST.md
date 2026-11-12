@@ -6,9 +6,13 @@ does not expose the right virtual hardware.
 
 ## Pointer alignment
 
-Grintion-OS uses the kernel's evdev devices directly because the image has no
-udev. A relative PS/2 mouse and an absolute USB tablet are therefore two
-different input devices.
+Grintion-OS runs standalone `systemd-udevd` and uses libinput for XFCE/KDE.
+QEMU/libvirt/VirtualBox can still expose both a relative PS/2 mouse and an
+absolute USB tablet. The display-manager service now runs
+`grintion-pointer-sync` before Xorg/KWin: when an absolute tablet is present,
+the relative duplicate is marked with libinput's `LIBINPUT_IGNORE_DEVICE`
+property. Only the absolute device drives the cursor. If no tablet is present,
+the relative mouse is left enabled.
 
 ### QEMU
 
@@ -20,8 +24,23 @@ qemu-system-x86_64 ... -usb -device usb-tablet
 
 Without `usb-tablet`, QEMU's default PS/2 mouse is relative. Its acceleration
 and the host window's scaling can make the guest cursor drift away from the
-host cursor. The QEMU/KVM test probe uses `usb-tablet` and an absolute QMP
-pointer event; that path moved the guest cursor to the requested coordinate.
+host cursor. Expose the tablet and let Grintion ignore the emulated relative
+mouse:
+
+```sh
+qemu-system-x86_64 ... -usb -device usb-tablet
+```
+
+After changing the input devices, restart the display manager (`sudo sv
+restart display-manager`) or reboot. Check the rule with:
+
+```sh
+sudo grintion-pointer-sync --dry-run
+cat /run/udev/rules.d/99-grintion-pointer-sync.rules
+```
+
+The QEMU/KVM test probe uses `usb-tablet` and an absolute QMP pointer event;
+that path moved the guest cursor to the requested coordinate.
 
 If the QEMU window is scaled, turn off the viewer's zoom-to-fit/scale option or
 run it at 1:1. The guest receives coordinates for its own framebuffer; a scaled
@@ -36,7 +55,9 @@ VM rather than relying on the emulated PS/2 mouse.
 Set **Settings → System → Pointing Device** to **USB Tablet**. The default
 PS/2 mouse is relative and will not track the host pointer reliably. The
 VirtualBox GPU profile installs `virtualbox-guest-utils`; the guest additions
-provide the pointer integration and display resize support.
+provide the pointer integration and display resize support. The same
+`grintion-pointer-sync` rule suppresses a duplicate relative device when the
+absolute tablet is visible.
 
 ## Audio
 

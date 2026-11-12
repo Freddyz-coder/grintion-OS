@@ -22,6 +22,14 @@ if [ ! -S /run/dbus/system_bus_socket ]; then
     echo "display-manager: no D-Bus system bus; enable it with 'ln -sfn /etc/sv/dbus /var/service/dbus'"
 fi
 
+# QEMU/libvirt/VirtualBox often expose both a relative PS/2 mouse and an
+# absolute USB tablet. Feeding both to libinput makes the guest cursor drift
+# away from the host cursor. Mark the relative duplicate as ignored before the
+# display manager starts; this is honoured by libinput and KWin.
+if [ -x /usr/bin/grintion-pointer-sync ]; then
+    /usr/bin/grintion-pointer-sync || true
+fi
+
 # Xorg drivers that use libudev need the database the udev service builds.
 # Describe the kernel's event devices explicitly as an evdev fallback, so the
 # keyboard and mouse still work if that database is not ready yet.

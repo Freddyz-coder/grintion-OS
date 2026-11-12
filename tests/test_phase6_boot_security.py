@@ -180,6 +180,83 @@ def test_hibernation_preflight_and_setup(tmp_path: Path) -> None:
     assert "RESUME_UUID=11223344-5566-7788-99aa-bbccddeeff00" in conf
 
 
+def test_kernel_flavors_are_listed_and_hwe_dry_run_is_safe() -> None:
+    listed = subprocess.run(
+        [str(KERNEL), "flavors", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert listed.returncode == 0, listed.stderr
+    data = json.loads(listed.stdout)
+    names = {item["name"] for item in data["flavors"]}
+    assert names == {"lts", "hwe", "dkms"}
+
+    dry = subprocess.run(
+        [str(KERNEL), "install", "hwe", "--dry-run"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert dry.returncode == 0, dry.stderr
+    assert "linux" in dry.stderr
+    assert "--noconfirm" in dry.stderr
+
+
+def test_hwe_install_adds_a_separate_limine_entry(tmp_path: Path) -> None:
+    root = tmp_path / "target"
+    (root / "boot/efi").mkdir(parents=True)
+    (root / "boot/efi/limine.conf").write_text(
+        "timeout: 5\n"
+        "/Grintion-OS LTS\n"
+        "    protocol: linux\n"
+        "    kernel_path: boot():/EFI/grintion/vmlinuz-grintion\n"
+        "    cmdline: root=UUID=test-root rw quiet\n"
+        "    module_path: boot():/EFI/grintion/initramfs-install.img\n"
+    )
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    fake_pacman = fakebin / "pacman"
+    fake_pacman.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'mkdir -p "$GRINTION_ROOT/usr/lib/modules/6.99.1-test"\n'
+        'printf kernel > "$GRINTION_ROOT/usr/lib/modules/6.99.1-test/vmlinuz"\n'
+        'printf modules > "$GRINTION_ROOT/usr/lib/modules/6.99.1-test/modules.dep"\n'
+        "echo fake-pacman-installed\n"
+    )
+    fake_pacman.chmod(0o755)
+    fake_mkinitcpio = fakebin / "mkinitcpio"
+    fake_mkinitcpio.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "out=\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "-g" ]; then out=$2; shift 2; else shift; fi\n'
+        "done\n"
+        'printf initramfs > "$out"\n'
+    )
+    fake_mkinitcpio.chmod(0o755)
+    env = os.environ.copy()
+    env["GRINTION_ROOT"] = str(root)
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    result = subprocess.run(
+        [str(KERNEL), "install", "hwe", "--yes"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    conf = (root / "boot/efi/limine.conf").read_text()
+    assert "BEGIN grintion hwe kernel" in conf
+    assert "EFI/grintion/vmlinuz-linux" in conf
+    assert "root=UUID=test-root" in conf
+    assert (root / "boot/efi/EFI/grintion/vmlinuz-linux").is_file()
+    assert (root / "boot/efi/EFI/grintion/initramfs-linux.img").is_file()
+    assert "hwe" in (root / "etc/grintion/kernel-flavor").read_text()
+
+
 def test_kernel_manager_and_module_signing(tmp_path: Path) -> None:
     boot = tmp_path / "boot"
     boot.mkdir()

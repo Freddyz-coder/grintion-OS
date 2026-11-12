@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.12.1 installs from the live ISO to a target disk or existing
+Grintion-OS 0.13.0 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.12.1 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.12.1 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.13.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.13.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -117,7 +117,8 @@ The wizard walks through:
 5. Swap configuration (Swap partition or root swapfile)
 6. Optional recovery partition
 7. Desktop environment selection (`none`, `xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`)
-8. Hostname and user account credentials
+8. Kernel flavor (`lts`, `hwe`, `dkms`)
+9. Hostname and user account credentials
 9. Confirmation screen with automatic SMART health preflight and summary review
 
 ### Custom Partitioning
@@ -219,6 +220,7 @@ Useful flags:
 | `--recovery-partition` | Provision a dedicated rescue/recovery partition. |
 | `--recovery-size MIB` | Size of recovery partition (default: 2048 MiB). |
 | `--desktop ENV` | Pre-install a desktop environment (`xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`). |
+| `--kernel FLAVOR` | Kernel flavor: `lts` (default source-built 6.12), `hwe` (Arch current kernel + headers), or `dkms` (HWE + matching headers + DKMS). |
 | `--dry-run` | Validate arguments, tools and the disk, then emit plan and exit. |
 | `--json` | With `--dry-run`, print the partition plan as JSON (schema 2). |
 | `--config FILE` | Read a JSON answer file. Command-line flags override its values. |
@@ -228,6 +230,28 @@ Useful flags:
 | `--serial` | Configure serial console on `ttyS0` for LUKS passphrase prompt. |
 | `--no-bootloader` | Skip Limine installation for custom bootloader management. |
 | `--force` | Allow running from a system that is not the live image. |
+
+### Kernel flavors
+
+`lts` is the source-built 6.12 kernel and is always installed; it is the only
+flavor with boot evidence in this tree. `hwe` and `dkms` download Arch's current
+kernel and matching headers from the pinned snapshot, build a
+Grintion-specific initramfs with `mkinitcpio`, and add a separate Limine entry.
+The LTS entry is retained, so a HWE problem is recoverable from the boot menu.
+HWE/DKMS need network access during installation and significantly more disk
+space; they are not a replacement for the hardened LTS kernel. On an installed
+system, use:
+
+```sh
+sudo grintion-kernel flavors
+sudo grintion-kernel install hwe
+sudo grintion-kernel install dkms
+sudo grintion-kernel list
+```
+
+`dkms` also installs the compiler and module-build dependencies pulled in by
+the `dkms` package. Out-of-tree modules still need signing for this kernel's
+`CONFIG_MODULE_SIG_FORCE=y`; use `grintion-module-sign` after building them.
 
 ### After installation
 

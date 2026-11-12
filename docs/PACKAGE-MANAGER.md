@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.12.1 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.13.0 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -74,10 +74,21 @@ installed. When the backend is present, `garb` executes it with the mapped
 arguments and returns its exit status. No Grintion-hosted repository is needed.
 
 **Backend status:** The bundled pacman backend is fully operational with the
-dated Arch Linux Archive snapshot. Mount point tracking is handled via `/etc/mtab ->
-/proc/self/mounts`, enabling `CheckSpace` verification on overlay roots.
-Automated non-interactive transactions pass `--noconfirm` by default. See
+dated Arch Linux Archive snapshot. Before a mutating transaction, `garb`
+repairs `/etc/mtab` to point at `/proc/self/mounts`; this prevents pacman's
+`CheckSpace` from aborting with `could not open file: /etc/mtab: Permission
+denied`. Automated non-interactive transactions pass `--noconfirm` by default.
+The image build also seeds pacman's local database with library-only packages
+whose complete `.so` set is present (for example `libxss`), so a later Firefox
+install does not fail with `exists in filesystem`. See
 [VERIFICATION.md](VERIFICATION.md).
+
+Package changes to `/` require root. Run `garb install firefox` as `sudo garb
+install firefox` (or use `sudo pacman -S firefox`); a non-root invocation now
+fails with an explicit root-required message instead of pacman's misleading
+`/etc/mtab: Permission denied`. `networkmanager` is not part of this image; the
+`network` runit service manages the interface. Check it with `sv status
+/var/service/network` and `ip addr`.
 
 ```sh
 garb --backend auto install htop     # delegate if pacman/apk is installed
@@ -118,7 +129,10 @@ Rules and limits:
   package is reinstalled and completed.
 - The image ships `/etc/pacman.conf`, the Arch public keyring, gpg helpers and a
   local package database seeded from the build host by
-  `build/seed-pacman-db.py`. `apk` is not included.
+  `build/seed-pacman-db.py`. The seed records commands, their dependency
+  closure, backend packages, and library-only owners such as `libxss` so
+  unowned base libraries do not collide with a package install. `apk` is not
+  included.
 - pacman uses the dated Arch Linux Archive snapshot in
   `config/arch-snapshot` rather than the rolling mirrors. The image's
   `cryptsetup`, `curl`, `pacman` and `sudo` are linked against
@@ -131,6 +145,11 @@ Rules and limits:
   progressing KDE transaction therefore continues instead of aborting and
   re-downloading the missing package. `grintion-desktop` passes the equivalent
   `--disable-download-timeout` flag and still retries a failed transaction.
+- Older 0.12.1 images built before the ownership fix can install Firefox once
+  with `sudo pacman -S --overwrite '/usr/lib/libXss.so*' firefox`. This
+  overwrite is limited to the three known libXss library paths; do not use a
+  blanket `--overwrite '*'`. A rebuilt image needs no workaround, and
+  `garb install firefox` delegates to pacman and retries only reported paths.
 - Signatures use `SigLevel = Required DatabaseOptional`, matching Arch's own
   default: package signatures are mandatory, but the repository does not
   publish detached database signatures (`core.db.sig`/`extra.db.sig` return

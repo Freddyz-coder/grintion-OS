@@ -83,6 +83,15 @@ grintion-hibernate
 Manage kernel choices and sign out-of-tree drivers:
 
 ```sh
+# List available and installed flavors
+grintion-kernel flavors --json
+
+# Install an optional current/HWE kernel and a fallback-safe Limine entry
+sudo grintion-kernel install hwe
+
+# HWE plus matching headers and DKMS module-build support
+sudo grintion-kernel install dkms
+
 # List installed kernels
 grintion-kernel list --json
 
@@ -95,6 +104,14 @@ grintion-module-sign sign --key MOK.key --cert MOK.crt extra-driver.ko
 # Verify module signature
 grintion-module-sign verify extra-driver.ko
 ```
+
+---
+
+The source-built 6.12 kernel is the LTS entry and is never removed by the HWE
+or DKMS install path. HWE/DKMS use Arch's current kernel from the dated
+snapshot, build a Grintion-specific initramfs with `mkinitcpio`, and add a
+separate entry. They are optional and require network access; the boot matrix
+below still describes the LTS image.
 
 ---
 
