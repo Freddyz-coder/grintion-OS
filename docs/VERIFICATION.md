@@ -1,15 +1,40 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.12.1, 0.12.0
-and the earlier work. It does not claim coverage of hardware or configurations
-that were not tested.
+This document records what was actually executed for Grintion-OS 0.13.0, 0.12.1,
+0.12.0 and the earlier work. It does not claim coverage of hardware or
+configurations that were not tested.
 
-**0.12.1 verification status (2026-11-12):** the install/repository fixes were
-rebuilt into a new ISO. `make check` passes, BIOS and UEFI live boot pass, the
-installer installs and reboots into a clean login, and pacman resolves the KDE
-package set against the pinned OpenSSL 3.6.5 snapshot. The live RAM-overlay
-guard is also verified, and a full KDE target-disk installation completes and
-boots with the KDE packages, SDDM, seatd and clean service logs.
+**0.13.0 verification status (2026-11-12):** the minor release was rebuilt from
+release commit `63e48d3`. `make check` passes with 176 tests, the final ISO
+boots under BIOS and UEFI, and both installer paths complete, reboot and reach
+a verified installed system. The final image records `libxss` as the owner of
+`/usr/lib/libXss.so` and stages the pointer-sync helper. HWE/DKMS boot and a
+rendered XFCE/KDE pointer session were not exercised.
+
+## 0.13.0 kernel, pointer and package results (2026-11-12)
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 164,831,232 bytes (157 MiB) |
+| SHA-256 | `83a2faa6015a61b7ea107460bfdc9f6a45406f92fb1ad0d7d43fc73b60c32511` |
+| `BUILD-INFO` commit | `63e48d3` (built from the release commit) |
+
+| Check | Result |
+| --- | --- |
+| `make check` | 176 passed |
+| BIOS live boot | Passed on the final ISO; 0.13.0, kernel `6.12.114-grintion`, DHCP, nftables and AppArmor enforce mode |
+| UEFI live boot | Passed on the final ISO with the same assertions |
+| BIOS install / installed boot | Passed; installed login, installed marker, udev/seatd sockets, DHCP and sudo verified |
+| UEFI install / installed boot | Passed with the same installed-system assertions |
+| Firefox package ownership | Final staged pacman DB has `libxss-1.2.5-1` owning `/usr/lib/libXss.so`, `.so.1` and `.so.1.0.0`; the reported `exists in filesystem` conflict is removed |
+| Pointer synchronization | `grintion-pointer-sync` is executable in the image and called by the display-manager service before Xorg/KWin; XFCE, KDE, LXQt and i3 profiles include `xf86-input-libinput` |
+| Kernel flavors | The installer exposes `lts`, `hwe` and `dkms`; a mocked HWE install test verifies package staging, initramfs build and a separate Limine entry |
+| HWE/DKMS boot | Not verified; no current-kernel package install was booted in this run |
+| Rendered VM pointer | Not verified; tablet detection and the evdev fallback guard are covered by unit tests only |
+
+A full Firefox download and installation was not run for this release. The
+package ownership check verifies the specific colliding file that caused the
+reported failure; it is not a substitute for an end-to-end browser install.
 
 ## 0.12.1 install and package fixes (2026-11-12)
 
@@ -76,7 +101,7 @@ because the gate used to skip lint when the tool was absent. Since 0.10.1,
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-11-09 (static gate and 0.10.1 follow-up); older QEMU rows are from 0.9.0/0.10.0 |
+| Date | 2026-11-12 for 0.13.0; 2026-11-09 for the static gate and 0.10.1 follow-up; older QEMU rows are from 0.9.0/0.10.0 |
 | Host | Arch Linux x86_64, 16 vCPU, 13 GiB RAM |
 | Virtualisation | QEMU with `-accel kvm -cpu host` |
 | Firmware | SeaBIOS and OVMF `/usr/share/edk2/x64/OVMF_CODE.4m.fd`; both were rerun for the 0.10.1 follow-up |

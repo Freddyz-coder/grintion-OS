@@ -23,10 +23,11 @@ suppresses duplicate relative VM mice when an absolute tablet is present, and
 keeps the 0.12.1 boot, installer, and desktop fixes. See
 [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.13.0 is built from this tree. There is no hosted binary
-repository; build the ISO, or install the prerequisites and run `make`. Official
-release artifacts can be signed with `make sign-release` and verified with
-`bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
+Grintion-OS 0.13.0 is built from this tree. Release ISO images are published on
+GitHub Releases; there is no hosted binary package repository. Build the ISO,
+or install the prerequisites and run `make`. Release artifacts can be signed
+with `make sign-release` and verified with `bin/grintion-release-verify` (see
+[docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
 
 ---
 
@@ -225,7 +226,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). Library-only base packages are seeded as owners so Firefox and desktop installs do not fail on unowned `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
-| Signed release artifacts | Tooling and a tag-triggered release workflow exist; no signed release has been published yet. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
+| Signed release artifacts | Tooling and a tag-triggered release workflow exist. The 0.13.0 GitHub release is unsigned because no release key was available; verify its SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
 Unsupported configurations are not "known broken"; they are simply outside what
 this release builds and tests.

@@ -37,6 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback is only generated when udev's control socket or the libinput driver
   is unavailable, avoiding two competing pointer devices in a VM.
 
+### Verification
+
+- `make check`: **176 passed**.
+- The final ISO boots under BIOS and UEFI; both runs report Grintion-OS 0.13.0,
+  kernel `6.12.114-grintion`, DHCP, nftables and AppArmor enforce mode.
+- BIOS and UEFI installer runs both complete, reboot from the installed disk,
+  log in as the created user, and verify the installed marker, udev/seatd,
+  DHCP and sudo.
+- The final staged pacman database records `libxss 1.2.5-1` as the owner of
+  `/usr/lib/libXss.so`, removing the file conflict that blocked Firefox.
+- `grintion-pointer-sync` and the `xf86-input-libinput` profile package are
+  present in the image; unit tests cover tablet detection and the Xorg evdev
+  fallback guard.
+- HWE and DKMS installs are covered by a mocked installer test only. They were
+  not booted, and no rendered XFCE/KDE pointer test was run.
+
+### Release
+
+- The 0.13.0 ISO is **164,831,232 bytes (158 MB)** with SHA-256
+  `83a2faa6015a61b7ea107460bfdc9f6a45406f92fb1ad0d7d43fc73b60c32511`.
+  It was built from release commit `63e48d3`; `output/BUILD-INFO` records that
+  commit. No release key was available, so the artifacts are unsigned; verify
+  the checksum before use.
+
 ---
 
 ## [0.12.1] - 2026-11-12
