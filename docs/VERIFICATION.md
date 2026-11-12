@@ -1,8 +1,37 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.13.0, 0.12.1,
-0.12.0 and the earlier work. It does not claim coverage of hardware or
+This document records what was actually executed for Grintion-OS 0.13.1, 0.13.0,
+0.12.1, 0.12.0 and the earlier work. It does not claim coverage of hardware or
 configurations that were not tested.
+
+**0.13.1 verification status (2026-11-12):** the security and stability patch
+was built from source release commit `4900b8d`. `make check` passes with 181
+tests. The final ISO boots under QEMU SeaBIOS and OVMF UEFI and reaches the live
+root shell as Grintion-OS 0.13.1 with kernel `6.12.114-grintion`, DHCP,
+nftables, AppArmor enforce mode, sudo, the framebuffer console and
+`grintion-doctor` exit 0. These are firmware/VM tests, not a bare-metal run.
+The installer and installed-system reboot paths were not rerun for this patch.
+
+## 0.13.1 security and stability results (2026-11-12)
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 164,843,520 bytes (158 MiB) |
+| SHA-256 | `0fcc5c57947fc77198fa0b0c2f91f7a3e77bae41676b0539d876f186c3d62edb` |
+| `BUILD-INFO` source commit | `4900b8d` |
+
+| Check | Result |
+| --- | --- |
+| `make check` | 181 passed |
+| BIOS live boot | Passed under QEMU SeaBIOS; 0.13.1, kernel `6.12.114-grintion`, DHCP, nftables and AppArmor enforce mode |
+| UEFI live boot | Passed under QEMU OVMF with the same assertions |
+| Live service/session checks | `sv` network and AppArmor services running, root shell, `sudo -n true`, framebuffer console and `grintion-doctor` exit 0 |
+| `garb` bounded inputs | Archive member/size/metadata limits, duplicate and setuid rejection, streamed size/hash verification, index age/replay/cache checks covered by tests |
+| Security profile rollback | Fake-tool tests verify apply, post-apply verification, and profile/firewall rollback on failure |
+| Integrity privilege detection | Baseline detects a newly added setuid bit with unchanged file content |
+| Boot-health auto-revert | Bounded counter parsing, atomic state replacement and validated Limine edit covered by tests |
+| Installer / installed reboot | Not rerun for 0.13.1 |
+| Bare-metal hardware | Not tested |
 
 **0.13.0 verification status (2026-11-12):** the minor release was rebuilt from
 release commit `63e48d3`. `make check` passes with 176 tests, the final ISO

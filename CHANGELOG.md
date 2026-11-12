@@ -46,8 +46,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make check`: **181 passed**, including new coverage for archive/index limits,
   setuid rejection, transactional profile apply and rollback, mode-aware
   integrity detection, and boot-health auto-revert.
-- These changes were source-checked only. No ISO was rebuilt and no firmware or
-  hardware boot test was run for this unreleased hardening pass.
+- The final ISO boots under QEMU SeaBIOS and OVMF UEFI. Both runs reached the
+  live root shell as Grintion-OS 0.13.1 with kernel `6.12.114-grintion`, DHCP,
+  nftables, AppArmor enforce mode, sudo, the framebuffer console and
+  `grintion-doctor` exit 0.
+- These were firmware/VM boot tests, not a bare-metal hardware test. The
+  installer and installed-system reboot paths were not rerun for this patch.
+
+### Release
+
+- ISO: `grintion-os-x86_64.iso`, 164,843,520 bytes (158 MiB)
+- SHA-256: `0fcc5c57947fc77198fa0b0c2f91f7a3e77bae41676b0539d876f186c3d62edb`
+- `BUILD-INFO` records source commit `4900b8d`; the tag includes the follow-up
+  verification documentation.
+- No release signing key was available, so the artifact is unsigned. Verify the
+  SHA-256 before use.
 
 ---
 

@@ -226,7 +226,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). Library-only base packages are seeded as owners so Firefox and desktop installs do not fail on unowned `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
-| Signed release artifacts | Tooling and a tag-triggered release workflow exist. The 0.13.0 GitHub release is unsigned because no release key was available; verify its SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
+| Signed release artifacts | Tooling and a tag-triggered release workflow exist. The 0.13.1 and 0.13.0 GitHub releases are unsigned because no release key was available; verify their SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
 Unsupported configurations are not "known broken"; they are simply outside what
 this release builds and tests.
