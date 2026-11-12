@@ -138,6 +138,18 @@ gid = 980
 name = "i2c"
 gid = 967
 
+# The base image copies the host's udev rules, including the colord sensor
+# rules and the spice-webdavd rule. Their GROUP= assignments must resolve at
+# coldplug time even when the corresponding desktop daemon is not installed;
+# otherwise udevd prints "Unknown group" beside the login prompt.
+[[group]]
+name = "colord"
+gid = 983
+
+[[group]]
+name = "spice-webdavd"
+gid = 982
+
 [[group]]
 name = "dhcpcd"
 gid = 101

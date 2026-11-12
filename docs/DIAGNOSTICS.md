@@ -91,7 +91,7 @@ setting. Work through these checks in order; never disable verification.
 date -u
 hwclock --show
 sv status timesync
-tail -n 20 /var/log/timesync/current 2>/dev/null
+tail -n 20 /var/log/timesync.log 2>/dev/null
 
 # 2. CA files. cert.pem is the CAfile OpenSSL's compiled-in defaults read;
 #    the bundle is what curl uses.

@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.12.0 installs from the live ISO to a target disk or existing
+Grintion-OS 0.12.1 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.12.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.12.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.12.1 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.12.1 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -40,6 +40,19 @@ untrusted people.
 The root filesystem is an overlay: the initramfs is the read-only lower layer
 and a tmpfs is the upper layer. Reboots discard all changes unless persistence
 is configured (see below).
+
+Do not install a full KDE Plasma set directly into the live RAM overlay. KDE's
+download plus installed files need roughly 4.8 GiB, while the default overlay
+is half of RAM (about 1.9 GiB on a 4 GiB machine). Use the installer's desktop
+pre-install instead, which puts both the package cache and the installed files
+on the target disk:
+
+```sh
+grintion-install --disk /dev/vda --desktop kde
+```
+
+Alternatively, boot with persistence and install KDE from that writable
+partition.
 
 Check that the live system came up correctly:
 
@@ -239,9 +252,13 @@ garb update
 garb install PACKAGE
 ```
 
-`garb update` synchronizes the Arch `core` and `extra` databases. `garb install`
-delegates to `pacman -S --noconfirm`. The native signed-repository backend is
-still available with `garb --backend native`; it does not use pacman.
+`garb update` synchronizes the `core` and `extra` databases from the dated Arch
+Linux Archive snapshot in `config/arch-snapshot`. Keeping that date matched to
+the image matters: the base's `cryptsetup`, `curl`, `pacman` and `sudo` are
+linked against OpenSSL 3, while rolling mirrors have moved to OpenSSL 4 and
+return `breaks dependency 'libcrypto.so=3-64'`. `garb install` delegates to
+`pacman -S --noconfirm`. The native signed-repository backend is still
+available with `garb --backend native`; it does not use pacman.
 
 Package installation works out-of-the-box using the bundled pacman backend
 and `/etc/mtab` tracking kernel mounts:

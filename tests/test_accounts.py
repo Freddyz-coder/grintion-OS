@@ -3,6 +3,7 @@ from __future__ import annotations
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +62,15 @@ gid = 101
     assert (etc / "shadow").stat().st_mode & stat.S_IRWXG == 0
     assert (etc / "shadow").stat().st_mode & stat.S_IRWXO == 0
     assert (etc / "gshadow").stat().st_mode & stat.S_IRWXO == 0
+
+
+def test_base_manifest_declares_groups_used_by_udev_rules() -> None:
+    # The image copies the host's udev tree. colord's sensor rule and the
+    # spice-webdavd rule assign devices to these groups; without them udevd
+    # prints "Unknown group" on tty1 before login.
+    manifest = tomllib.loads((REPO_ROOT / "config" / "accounts.toml").read_text())
+    groups = {group["name"] for group in manifest["group"]}
+    assert {"colord", "spice-webdavd"} <= groups
 
 
 def test_account_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:

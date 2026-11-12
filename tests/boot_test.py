@@ -45,6 +45,18 @@ def boot(
     child.logfile = sys.stdout
     try:
         child.expect(PROMPT, timeout=timeout)
+        early_console = child.before
+        for marker in (
+            "Unknown group",
+            "Failed to resolve group",
+            "ntpd: bad address",
+            "Using default interface naming scheme",
+        ):
+            if marker in early_console:
+                raise AssertionError(
+                    f"service diagnostics leaked onto the live console: {marker!r}\n"
+                    f"{early_console}"
+                )
 
         def run(command: str, wait: int = 90) -> str:
             child.sendline(command)

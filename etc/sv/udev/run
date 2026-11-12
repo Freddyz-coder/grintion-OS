@@ -3,9 +3,12 @@
 # The image boots from devtmpfs + mdev. Wayland's libinput backend enumerates
 # devices through libudev, so run the udev daemon and populate its database
 # without adopting systemd as PID 1.
-exec 2>&1
-
-mkdir -p /run/udev
+#
+# systemd-udevd writes interface-name and rule diagnostics to stderr. Without a
+# log service those lines land on tty1 and interleave with the login prompt; keep
+# them in a file instead so the prompt stays readable.
+mkdir -p /run/udev /var/log
+exec >>/var/log/udev.log 2>&1
 if [ ! -x /usr/lib/systemd/systemd-udevd ] || [ ! -x /usr/bin/udevadm ]; then
     echo "udev: systemd-udevd/udevadm are missing"
     exec sleep 3600

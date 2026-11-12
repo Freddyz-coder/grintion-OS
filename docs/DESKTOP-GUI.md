@@ -6,7 +6,11 @@ Grintion-OS is designed with a clean separation of concerns:
 
 ---
 
-## Verification status (0.11.0)
+## Verification status (0.11.0 rendering; 0.12.1 install path)
+
+The rendered-session evidence below is from 0.11.0. Grintion-OS 0.12.1 did not
+re-render a graphical session; it verified the KDE target-disk package install
+and installed-system boot instead (see [VERIFICATION.md](VERIFICATION.md)).
 
 Verified: `grintion-desktop install xfce` and `... install i3` complete,
 LightDM starts, and both sessions render under Xorg in QEMU/KVM. The probes

@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.12.0
+- **Version:** 0.12.1
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,11 +17,14 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.12.0 is a security release: AppArmor is compiled into the kernel and loaded
-at boot, and X11 no longer listens on TCP or abstract sockets. See
-[docs/SECURITY-HARDENING.md](docs/SECURITY-HARDENING.md).
+0.12.1 is a bug-fix release on top of 0.12.0's security work. It pins package
+installs to the dated Arch snapshot the image was built from, fixes the missing
+`colord` and `spice-webdavd` udev groups, keeps udev/NTP diagnostics off the
+login console, reports a failed desktop installation as incomplete, disables
+the archive low-speed cutoff, and prevents a KDE install from filling a small
+live RAM overlay. See [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.12.0 is built from this tree. There is no hosted binary
+Grintion-OS 0.12.1 is built from this tree. There is no hosted binary
 repository; build the ISO, or install the prerequisites and run `make`. Official
 release artifacts can be signed with `make sign-release` and verified with
 `bin/grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
@@ -39,7 +42,7 @@ release artifacts can be signed with `make sign-release` and verified with
 | Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, firmware and ALSA tools. The shared `grintion-audio` helper is started by the X11 hook or XDG autostart, and unmutes every detected ALSA card; WirePlumber enumerates real sinks through udev instead of a hard-coded `plughw:0,0`. PipeWire playback was captured on the XFCE QEMU probe. Direct ALSA is only usable after PipeWire releases the PCM. |
 | Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
-| Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for Arch official packages. |
+| Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
 | Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot, Bubblewrap application sandboxing, USBGuard data-blocking, auditd logging with sudo I/O trails, file integrity verification (`grintion-integrity`), and customizable security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
@@ -98,11 +101,11 @@ to the running system (`--root /`); use `--backend pacman|apk|native` to choose
 explicitly. Delegation bypasses garb's signature and transaction checks.
 
 **Backend integration:** `garb` supports dual backends:
-- **Pacman backend (bundled):** Delegates directly to Arch Linux official repositories (`core`, `extra`) using the bundled `pacman` and Arch public keyrings.
+- **Pacman backend (bundled):** Delegates to the dated Arch Linux Archive snapshot in `config/arch-snapshot` (`core`, `extra`) using the bundled `pacman` and Arch public keyrings. The snapshot matches the image's OpenSSL 3 ABI; rolling mirrors have moved to OpenSSL 4 and produce dependency conflicts.
 - **Native backend:** Uses Ed25519-signed repository indexes and SHA-256 archive verification for custom packages.
 
 ```sh
-garb update                      # Synchronize official repository databases
+garb update                      # Synchronize the dated snapshot databases
 garb search jq                   # Search packages
 garb info jq                     # Package metadata
 garb install jq                  # Install package and dependencies
@@ -197,8 +200,9 @@ component from scratch:
   uses the build host for fast local iteration.
 - `garb` packages are prebuilt file trees. There is no source build recipe, no
   compiler toolchain in the image, and no cross-compilation.
-- The optional `pacman` backend installs Arch packages from official
-  repositories. It is an explicit Arch dependency, not independent packaging.
+- The optional `pacman` backend installs Arch packages from the dated Arch
+  Linux Archive snapshot in `config/arch-snapshot`. It is an explicit Arch
+  dependency, not independent packaging.
 
 This is a deliberate trade-off: a small, auditable image now, with a documented
 path to a from-source bootstrap later. Do not describe the image as
@@ -208,7 +212,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.12.0 |
+| Feature | 0.12.1 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -219,7 +223,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
 | Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
-| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with Arch official repos) |
+| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot) |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
 | Signed release artifacts | Tooling and a tag-triggered release workflow exist; no signed release has been published yet. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
@@ -255,7 +259,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.12.0 has not undergone an independent third-party
+and atomic rollback, but 0.12.1 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

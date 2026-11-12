@@ -133,6 +133,18 @@ def test_network_service_uses_the_filtered_scan() -> None:
     assert "/sys/class/net/*" not in script
 
 
+def test_timesync_waits_for_resolvable_peers_and_logs_off_console() -> None:
+    # Starting ntpd before DHCP completed made busybox print "bad address" for
+    # every pool.ntp.org peer directly on tty1, then exit into a fast restart
+    # loop. The service must wait for DNS, log to a file and back off.
+    script = (REPO_ROOT / "etc" / "sv" / "timesync" / "run").read_text()
+    assert "exec >>/var/log/timesync.log 2>&1" in script
+    assert "getent hosts" in script
+    assert "peers_resolve" in script
+    assert "retrying in 60 seconds" in script
+    assert "exec /usr/bin/busybox ntpd -n -N" not in script
+
+
 def test_dry_run_does_not_modify(tmp_path: Path) -> None:
     config = tmp_path / "network.conf"
     original = "[interface enp0s3]\nmode = dhcp\n"

@@ -50,7 +50,7 @@ def build_uki(
                 osrel_content = p.read_text(encoding="utf-8")
                 break
         if not osrel_content:
-            osrel_content = "NAME=Grintion-OS\nID=grintion\nVERSION_ID=0.12.0\n"
+            osrel_content = "NAME=Grintion-OS\nID=grintion\nVERSION_ID=0.12.1\n"
 
     # Use objcopy if systemd-stub or standard UEFI stub is available
     objcopy = shutil.which("objcopy")

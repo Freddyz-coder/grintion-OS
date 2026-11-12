@@ -131,6 +131,10 @@ def test_udev_service_is_the_standalone_device_manager() -> None:
     assert "udevadm" in (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
     session = (REPO_ROOT / "bin" / "grintion-session").read_text()
     assert "/run/udev/control" in session
+    # systemd-udevd's interface-name and rule diagnostics must not interleave
+    # with the login prompt.
+    assert "exec >>/var/log/udev.log 2>&1" in service
+    assert "GROUP=" in rootfs and "udev group" in rootfs
 
 
 def test_sddm_wayland_session_gets_a_runtime_directory() -> None:

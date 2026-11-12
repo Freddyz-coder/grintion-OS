@@ -102,6 +102,18 @@ def verify(disk: str, uefi: bool, filesystem: str = "ext4", encrypt: bool = Fals
             vm.child.expect(r"Enter LUKS passphrase: ", timeout=180)
             vm.child.sendline("grintion")
         vm.child.expect(LOGIN_PROMPT, timeout=180)
+        boot_console = vm.child.before
+        for marker in (
+            "Unknown group",
+            "Failed to resolve group",
+            "ntpd: bad address",
+            "Using default interface naming scheme",
+        ):
+            if marker in boot_console:
+                raise AssertionError(
+                    f"service diagnostics leaked onto the installed console: {marker!r}\n"
+                    f"{boot_console}"
+                )
         vm.child.sendline("grintion")
         vm.child.expect(r"Password: ", timeout=30)
         vm.child.sendline("grintion")

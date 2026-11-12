@@ -6,22 +6,57 @@
 # whose RTC is stale therefore fails every HTTPS connection with a certificate
 # or HSTS error and cannot update packages. busybox provides the NTP client, so
 # this service needs no package that is not already in the image.
-exec 2>&1
+#
+# ntpd resolves its peers when it starts. Starting it while DHCP is still
+# running made every peer report "bad address" on the console and exit into a
+# fast runsv restart loop. Keep diagnostics in a log, wait until at least one
+# configured peer resolves, and back off between failed starts.
+mkdir -p /var/log
+exec >>/var/log/timesync.log 2>&1
 
 # The kernel reads the RTC at boot when CONFIG_RTC_HCTOSYS=y. Repeat it here so
 # a failed early read (or a VM that changes its RTC) does not leave 1970.
 /usr/bin/hwclock --hctosys >/dev/null 2>&1 || true
 
-# DHCP may still be running when this service starts. Wait briefly for a
-# resolver instead of exiting into a fast runsv restart loop.
-i=0
-while [ "$i" -lt 30 ]; do
-    grep -qs '^nameserver' /etc/resolv.conf && break
-    sleep 1
-    i=$((i + 1))
-done
+ntp_peers() {
+    awk '$1 == "server" { print $2 }' /etc/ntp.conf 2>/dev/null
+}
 
-# -n stays in the foreground so runit supervises it. -N runs at high priority
-# so the first large correction is applied promptly. Peers come from
-# /etc/ntp.conf.
-exec /usr/bin/busybox ntpd -n -N
+peers_resolve() {
+    [ -s /etc/resolv.conf ] || return 1
+    grep -qs '^nameserver' /etc/resolv.conf || return 1
+    [ -n "$(ntp_peers)" ] || return 1
+    for peer in $(ntp_peers); do
+        if getent hosts "$peer" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+wait_for_peers() {
+    i=0
+    while [ "$i" -lt 60 ]; do
+        peers_resolve && return 0
+        sleep 2
+        i=$((i + 2))
+    done
+    return 1
+}
+
+while :; do
+    if ! wait_for_peers; then
+        echo "timesync: no configured NTP peer is resolvable yet; retrying in 60 seconds"
+        sleep 60
+        continue
+    fi
+
+    # -n stays in the foreground so runit supervises it. -N runs at high
+    # priority so the first large correction is applied promptly. Peers come
+    # from /etc/ntp.conf.
+    echo "timesync: starting ntpd"
+    /usr/bin/busybox ntpd -n -N
+    rc=$?
+    echo "timesync: ntpd exited with status $rc; retrying in 60 seconds"
+    sleep 60
+done

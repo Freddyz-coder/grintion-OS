@@ -45,7 +45,10 @@ which turns UTF-8 output into `?`. `C.UTF-8` is built into glibc and needs no
 generation.
 
 The `timesync` runit service keeps the clock correct using the peers in
-`/etc/ntp.conf` (busybox `ntpd`, part of the base image). This matters beyond
+`/etc/ntp.conf` (busybox `ntpd`, part of the base image). It waits until DHCP
+has provided a resolver and at least one peer resolves, logs to
+`/var/log/timesync.log`, and backs off between failed starts instead of
+printing `bad address` on the login console. This matters beyond
 cosmetic timestamps: a wrong clock invalidates TLS certificates and makes
 signed `garb` repository indexes look expired.
 

@@ -1305,7 +1305,11 @@ trap - EXIT
 
 echo
 echo "=============================================================="
-echo "[+] Grintion-OS $VERSION installed"
+if [ "$DESKTOP_READY" -eq 1 ] && [ "$SELF_TEST_OK" -eq 1 ]; then
+    echo "[+] Grintion-OS $VERSION installed"
+else
+    echo "[!] Grintion-OS $VERSION installation incomplete"
+fi
 echo "=============================================================="
 echo "disk:      $DISK"
 echo "root UUID: $ROOT_UUID"

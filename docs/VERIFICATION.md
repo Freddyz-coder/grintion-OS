@@ -1,14 +1,40 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.12.0 and the
-earlier work. It does not claim coverage of hardware or configurations that
-were not tested.
+This document records what was actually executed for Grintion-OS 0.12.1, 0.12.0
+and the earlier work. It does not claim coverage of hardware or configurations
+that were not tested.
 
-**0.12.0 verification status (2026-11-11):** the kernel and ISO were rebuilt
-with AppArmor enforcement and the X11 listener lockdown. `make check` passes;
-BIOS and UEFI live boot pass with all three AppArmor profiles loaded in enforce
-mode. Desktop rendering and installer runs were not repeated for this release;
-older QEMU and bare-metal results below remain the historical record.
+**0.12.1 verification status (2026-11-12):** the install/repository fixes were
+rebuilt into a new ISO. `make check` passes, BIOS and UEFI live boot pass, the
+installer installs and reboots into a clean login, and pacman resolves the KDE
+package set against the pinned OpenSSL 3.6.5 snapshot. The live RAM-overlay
+guard is also verified, and a full KDE target-disk installation completes and
+boots with the KDE packages, SDDM, seatd and clean service logs.
+
+## 0.12.1 install and package fixes (2026-11-12)
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 164,825,088 bytes (158 MiB) |
+| SHA-256 | `6123671524e5499678ee8d02469705259344e9522f7ee6316379a43452971163` |
+| `BUILD-INFO` commit | `cc3480a` (ISO built from the 0.12.1 working tree before the release commit) |
+
+| Check | Result |
+| --- | --- |
+| `make check` | 171 passed |
+| Pacman repositories | `core` and `extra` point at the `2026/11/01` Arch Linux Archive snapshot; rolling mirrors are not configured |
+| Pacman download timeout | `DisableDownloadTimeout` is active in `/etc/pacman.conf`; `grintion-desktop` also passes `--disable-download-timeout` |
+| KDE resolution | `pacman -Sp plasma-meta konsole dolphin sddm xorg-server` resolved successfully; `openssl 3.6.5-1` selected instead of OpenSSL 4; no `libcrypto.so=3-64` conflict |
+| Base accounts | 28 groups generated, including `colord` and `spice-webdavd`; rootfs build rejects any udev `GROUP=` that is absent |
+| Live KDE guard | Passed in a 4 GiB live VM; installation stops before downloading with the 4.8 GiB RAM-overlay explanation and the `grintion-install --desktop kde` path |
+| BIOS live boot | Passed; no `Unknown group`, `Failed to resolve group`, `ntpd: bad address`, or default interface-naming line on the console |
+| UEFI live boot | Passed; same clean-console assertion |
+| Installer / installed boot | Passed on the final ISO; installed login prompt is clean, `udev` and `seatd` are running, DHCP and sudo work |
+| KDE target install | Passed; installer summary says `desktop: kde (ready on boot)`; installed disk has `sddm`, `plasmashell`, `plasma-meta 6.8-1`, `openssl 3.6.5-1`, `seatd` running, the display-manager link and SDDM Wayland wrapper, and clean udev/timesync logs |
+
+A graphical KDE session was not captured for 0.12.1. The target-disk package
+install and installed-system boot are verified; the earlier 0.11.0 render is
+the visual evidence for the session itself.
 
 ## 0.12.0 security hardening results (2026-11-11)
 

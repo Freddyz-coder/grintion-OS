@@ -150,7 +150,7 @@ pkg_install() {
         # installed (ProblemsWhenInstalling.txt #9). Since 0.10.1 the pruned
         # seed also means the reinstall no longer logs bogus missing-file
         # warnings for paths that were never in the image.
-        manager=(pacman "${root_flag[@]}" -Sy "${noconfirm[@]}")
+        manager=(pacman "${root_flag[@]}" -Sy --disable-download-timeout "${noconfirm[@]}")
     elif command -v garb >/dev/null 2>&1; then
         manager=(garb "${root_flag[@]}" install "${pkgs[@]}")
     else
@@ -853,6 +853,21 @@ cmd_install() {
     # of packages that cannot produce a desktop.
     if [ "${REQUIRES_SYSTEMD:-0}" = "1" ]; then
         die "$NAME requires the systemd user session manager (org.freedesktop.systemd1); Grintion-OS runs runit without systemd/logind and gnome-session exits before drawing"$'\n'"        install xfce, lxqt, kde or sway instead"
+    fi
+
+    # KDE's current package set is about 1.2 GiB downloaded and 3.6 GiB
+    # installed. A live boot without persistence stores both the package cache
+    # and the installed files in the RAM overlay, which defaults to half of
+    # RAM; a 4 GiB machine therefore cannot complete the transaction. Stop
+    # before downloading rather than leaving pacman to fail with ENOSPC. The
+    # installer performs the same profile inside the target root, where the
+    # cache and files live on the destination disk.
+    if [ "$target_de" = "kde" ] && [ "$TARGET_ROOT" = "/" ] && [ -f /etc/grintion/live ]; then
+        local free_mib
+        free_mib=$(df -Pm / | awk 'NR == 2 { print $4 }')
+        if [ "${free_mib:-0}" -lt 5200 ]; then
+            die "KDE Plasma needs about 4.8 GiB for its download and installed files; the live RAM overlay has ${free_mib:-unknown} MiB."$'\n'"        Install it to a disk with: grintion-install --desktop kde"$'\n'"        or boot from a persistence partition before installing the desktop."
+        fi
     fi
 
     local wayland=0

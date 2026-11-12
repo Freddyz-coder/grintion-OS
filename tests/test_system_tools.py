@@ -245,6 +245,27 @@ def test_desktop_install_streams_output_and_provisions_accounts() -> None:
     assert 'getent group "$group"' in script
 
 
+def test_desktop_download_survives_archive_low_speed_timeouts() -> None:
+    # The archive server can move a large package slower than pacman's default
+    # low-speed cutoff. That aborted the 1.2 GiB KDE transaction even though
+    # the download would have completed; both the config and delegated command
+    # must disable the cutoff.
+    conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
+    assert "DisableDownloadTimeout" in conf
+    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert "--disable-download-timeout" in desktop
+
+
+def test_live_kde_install_fails_before_filling_the_ram_overlay() -> None:
+    # KDE is ~4.8 GiB including its download, but a 4 GiB live VM has a 1.9 GiB
+    # RAM overlay. The supported path is grintion-install --desktop kde, which
+    # uses the target disk for both the cache and installed files.
+    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    assert 'free_mib=$(df -Pm / | awk' in desktop
+    assert "live RAM overlay has" in desktop
+    assert "grintion-install --desktop kde" in desktop
+
+
 def test_lightdm_greeter_pam_supports_unauthenticated_setcred() -> None:
     # LightDM calls pam_setcred on the greeter session without calling
     # pam_authenticate. pam_env and pam_limits have no usable setcred handler
@@ -402,6 +423,33 @@ def test_pacman_requires_package_signatures_without_missing_db_sigs() -> None:
     assert "SigLevel = Required DatabaseOptional" in conf
     assert "LocalFileSigLevel = Required" in conf
     assert "SigLevel = Required DatabaseRequired" not in conf
+
+
+def test_pacman_uses_the_image_snapshot_not_rolling_mirrors() -> None:
+    # The seeded base is linked against OpenSSL 3. Rolling mirrors moved to
+    # OpenSSL 4 and pacman rejected every desktop transaction because
+    # cryptsetup/curl/pacman/sudo require libcrypto.so=3-64.
+    snapshot = (REPO_ROOT / "config" / "arch-snapshot").read_text()
+    date = next(
+        line.split("=", 1)[1].strip()
+        for line in snapshot.splitlines()
+        if line.startswith("ALA_DATE=")
+    )
+    expected = f"https://archive.archlinux.org/repos/{date}/$repo/os/$arch"
+    conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
+    assert conf.count(expected) == 2  # core and extra
+    assert "geo.mirror.pkgbuild.com" not in conf
+    assert "archive.archlinux.org/repos/2026/11/01" in conf
+
+
+def test_installer_does_not_report_incomplete_desktop_as_installed() -> None:
+    # A failed desktop transaction still leaves a usable base system, but the
+    # summary must not start with "[+] ... installed" and the installer must
+    # exit nonzero so scripts and users see the failure.
+    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    assert 'if [ "$DESKTOP_READY" -eq 1 ] && [ "$SELF_TEST_OK" -eq 1 ]; then' in installer
+    assert 'echo "[!] Grintion-OS $VERSION installation incomplete"' in installer
+    assert 'if [ "$DESKTOP_READY" -ne 1 ] || [ "$SELF_TEST_OK" -ne 1 ]; then' in installer
 
 
 def test_installer_never_accepts_password_argv() -> None:

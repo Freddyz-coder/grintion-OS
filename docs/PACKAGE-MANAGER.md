@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.12.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.12.1 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -73,8 +73,8 @@ image ships **pacman**; `apk` is supported by the translator but is not
 installed. When the backend is present, `garb` executes it with the mapped
 arguments and returns its exit status. No Grintion-hosted repository is needed.
 
-**Backend status:** The bundled pacman backend is fully operational with Arch
-Linux official repositories. Mount point tracking is handled via `/etc/mtab ->
+**Backend status:** The bundled pacman backend is fully operational with the
+dated Arch Linux Archive snapshot. Mount point tracking is handled via `/etc/mtab ->
 /proc/self/mounts`, enabling `CheckSpace` verification on overlay roots.
 Automated non-interactive transactions pass `--noconfirm` by default. See
 [VERIFICATION.md](VERIFICATION.md).
@@ -119,13 +119,25 @@ Rules and limits:
 - The image ships `/etc/pacman.conf`, the Arch public keyring, gpg helpers and a
   local package database seeded from the build host by
   `build/seed-pacman-db.py`. `apk` is not included.
-- pacman uses Arch official repositories with
-  `SigLevel = Required DatabaseOptional`, matching Arch's own default: package
-  signatures are mandatory, but the official mirrors do not publish detached
-  database signatures (`core.db.sig`/`extra.db.sig` return 404). Requiring
-  `DatabaseRequired` makes `pacman -Sy` fail. The Arch keyring is pinned by
-  `config/pacman-keyring.sha256` at image build time. Package scripts and hooks
-  may assume systemd; no Grintion-specific hook setup is provided.
+- pacman uses the dated Arch Linux Archive snapshot in
+  `config/arch-snapshot` rather than the rolling mirrors. The image's
+  `cryptsetup`, `curl`, `pacman` and `sudo` are linked against
+  `libcrypto.so=3-64`/`libssl.so=3-64`; rolling Arch moved to OpenSSL 4, so a
+  desktop transaction failed with `installing openssl (4.1.0-1) breaks
+  dependency 'libcrypto.so=3-64'`. The snapshot contains OpenSSL 3.6.5 and
+  matches the seeded base.
+- `/etc/pacman.conf` sets `DisableDownloadTimeout` because the archive can move
+  a large package below pacman's default low-speed cutoff. A slow but
+  progressing KDE transaction therefore continues instead of aborting and
+  re-downloading the missing package. `grintion-desktop` passes the equivalent
+  `--disable-download-timeout` flag and still retries a failed transaction.
+- Signatures use `SigLevel = Required DatabaseOptional`, matching Arch's own
+  default: package signatures are mandatory, but the repository does not
+  publish detached database signatures (`core.db.sig`/`extra.db.sig` return
+  404). Requiring `DatabaseRequired` makes `pacman -Sy` fail. The Arch keyring
+  is pinned by `config/pacman-keyring.sha256` at image build time. Package
+  scripts and hooks may assume systemd; no Grintion-specific hook setup is
+  provided.
 - Repository, package-building and signing commands (`build`, `repo-build`,
   `repo-index`, `keygen`, `sign-index`) always use the native implementation.
 

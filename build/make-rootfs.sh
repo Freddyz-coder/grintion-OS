@@ -394,6 +394,36 @@ log "generating account databases from config/accounts.toml"
 python3 "$GRINTION_REPO_ROOT/build/gen-accounts.py" \
     --manifest "$CONFIG/accounts.toml" --etc "$ROOTFS/etc"
 
+# The udev tree is copied from the build host, so a host package can introduce
+# a rule that names a group this image does not have. udevd then logs
+# "Unknown group" beside the login prompt and the device is left with the wrong
+# group. Fail the image build instead of shipping an unresolved rule.
+python3 - "$ROOTFS" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+group_file = root / "etc" / "group"
+groups = {
+    line.split(":", 1)[0]
+    for line in group_file.read_text().splitlines()
+    if line.strip()
+}
+missing = {}
+for rule in sorted((root / "usr/lib/udev/rules.d").glob("*.rules")):
+    for number, line in enumerate(rule.read_text(errors="replace").splitlines(), 1):
+        for match in re.finditer(r'GROUP="([^"]+)"', line):
+            name = match.group(1)
+            if name not in groups:
+                missing.setdefault(name, []).append(f"{rule.name}:{number}")
+if missing:
+    for name, references in sorted(missing.items()):
+        print(f"[-] udev group {name!r} is missing (referenced by {', '.join(references)})", file=sys.stderr)
+    raise SystemExit(1)
+print(f"[+] udev groups resolved: {len(groups)} groups")
+PY
+
 # The runtime doctor checks this list instead of silently trusting the build.
 {
     grep -vE '^[[:space:]]*(#|$)' "$CONFIG/rootfs.required-binaries"
@@ -407,6 +437,10 @@ ln -sfn /proc/self/mounts "$ROOTFS/etc/mtab"
 # ---------------------------------------------------------------- pacman backend
 log "installing the pacman external backend"
 [ -f "$ROOTFS/etc/pacman.conf" ] || die "etc/pacman.conf missing from rootfs"
+PACMAN_SNAPSHOT="$(sed -n 's/^ALA_DATE=//p' "$CONFIG/arch-snapshot")"
+[ -n "$PACMAN_SNAPSHOT" ] || die "ALA_DATE is missing from config/arch-snapshot"
+grep -qF "archive.archlinux.org/repos/$PACMAN_SNAPSHOT/" "$ROOTFS/etc/pacman.conf" \
+    || die "etc/pacman.conf does not use the $PACMAN_SNAPSHOT Arch snapshot"
 mkdir -p "$ROOTFS/etc/pacman.d/gnupg" "$ROOTFS/etc/pacman.d/hooks" \
          "$ROOTFS/usr/share/pacman/keyrings"
 chmod 0700 "$ROOTFS/etc/pacman.d/gnupg"

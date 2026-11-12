@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.1] - 2026-11-12
+
+### Fixed
+
+- **Desktop packages resolve against the image, not rolling OpenSSL 4.** The
+  live arch mirrors moved to `openssl 4.1.0-1` (`libcrypto.so=4-64`), while the
+  image's `cryptsetup`, `curl`, `pacman` and `sudo` require
+  `libcrypto.so=3-64`. KDE and every other desktop failed before installing
+  with `breaks dependency 'libcrypto.so=3-64'`. `/etc/pacman.conf` now uses the
+  dated Arch Linux Archive snapshot from `config/arch-snapshot`
+  (`2026/11/01`), whose OpenSSL 3.6.5 satisfies the seeded base.
+- **Udev no longer prints unresolved groups beside the login prompt.** The
+  base account manifest now declares `colord` and `spice-webdavd`, which the
+  copied host rules reference. `make-rootfs.sh` now fails the image build if
+  any staged udev rule names a group that `/etc/group` does not contain.
+- **Udev and NTP diagnostics stay off the console.** `systemd-udevd` writes to
+  `/var/log/udev.log`; the timesync service waits until a configured NTP peer
+  actually resolves, writes to `/var/log/timesync.log`, and backs off instead
+  of restarting `ntpd` in a loop while DHCP is still running.
+- **A failed desktop pre-install is no longer announced as a successful
+  installation.** The summary says `[!] installation incomplete` when the
+  desktop or structural self-test failed, while preserving the usable base
+  system and the existing nonzero exit status.
+- **Large desktop downloads no longer abort on archive low-speed timeouts.**
+  The dated archive can be slower than pacman's default cutoff; the 1.2 GiB
+  KDE transaction failed with `Operation too slow` after partially downloading.
+  `/etc/pacman.conf` disables that timeout and `grintion-desktop` passes
+  `--disable-download-timeout`, so a slow but progressing download can finish.
+- **KDE no longer fills the live RAM overlay before failing.** A non-persistent
+  live boot has roughly half of RAM for its writable overlay, while KDE needs
+  about 4.8 GiB for the download and installed files. The desktop installer now
+  stops first and points to `grintion-install --desktop kde`, which uses the
+  target disk; machines with a large enough persistent overlay still install
+  normally.
+
+### Verification
+
+- `make check`: **171 passed**.
+- The rebuilt ISO boots under BIOS and UEFI with no `Unknown group`,
+  `Failed to resolve group`, `ntpd: bad address`, or default interface-naming
+  line on the console.
+- The installer test installs to a QEMU disk, reboots, logs in as the created
+  user, and verifies udev/seatd, DHCP, sudo, the clean login console and the
+  installed marker.
+- A 4 GiB live VM verifies that a direct KDE install stops before downloading
+  into the 1.9 GiB RAM overlay and points to `grintion-install --desktop kde`.
+- Pacman repository metadata was checked directly: the `2026/11/01` snapshot
+  contains `openssl 3.6.5-1`, which provides `libcrypto.so=3-64` and
+  `libssl.so=3-64`; the rolling database contains `openssl 4.1.0-1`, which
+  provides only the `=4-64` symbols. `pacman -Sp plasma-meta konsole dolphin
+  sddm xorg-server` resolves without a dependency conflict.
+- A full KDE target-disk installation completed with `[+] Grintion-OS 0.12.1
+  installed` and `desktop: kde (ready on boot)`. The installed disk contains
+  `sddm`, `plasmashell`, `plasma-meta 6.8-1`, `openssl 3.6.5-1`, a running
+  `seatd`, the display-manager link and the SDDM Wayland wrapper; udev and
+  timesync logs are clean. A graphical KDE session was not rendered in this
+  run; the 0.11.0 render remains the visual evidence.
+
+### Release
+
+- The 0.12.1 ISO is **164,825,088 bytes (158 MiB)** with SHA-256
+  `6123671524e5499678ee8d02469705259344e9522f7ee6316379a43452971163`.
+  It was built from this tree before the release commit; `output/BUILD-INFO`
+  records `git_commit=cc3480a`. No release key was available, so the artifacts
+  are unsigned; verify the checksum before use.
+
+---
+
 ## [0.12.0] - 2026-11-11
 
 ### Security
