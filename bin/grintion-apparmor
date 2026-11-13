@@ -188,6 +188,20 @@ def verify(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
     }
 
 
+def enforce_all(profile_dir: Path = DEFAULT_PROFILE_DIR) -> tuple[int, int]:
+    """Remove complain flags from every profile, then reload them."""
+    changed = 0
+    failed = 0
+    for profile in list_profiles(profile_dir):
+        path = Path(profile["path"])
+        if profile["mode"] == "complain" or profile["mode"] == "audit":
+            if set_profile_mode(path.name, "enforce", profile_dir):
+                changed += 1
+            else:
+                failed += 1
+    return changed, failed
+
+
 def set_profile_mode(name: str, target_mode: str, profile_dir: Path = DEFAULT_PROFILE_DIR) -> bool:
     target = profile_dir / name
     if not target.is_file():
@@ -232,7 +246,10 @@ def main() -> int:
     p_load.add_argument("profile", help="Profile filename or path")
 
     sub.add_parser("load-all", parents=[common], help="Load every profile in /etc/apparmor.d")
+    sub.add_parser("reload", parents=[common], help="Reload every profile, then verify kernel enforcement")
+    sub.add_parser("enforce-all", parents=[common], help="Remove complain/audit flags from every profile and reload")
     sub.add_parser("verify", parents=[common], help="Verify that the kernel is enforcing the on-disk profiles")
+    sub.add_parser("check", parents=[common], help="Alias for verify")
 
     p_enforce = sub.add_parser("enforce", parents=[common], help="Set profile to enforce mode")
     p_enforce.add_argument("profile", help="Profile name in /etc/apparmor.d")
@@ -260,7 +277,11 @@ def main() -> int:
                 print(f"  [{p['mode'].upper():8}] {p['name']}")
         return 0
 
-    if args.command == "load-all":
+    if args.command in {"load-all", "reload", "enforce-all"}:
+        if args.command == "enforce-all":
+            changed, mode_failures = enforce_all(profile_dir)
+            if changed or mode_failures:
+                print(f"Converted {changed} profile(s) to enforce; {mode_failures} failure(s).")
         parser_path = os.environ.get("GRINTION_APPARMOR_PARSER") or shutil.which("apparmor_parser")
         if not parser_path:
             message = "apparmor_parser is not installed"
@@ -270,15 +291,29 @@ def main() -> int:
                 print(f"Error: {message}", file=sys.stderr)
             return 1
         loaded, failed, errors = load_all(profile_dir, parser_path)
+        result = verify(profile_dir) if args.command == "reload" else None
         if getattr(args, "json", False):
-            print(json.dumps({"loaded": loaded, "failed": failed, "errors": errors}, indent=2))
+            payload = {"loaded": loaded, "failed": failed, "errors": errors}
+            if result is not None:
+                payload["verification"] = result
+            print(json.dumps(payload, indent=2))
         else:
             print(f"Loaded {loaded} profile(s); {failed} failure(s).")
             for error in errors:
                 print(f"  {error}", file=sys.stderr)
-        return 0 if failed == 0 else 1
+            if result is not None:
+                if result["compliant"]:
+                    print(f"Verified: {result['kernel_enforce']} profile(s) enforcing in the kernel.")
+                else:
+                    for issue in result["issues"]:
+                        print(f"  - {issue}", file=sys.stderr)
+        if failed:
+            return 1
+        if result is not None and not result["compliant"]:
+            return 1
+        return 0
 
-    if args.command == "verify":
+    if args.command in {"verify", "check"}:
         result = verify(profile_dir)
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))

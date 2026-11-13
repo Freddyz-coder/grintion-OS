@@ -1,4 +1,10 @@
 #!/bin/sh
+# Grintion-OS runit service: zram
+#
+# Compressed RAM swap keeps low-memory live sessions and small installed systems
+# responsive without touching the disk. The service is idempotent: it reuses an
+# already-active zram0 instead of failing on a second run.
+
 exec 2>&1
 echo "Configuring in-memory ZRAM swap device"
 
@@ -8,38 +14,40 @@ fi
 
 if [ "${ZRAM_ENABLED:-1}" -ne 1 ]; then
     echo "ZRAM disabled by configuration"
-    pause
+    exec sleep 86400
 fi
 
-# Load zram module if not built-in
 modprobe zram 2>/dev/null || true
 
 if [ ! -b /dev/zram0 ]; then
-    echo "zram block device /dev/zram0 not available; idling"
-    pause
+    echo "zram block device /dev/zram0 is unavailable; idling"
+    exec sleep 300
 fi
 
-# Compute total memory in MiB
-TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-TARGET_MEM_KB=$(( TOTAL_MEM_KB * ${ZRAM_SIZE_PERCENT:-50} / 100 ))
+if swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/dev/zram0'; then
+    echo "ZRAM swap already active"
+    exec sleep 86400
+fi
 
-# Set compression algorithm if sysfs attribute exists
+TOTAL_MEM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+TARGET_MEM_KB=$(( TOTAL_MEM_KB * ${ZRAM_SIZE_PERCENT:-50} / 100 ))
+# Keep a floor for tiny VMs and a ceiling so a large machine does not reserve
+# more compressed swap than it can reasonably use.
+[ "$TARGET_MEM_KB" -lt 262144 ] && TARGET_MEM_KB=262144
+[ "$TARGET_MEM_KB" -gt 8388608 ] && TARGET_MEM_KB=8388608
+
 if [ -w /sys/block/zram0/comp_algorithm ]; then
     echo "${ZRAM_ALGO:-zstd}" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
 fi
 
-# Set disksize
 if [ -w /sys/block/zram0/disksize ]; then
     echo "${TARGET_MEM_KB}K" > /sys/block/zram0/disksize 2>/dev/null || true
 fi
 
-# Initialize swap and turn on
 if command -v mkswap >/dev/null 2>&1 && command -v swapon >/dev/null 2>&1; then
     mkswap -L zram0 /dev/zram0 >/dev/null 2>&1 || true
     swapon -p "${ZRAM_PRIORITY:-100}" /dev/zram0 2>/dev/null || true
     echo "ZRAM swap active (${TARGET_MEM_KB} KiB, ${ZRAM_ALGO:-zstd})"
 fi
 
-# Supervise daemon loop
-exec pause
-
+exec sleep 86400

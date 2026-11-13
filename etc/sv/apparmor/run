@@ -1,11 +1,12 @@
 #!/bin/sh
 # Grintion-OS runit service: apparmor
 #
-# Loads every tracked profile once at boot. runit respawns a run script that
-# exits, so after reporting the service sleeps. A parser or policy failure is
-# logged and visible in `sv status`, but it never blocks the rest of boot.
+# Loads every tracked profile at boot, then verifies with the kernel that the
+# profiles are actually attached and enforcing. A profile that fails to parse is
+# logged and makes the service exit nonzero (runsv shows it as down) instead of
+# silently reporting a confined system.
 
-mkdir -p /var/log
+mkdir -p /var/log /run
 exec >> /var/log/apparmor.log 2>&1
 
 if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)" != "Y" ]; then
@@ -23,7 +24,7 @@ for candidate in /usr/bin/apparmor_parser /usr/sbin/apparmor_parser /sbin/apparm
 done
 if [ -z "$parser" ]; then
     echo "apparmor: apparmor_parser is missing; no profiles can be loaded"
-    exec sleep 3600
+    exec sleep 60
 fi
 
 loaded=0
@@ -42,5 +43,21 @@ for profile in /etc/apparmor.d/*; do
     fi
 done
 
+# The parser can succeed while a profile is not attached (for example because
+# the binary path does not exist yet). Ask the kernel, not the exit status.
+if command -v grintion-apparmor >/dev/null 2>&1; then
+    grintion-apparmor verify --json > /run/grintion-apparmor-status.json 2>/dev/null || {
+        echo "apparmor: kernel verification failed"
+        grintion-apparmor verify >&2 || true
+        exec sleep 60
+    }
+    echo "apparmor: kernel verification passed"
+else
+    echo "apparmor: grintion-apparmor is missing; cannot verify kernel state"
+fi
+
 echo "apparmor: $loaded profile(s) loaded, $failed failure(s)"
+if [ "$failed" -ne 0 ]; then
+    exec sleep 60
+fi
 exec sleep 3600

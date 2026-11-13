@@ -1,0 +1,19 @@
+#!/bin/sh
+# Grintion-OS runit service: selfheal
+#
+# Repairs the small set of broken states that make a booted system unusable:
+# permissions, a read-only root, a down loopback, unloaded AppArmor policy, an
+# inactive zram swap, broken service links, stale locks and exited services.
+# It runs once after boot-health, then stays quiet. `grintion-selfheal status`
+# and /var/log/grintion-selfheal.log record every action.
+
+exec >>/var/log/grintion-selfheal-service.log 2>&1
+echo "selfheal: starting $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+
+if ! command -v grintion-selfheal >/dev/null 2>&1; then
+    echo "selfheal: grintion-selfheal is missing; nothing to do"
+    exec sleep 86400
+fi
+
+grintion-selfheal run --quiet || echo "selfheal: one or more critical repairs were unresolved"
+exec sleep 86400

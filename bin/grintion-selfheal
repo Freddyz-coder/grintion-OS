@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""grintion-selfheal - repair common broken state beyond boot-health.
+
+The boot-health service only counts boot attempts and switches the default
+Limine entry. This service repairs the state that most often leaves a booted
+system unusable: wrong /tmp modes, a read-only root, a down loopback, unloaded
+AppArmor policy, an inactive zram swap, broken service links, stale package
+locks, missing resolver configuration, and services that exited.
+
+Repairs are explicit and recorded. Nothing here deletes user data. Use
+--dry-run to see the plan, and --json for automation.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("GRINTION_ROOT", "/"))
+STATE = Path(os.environ.get("GRINTION_SELFHEAL_STATE", str(ROOT / "var/lib/grintion/selfheal")))
+JOURNAL = Path(os.environ.get("GRINTION_SELFHEAL_LOG", str(ROOT / "var/log/grintion-selfheal.log")))
+SERVICES = ("udev", "dbus", "network", "firewall", "syslog", "timesync", "apparmor", "zram", "auditd", "seatd")
+
+
+def path(value: str) -> Path:
+    return ROOT / value.lstrip("/")
+
+
+def read(value: str) -> str:
+    try:
+        return path(value).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def run(command: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    return result.returncode == 0, (result.stderr or result.stdout).strip()
+
+
+class Repair:
+    def __init__(self, name: str, action: str, critical: bool = False) -> None:
+        self.name = name
+        self.action = action
+        self.critical = critical
+        self.applied = False
+        self.detail = ""
+
+
+def plan() -> list[Repair]:
+    repairs: list[Repair] = []
+
+    for directory in ("/tmp", "/var/tmp"):
+        candidate = path(directory)
+        if candidate.is_dir():
+            mode = candidate.stat().st_mode & 0o7777
+            if mode != 0o1777:
+                repairs.append(Repair("tmp-permissions", f"chmod 1777 {directory}"))
+
+    root_mount = ""
+    if ROOT == Path("/"):
+        try:
+            root_mount = subprocess.run(
+                ["findmnt", "-n", "-o", "OPTIONS", "/"],
+                capture_output=True, text=True, check=False, timeout=10,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            root_mount = ""
+    if root_mount and "ro" in root_mount.split(","):
+        repairs.append(Repair("root-readonly", "remount / read-write", critical=True))
+
+    services = path("/var/service")
+    if services.is_dir():
+        for link in services.iterdir():
+            if link.is_symlink() and not link.exists():
+                repairs.append(Repair("broken-service", f"remove broken service link {link.name}"))
+
+    garb_lock = path("/var/lib/garb/lock")
+    if garb_lock.is_file():
+        try:
+            holder = int(garb_lock.read_text(encoding="utf-8", errors="replace").splitlines()[0])
+        except (OSError, ValueError, IndexError):
+            holder = 0
+        if holder and not Path(f"/proc/{holder}").exists():
+            repairs.append(Repair("stale-garb-lock", f"remove stale garb lock held by dead pid {holder}"))
+
+    resolv = path("/etc/resolv.conf")
+    if not resolv.is_file() or not read("/etc/resolv.conf"):
+        repairs.append(Repair("resolver", "write fallback nameservers to /etc/resolv.conf"))
+
+    if ROOT == Path("/") and shutil.which("ip"):
+        try:
+            links = subprocess.run(
+                ["ip", "-o", "link", "show", "lo"],
+                capture_output=True, text=True, check=False, timeout=10,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            links = ""
+        if "LOOPBACK,UP" not in links:
+            repairs.append(Repair("loopback", "bring the loopback interface up"))
+
+    if ROOT == Path("/") and path("/sys/module/apparmor/parameters/enabled").is_file():
+        if read("/sys/module/apparmor/parameters/enabled") == "Y" and path(
+            "/sys/kernel/security/apparmor/profiles"
+        ).is_file():
+            if not read("/sys/kernel/security/apparmor/profiles"):
+                if shutil.which("grintion-apparmor"):
+                    repairs.append(Repair("apparmor", "load all AppArmor profiles"))
+
+    if ROOT == Path("/") and shutil.which("swapon"):
+        try:
+            swaps = subprocess.run(
+                ["swapon", "--show=NAME", "--noheadings"],
+                capture_output=True, text=True, check=False, timeout=10,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            swaps = ""
+        if "zram" not in swaps and path("/dev/zram0").exists() and shutil.which("sv"):
+            repairs.append(Repair("zram", "start the zram swap service"))
+
+    if ROOT == Path("/") and shutil.which("sv") and services.is_dir():
+        for name in SERVICES:
+            if not (services / name).exists():
+                continue
+            ok, output = run(["sv", "status", name])
+            if not ok or "down" in output or "fail" in output:
+                repairs.append(Repair("service-" + name, f"restart service {name}"))
+
+    if read("/proc/sys/kernel/random/entropy_avail").isdigit() and int(
+        read("/proc/sys/kernel/random/entropy_avail")
+    ) < 256:
+        repairs.append(Repair("entropy", "entropy pool is low; hardware RNG will refill it"))
+    return repairs
+
+
+def apply(repair: Repair, dry_run: bool) -> None:
+    if dry_run:
+        repair.detail = "planned"
+        return
+    if repair.name == "tmp-permissions":
+        directory = path(repair.action.rsplit(" ", 1)[-1])
+        directory.chmod(0o1777)
+        repair.applied = True
+    elif repair.name == "root-readonly":
+        ok, detail = run(["mount", "-o", "remount,rw", "/"])
+        repair.applied, repair.detail = ok, detail
+    elif repair.name == "broken-service":
+        link = path("/var/service") / repair.action.rsplit(" ", 1)[-1]
+        link.unlink(missing_ok=True)
+        repair.applied = True
+    elif repair.name == "stale-garb-lock":
+        path("/var/lib/garb/lock").unlink(missing_ok=True)
+        repair.applied = True
+    elif repair.name == "resolver":
+        target = path("/etc/resolv.conf")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("nameserver 1.1.1.1\nnameserver 8.8.8.8\n", encoding="utf-8")
+        repair.applied = True
+    elif repair.name == "loopback":
+        ok, detail = run(["ip", "link", "set", "lo", "up"])
+        repair.applied, repair.detail = ok, detail
+    elif repair.name == "apparmor":
+        ok, detail = run(["grintion-apparmor", "load-all"])
+        repair.applied, repair.detail = ok, detail
+    elif repair.name == "zram":
+        ok, detail = run(["sv", "start", "zram"])
+        repair.applied, repair.detail = ok, detail
+    elif repair.name.startswith("service-"):
+        ok, detail = run(["sv", "restart", repair.name.removeprefix("service-")])
+        repair.applied, repair.detail = ok, detail
+    elif repair.name == "entropy":
+        repair.detail = "informational; no action taken"
+
+
+def journal(records: list[Repair], dry_run: bool) -> None:
+    try:
+        JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+        with JOURNAL.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "dry_run": dry_run,
+                "repairs": [
+                    {"name": r.name, "action": r.action, "applied": r.applied, "detail": r.detail}
+                    for r in records
+                ],
+            }) + "\n")
+    except OSError:
+        pass
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="grintion-selfheal")
+    parser.add_argument("command", nargs="?", choices=("run", "plan", "status"), default="run")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+
+    if args.command == "status":
+        entries = []
+        try:
+            entries = [json.loads(line) for line in JOURNAL.read_text(encoding="utf-8").splitlines() if line]
+        except (OSError, json.JSONDecodeError):
+            pass
+        last = entries[-1] if entries else None
+        if args.json:
+            print(json.dumps({"schema": 1, "journal": str(JOURNAL), "last": last, "runs": len(entries)}, indent=2))
+        else:
+            print(f"self-heal journal: {JOURNAL}")
+            print(f"runs recorded: {len(entries)}")
+            if last:
+                print(f"last run: {last['timestamp']} ({len(last.get('repairs', []))} repair(s))")
+        return 0
+
+    if ROOT == Path("/") and args.command == "run":
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            lock = (STATE / "lock").open("w")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[!] another self-heal run is active", file=sys.stderr)
+            return 0
+        except PermissionError:
+            # A non-root plan/report is still useful.
+            pass
+
+    repairs = plan()
+    if args.command == "plan" or args.dry_run:
+        if args.json:
+            print(json.dumps([r.__dict__ for r in repairs], indent=2))
+        else:
+            for repair in repairs:
+                print(f"  {repair.name}: {repair.action}")
+            if not repairs:
+                print("[ ok ] nothing to repair")
+        return 0
+
+    for repair in repairs:
+        apply(repair, args.dry_run)
+    journal(repairs, args.dry_run)
+
+    failed = [r for r in repairs if r.critical and not r.applied]
+    if args.json:
+        print(json.dumps({
+            "schema": 1,
+            "repairs": [r.__dict__ for r in repairs],
+            "failed": [r.name for r in failed],
+        }, indent=2))
+    elif not args.quiet:
+        for repair in repairs:
+            state = "FIXED" if repair.applied else "UNRESOLVED"
+            print(f"[{state}] {repair.name}: {repair.action}")
+        if not repairs:
+            print("[ ok ] system state clean")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

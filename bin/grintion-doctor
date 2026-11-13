@@ -1,18 +1,53 @@
 #!/bin/sh
-# grintion-doctor - fail loudly when the running image is incomplete.
+# grintion-doctor - diagnose a running or staged Grintion-OS system.
 #
-# The build checks every required command on the host, but a bad rootfs copy,
-# a missing sudo plugin or a stripped runtime image can still boot. This tool
-# turns those "inaccessible / not found" failures into one explicit critical
-# report instead of leaving the user to discover them one command at a time.
+# The build proves that files were copied. It cannot prove that the running
+# kernel enforces AppArmor, that auditd has userspace behind its service, that
+# a Wi-Fi card has firmware, that zram is active, or that a Btrfs root has a
+# snapshot to roll back to. This tool checks those things explicitly and exits
+# nonzero on a critical finding, so scripts and the release self-test cannot
+# mistake a broken image for a healthy one.
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 FAILED=0
+WARNINGS=0
 ROOT=${GRINTION_ROOT:-}
 FIX_MODE=0
 DRY_RUN=0
+JSON=0
+STRICT=0
+VERBOSE=0
+
+usage() {
+    cat <<'EOF'
+Usage: grintion-doctor [OPTIONS]
+
+  (no options)       Run every runtime check
+  --security [...]   Delegate to grintion-security-report
+  --fix [--dry-run]  Apply safe, reversible repairs
+  --json             Machine-readable findings
+  --strict           Treat warnings as failures
+  --verbose          Print passing checks too (default: only findings)
+  -h, --help         Show this help
+
+Checks cover required commands, architecture policy, kernel features, AppArmor
+enforcement, auditd userspace, firmware for detected hardware, services, zram,
+disk/inode pressure, snapshots, boot health, time, DNS and entropy.
+EOF
+}
+
+# Report-mode flags may precede or follow the mode selector. Parse them before
+# dispatching so `grintion-doctor --json` actually enables JSON output.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --json) JSON=1; shift ;;
+        --strict) STRICT=1; shift ;;
+        --verbose) VERBOSE=1; shift ;;
+        *) break ;;
+    esac
+done
 
 case "${1-}" in
     --security)
@@ -30,28 +65,18 @@ case "${1-}" in
     --fix)
         FIX_MODE=1
         shift
-        if [ "${1-}" = "--dry-run" ]; then
-            DRY_RUN=1
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --dry-run) DRY_RUN=1 ;;
+                --json) JSON=1 ;;
+                *) printf '[-] unknown --fix option: %s\n' "$1" >&2; exit 2 ;;
+            esac
             shift
-        fi
+        done
         ;;
     -h|--help)
-        cat <<'EOF'
-Usage: grintion-doctor [--security [REPORT OPTIONS]] [--fix [--dry-run]]
-
-With no options, check that the required runtime components are present.
---security delegates to grintion-security-report; --json and --strict are
-passed through to that report.
---fix applies safe, reversible repairs to system state (permissions, loopback,
-broken service symlinks, stale locks, DNS configuration).
-EOF
+        usage
         exit 0
-        ;;
-    "")
-        ;;
-    *)
-        printf '[-] unknown option: %s (see --help)\n' "$1" >&2
-        exit 2
         ;;
 esac
 
@@ -60,81 +85,102 @@ if [ "$FIX_MODE" -eq 1 ]; then
     LOG_FILE="${ROOT}/var/log/grintion-doctor-fix.json"
     mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date)
+    fixed() { printf '[FIXED] %s\n' "$*"; FIXES_APPLIED=$((FIXES_APPLIED + 1)); }
+    planned() { printf '[DRY-RUN] would %s\n' "$*"; FIXES_APPLIED=$((FIXES_APPLIED + 1)); }
 
-    # 1. Check & fix permissions on /tmp and /var/tmp (must be 1777)
     for tmpdir in "${ROOT}/tmp" "${ROOT}/var/tmp"; do
-        if [ -d "$tmpdir" ]; then
-            perm=$(stat -c "%a" "$tmpdir" 2>/dev/null || stat -f "%OLp" "$tmpdir" 2>/dev/null || true)
-            if [ "$perm" != "1777" ]; then
-                if [ "$DRY_RUN" -eq 1 ]; then
-                    printf '[DRY-RUN] would chmod 1777 %s (current: %s)\n' "$tmpdir" "$perm"
-                else
-                    chmod 1777 "$tmpdir" 2>/dev/null && printf '[FIXED] permissions on %s restored to 1777 (was %s)\n' "$tmpdir" "$perm" || true
-                fi
-                FIXES_APPLIED=$((FIXES_APPLIED + 1))
+        [ -d "$tmpdir" ] || continue
+        perm=$(stat -c "%a" "$tmpdir" 2>/dev/null || true)
+        if [ "$perm" != "1777" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                planned "chmod 1777 $tmpdir (current: $perm)"
+            else
+                chmod 1777 "$tmpdir" 2>/dev/null && fixed "permissions on $tmpdir restored to 1777 (was $perm)"
             fi
         fi
     done
 
-    # 2. Check & fix loopback interface if down
     if command -v ip >/dev/null 2>&1 && [ -z "$ROOT" ]; then
         if ! ip -o link show lo 2>/dev/null | grep -q 'LOOPBACK,UP'; then
             if [ "$DRY_RUN" -eq 1 ]; then
-                printf '[DRY-RUN] would bring up loopback interface lo\n'
+                planned "bring up loopback interface lo"
             else
-                ip link set lo up 2>/dev/null && printf '[FIXED] loopback interface lo brought UP\n' || true
+                ip link set lo up 2>/dev/null && fixed "loopback interface lo brought UP"
             fi
-            FIXES_APPLIED=$((FIXES_APPLIED + 1))
         fi
     fi
 
-    # 3. Clean up broken/dangling symlinks in /var/service
     if [ -d "${ROOT}/var/service" ]; then
         for link in "${ROOT}/var/service"/*; do
             [ -L "$link" ] || continue
             if [ ! -e "$link" ]; then
                 if [ "$DRY_RUN" -eq 1 ]; then
-                    printf '[DRY-RUN] would remove broken symlink: %s\n' "$link"
+                    planned "remove broken symlink: $link"
                 else
-                    rm -f "$link" && printf '[FIXED] removed broken service symlink: %s\n' "$link"
+                    rm -f "$link" && fixed "removed broken service symlink: $link"
                 fi
-                FIXES_APPLIED=$((FIXES_APPLIED + 1))
             fi
         done
     fi
 
-    # 4. Remove stale garb locks if holding process is dead
     GARB_LOCK="${ROOT}/var/lib/garb/lock"
     if [ -f "$GARB_LOCK" ]; then
         holder_pid=$(head -n 1 "$GARB_LOCK" 2>/dev/null | tr -cd '0-9')
         if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
             if [ "$DRY_RUN" -eq 1 ]; then
-                printf '[DRY-RUN] would remove stale garb lock (pid %s dead)\n' "$holder_pid"
+                planned "remove stale garb lock (pid $holder_pid dead)"
             else
-                rm -f "$GARB_LOCK" && printf '[FIXED] removed stale garb lock (pid %s not running)\n' "$holder_pid"
+                rm -f "$GARB_LOCK" && fixed "removed stale garb lock (pid $holder_pid not running)"
             fi
-            FIXES_APPLIED=$((FIXES_APPLIED + 1))
         fi
     fi
 
-    # 5. Check and repair /etc/resolv.conf if missing or broken symlink
     RESOLV="${ROOT}/etc/resolv.conf"
     if [ ! -f "$RESOLV" ] || [ ! -s "$RESOLV" ]; then
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '[DRY-RUN] would repair %s with fallback nameservers\n' "$RESOLV"
+            planned "repair $RESOLV with fallback nameservers"
         else
             mkdir -p "$(dirname "$RESOLV")"
             printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$RESOLV"
-            printf '[FIXED] restored fallback nameservers in %s\n' "$RESOLV"
+            fixed "restored fallback nameservers in $RESOLV"
         fi
-        FIXES_APPLIED=$((FIXES_APPLIED + 1))
+    fi
+
+    if [ -n "$ROOT" ] && command -v mount >/dev/null 2>&1; then
+        ROOT_OPTS=$(findmnt -n -o OPTIONS -T "$ROOT" 2>/dev/null || true)
+        case ",$ROOT_OPTS," in
+            *,ro,*) if [ "$DRY_RUN" -eq 1 ]; then planned "remount $ROOT read-write"; else mount -o remount,rw "$ROOT" 2>/dev/null && fixed "remounted $ROOT read-write"; fi ;;
+        esac
+    fi
+
+    if [ -z "$ROOT" ] && command -v grintion-apparmor >/dev/null 2>&1 \
+        && [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)" = "Y" ]; then
+        if [ -d /sys/kernel/security/apparmor ] && [ ! -s /sys/kernel/security/apparmor/profiles ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                planned "load all AppArmor profiles"
+            else
+                grintion-apparmor load-all >/dev/null 2>&1 && fixed "loaded AppArmor profiles"
+            fi
+        fi
+    fi
+
+    if [ -z "$ROOT" ] && command -v swapon >/dev/null 2>&1 && [ -b /dev/zram0 ]; then
+        if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                planned "start zram swap"
+            else
+                command -v sv >/dev/null 2>&1 && sv start zram >/dev/null 2>&1 && fixed "started zram swap"
+            fi
+        fi
     fi
 
     if [ "$DRY_RUN" -eq 0 ] && [ -w "$(dirname "$LOG_FILE")" ]; then
         printf '{"timestamp": "%s", "fixes_applied": %d}\n' "$TIMESTAMP" "$FIXES_APPLIED" >> "$LOG_FILE" 2>/dev/null || true
     fi
-
-    if [ "$FIXES_APPLIED" -eq 0 ]; then
+    if [ "$JSON" -eq 1 ]; then
+        printf '{"schema": 1, "mode": "fix", "dry_run": %s, "fixes_applied": %d}\n' \
+            "$([ "$DRY_RUN" -eq 1 ] && echo true || echo false)" "$FIXES_APPLIED"
+    elif [ "$FIXES_APPLIED" -eq 0 ]; then
         printf '[ ok ] system state clean; no fixes needed\n'
     else
         printf '[ ok ] applied %d repair(s)\n' "$FIXES_APPLIED"
@@ -142,16 +188,26 @@ if [ "$FIX_MODE" -eq 1 ]; then
     exit 0
 fi
 
-report() {
-    printf '[CRITICAL] %s\n' "$*" >&2
-    FAILED=1
+# ---------------------------------------------------------------- report mode
+FINDINGS=$(mktemp 2>/dev/null || echo "/tmp/grintion-doctor.$$")
+trap 'rm -f "$FINDINGS"' EXIT
+: > "$FINDINGS"
+
+record() {
+    status=$1 name=$2 detail=$3
+    printf '%s\t%s\t%s\n' "$status" "$name" "$detail" >> "$FINDINGS"
+    case "$status" in
+        CRITICAL) FAILED=1 ;;
+        WARN) WARNINGS=$((WARNINGS + 1)) ;;
+    esac
 }
 
+ok()    { record ok "$1" "${2-}"; [ "$VERBOSE" -eq 1 ] && printf '[ ok ] %s%s\n' "$1" "${2:+ - $2}"; return 0; }
+warn()  { record WARN "$1" "${2-}"; printf '[WARN] %s%s\n' "$1" "${2:+ - $2}" >&2; return 0; }
+crit()  { record CRITICAL "$1" "${2-}"; printf '[CRITICAL] %s%s\n' "$1" "${2:+ - $2}" >&2; return 0; }
+
 secure_boot_state() {
-    if [ ! -d /sys/firmware/efi ]; then
-        printf 'not-applicable\n'
-        return 0
-    fi
+    if [ ! -d /sys/firmware/efi ]; then printf 'not-applicable\n'; return 0; fi
     for var in /sys/firmware/efi/efivars/SecureBoot-*; do
         [ -f "$var" ] || continue
         value=$(od -An -t u1 -j 4 -N 1 "$var" 2>/dev/null | tr -d ' \n')
@@ -165,58 +221,270 @@ secure_boot_state() {
     printf 'unknown\n'
 }
 
+kernel_option() {
+    symbol=$1
+    config=""
+    if [ -r "/boot/config-$(uname -r)" ]; then
+        config="/boot/config-$(uname -r)"
+    elif [ -r /usr/lib/grintion/boot/config-grintion ]; then
+        config=/usr/lib/grintion/boot/config-grintion
+    elif [ -r /proc/config.gz ]; then
+        if command -v zcat >/dev/null 2>&1; then
+            zcat /proc/config.gz 2>/dev/null | grep -qx "CONFIG_${symbol}=y" && return 0
+            zcat /proc/config.gz 2>/dev/null | grep -qx "CONFIG_${symbol}=m" && return 0
+            return 1
+        fi
+        return 1
+    else
+        return 1
+    fi
+    grep -qx "CONFIG_${symbol}=y" "$config" 2>/dev/null && return 0
+    grep -qx "CONFIG_${symbol}=m" "$config" 2>/dev/null && return 0
+    return 1
+}
+
 if [ ! -f /etc/grintion/version ]; then
-    report "/etc/grintion/version is missing"
+    crit "/etc/grintion/version is missing"
 else
-    printf '[ ok ] Grintion-OS %s\n' "$(cat /etc/grintion/version)"
+    ok "Grintion-OS $(cat /etc/grintion/version)"
 fi
 
-# The live image used to boot with lo DOWN, which broke D-Bus, X11 and local
-# package repositories. Keep the check visible so a regression is explicit.
+# Architecture policy.
+if command -v grintion-arch >/dev/null 2>&1; then
+    if grintion-arch check --require install >/dev/null 2>&1; then
+        ok "architecture policy" "$(grintion-arch plan 2>/dev/null)"
+    else
+        crit "architecture policy" "this image cannot run on this CPU"
+    fi
+    if [ "$(uname -m)" = "x86_64" ]; then
+        if grintion-arch check --require 32 >/dev/null 2>&1; then
+            ok "32-bit compatibility" "IA32 emulation and loader present"
+        else
+            warn "32-bit compatibility" "32-bit programs will not run (no IA32 loader)"
+        fi
+    fi
+else
+    warn "architecture policy" "grintion-arch is missing"
+fi
+
 if command -v ip >/dev/null 2>&1; then
     if ! ip -o link show lo 2>/dev/null | grep -q 'LOOPBACK,UP'; then
-        report "loopback interface is down"
+        crit "loopback interface is down"
+    else
+        ok "loopback interface"
     fi
 fi
 
-# There is no signed Grintion boot chain. Report the firmware state instead of
-# implying verified boot support that the image does not provide.
 SB_STATE=$(secure_boot_state)
 case "$SB_STATE" in
-    enabled)
-        printf '[WARN] Secure Boot is enabled; Grintion-OS has no signed boot chain and does not support Secure Boot\n' >&2
-        ;;
-    disabled|not-applicable)
-        printf '[ ok ] Secure Boot: %s\n' "$SB_STATE"
-        ;;
-    *)
-        printf '[WARN] Secure Boot state is unknown; the image does not provide a signed boot chain\n' >&2
-        ;;
+    enabled) warn "Secure Boot is enabled; Grintion-OS has no signed boot chain and does not support Secure Boot" ;;
+    disabled|not-applicable) ok "Secure Boot" "$SB_STATE" ;;
+    *) warn "Secure Boot state is unknown; the image does not provide a signed boot chain" ;;
 esac
 
-# sudo loads its policy plugin with dlopen; a missing plugin is fatal even
-# though the sudo binary and its shared libraries are present.
 if [ ! -f /usr/lib/sudo/sudoers.so ]; then
-    report "sudoers plugin is missing: /usr/lib/sudo/sudoers.so"
+    crit "sudoers plugin is missing" "/usr/lib/sudo/sudoers.so"
+else
+    ok "sudoers plugin"
 fi
 
 if [ -r /etc/grintion/required-commands ]; then
+    missing=""
     while IFS= read -r cmd; do
         [ -n "$cmd" ] || continue
         case "$cmd" in \#*) continue ;; esac
-        command -v "$cmd" >/dev/null 2>&1 || report "required command is missing: $cmd"
+        command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
     done < /etc/grintion/required-commands
+    if [ -n "$missing" ]; then
+        crit "required commands are missing" "$missing"
+    else
+        ok "required commands"
+    fi
 else
-    report "/etc/grintion/required-commands is missing"
+    crit "/etc/grintion/required-commands is missing"
 fi
 
-# Only root can test the sudo policy without a password. A non-root user may
-# legitimately be prompted, so do not report that as an image failure.
 if [ "$(id -u)" -eq 0 ] && ! sudo -n true >/dev/null 2>&1; then
-    report "sudo cannot load its policy as root"
+    crit "sudo cannot load its policy as root"
 fi
 
-if [ "$FAILED" -eq 0 ]; then
-    printf '[ ok ] all required runtime components are present\n'
+# Kernel features the image's security and recovery story depends on.
+for symbol in SECURITY_APPARMOR AUDIT ZRAM OVERLAY_FS; do
+    if kernel_option "$symbol"; then
+        ok "kernel feature $symbol"
+    else
+        warn "kernel feature $symbol is not enabled; the matching userspace feature cannot work"
+    fi
+done
+if [ "$(uname -m)" = "x86_64" ] && ! kernel_option IA32_EMULATION; then
+    warn "CONFIG_IA32_EMULATION is off; 32-bit binaries cannot run"
+fi
+
+# AppArmor: files are candidates, the kernel list is the truth.
+if command -v grintion-apparmor >/dev/null 2>&1; then
+    AA_JSON=$(grintion-apparmor verify --json 2>/dev/null || true)
+    if printf '%s' "$AA_JSON" | grep -q '"compliant": true'; then
+        ok "AppArmor enforcement" "kernel is enforcing the on-disk profiles"
+    elif printf '%s' "$AA_JSON" | grep -q '"compliant": false'; then
+        crit "AppArmor verification failed" "run: grintion-apparmor status"
+    else
+        warn "AppArmor state could not be read"
+    fi
+else
+    warn "grintion-apparmor is missing"
+fi
+
+# auditd is only meaningful when both the binary and the service exist.
+if [ -e /var/service/auditd ] || [ -e "$ROOT/var/service/auditd" ]; then
+    if command -v auditd >/dev/null 2>&1; then
+        if pgrep -x auditd >/dev/null 2>&1; then
+            ok "auditd" "running"
+        else
+            crit "auditd service is enabled but the daemon is not running"
+        fi
+    else
+        crit "auditd service is enabled but auditd userspace is missing"
+    fi
+fi
+
+# Firewall.
+if command -v nft >/dev/null 2>&1 && [ -z "$ROOT" ]; then
+    if nft list ruleset 2>/dev/null | grep -q 'hook input'; then
+        ok "nftables input policy"
+    else
+        warn "nftables has no input hook; the firewall may not be applied"
+    fi
+fi
+
+# Firmware presence, per device.
+if command -v grintion-hwreport >/dev/null 2>&1; then
+    FW=$(grintion-hwreport --json 2>/dev/null || true)
+    if [ -n "$FW" ]; then
+        FW_MISSING=$(printf '%s' "$FW" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("device_firmware",{}).get("missing_count",0))' 2>/dev/null || echo 0)
+        if [ "${FW_MISSING:-0}" -gt 0 ]; then
+            warn "firmware is missing for $FW_MISSING device firmware file(s)" "run: grintion-hwreport"
+        else
+            ok "firmware presence"
+        fi
+    fi
+else
+    warn "grintion-hwreport is missing"
+fi
+
+# Storage and recovery.
+if [ -z "$ROOT" ]; then
+    ROOT_OPTS=$(findmnt -n -o OPTIONS / 2>/dev/null || true)
+    case ",$ROOT_OPTS," in
+        *,ro,*) crit "root filesystem is mounted read-only" ;;
+        *) ok "root filesystem is writable" ;;
+    esac
+    USE=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+    if [ -n "$USE" ]; then
+        if [ "$USE" -ge 95 ]; then crit "root filesystem is ${USE}% full"
+        elif [ "$USE" -ge 90 ]; then warn "root filesystem is ${USE}% full"
+        else ok "root filesystem usage" "${USE}%"
+        fi
+    fi
+    INODES=$(df -Pi / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+    if [ -n "$INODES" ] && [ "$INODES" -ge 95 ]; then warn "root inode usage is ${INODES}%"; fi
+
+    if [ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = "btrfs" ]; then
+        if [ -d /.snapshots ] && [ -n "$(ls -A /.snapshots 2>/dev/null)" ]; then
+            ok "Btrfs snapshots" "$(ls -1 /.snapshots 2>/dev/null | wc -l) available"
+        else
+            warn "Btrfs root has no snapshots; grintion-snapshot rollback has nothing to restore"
+        fi
+    fi
+fi
+
+# Memory: zram should be active on the live image and on installed systems.
+if [ -z "$ROOT" ] && [ -b /dev/zram0 ]; then
+    if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then
+        ok "zram swap" "$(swapon --show=SIZE --noheadings 2>/dev/null | head -1)"
+    else
+        warn "zram device exists but is not active"
+    fi
+fi
+MEM_AVAILABLE=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
+if [ -n "$MEM_AVAILABLE" ] && [ "$MEM_AVAILABLE" -lt 64 ]; then
+    warn "only ${MEM_AVAILABLE} MiB of memory is available"
+fi
+
+# Boot health and boot assets.
+if command -v grintion-boot-health >/dev/null 2>&1 && [ -z "$ROOT" ]; then
+    BH=$(grintion-boot-health status --json 2>/dev/null || true)
+    ATTEMPTS=$(printf '%s' "$BH" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("attempts",0))' 2>/dev/null || echo 0)
+    if [ "${ATTEMPTS:-0}" -ge 3 ]; then
+        crit "boot-health has recorded ${ATTEMPTS} consecutive attempts" "run: grintion-boot-health status"
+    else
+        ok "boot-health" "${ATTEMPTS:-0} attempt(s)"
+    fi
+fi
+if [ -f /boot/efi/EFI/grintion/vmlinuz-grintion ] && [ ! -f /boot/efi/EFI/grintion/initramfs-install.img ]; then
+    crit "installed initramfs is missing from the ESP"
+fi
+if [ -d /boot/efi ] && [ -f /boot/efi/limine.conf ] && [ ! -f /boot/efi/EFI/BOOT/BOOTX64.EFI ] && [ ! -f /boot/efi/EFI/BOOT/BOOTIA32.EFI ]; then
+    warn "Limine fallback EFI binary is missing from the ESP"
+fi
+
+# Time, DNS and entropy: TLS and repository signatures depend on all three.
+YEAR=$(date -u +%Y 2>/dev/null || echo 0)
+if [ "$YEAR" -lt 2024 ]; then
+    warn "system clock is set to $YEAR; TLS and signed repositories will fail"
+fi
+if [ ! -s /etc/resolv.conf ] || ! grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+    warn "no resolver is configured in /etc/resolv.conf"
+fi
+ENTROPY=$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null || echo "")
+if [ -n "$ENTROPY" ] && [ "$ENTROPY" -lt 256 ]; then
+    warn "entropy pool is low (${ENTROPY} bits)"
+fi
+
+# Enabled runit services that are down.
+if command -v sv >/dev/null 2>&1 && [ -d /var/service ]; then
+    for link in /var/service/*; do
+        [ -e "$link" ] || continue
+        name=${link##*/}
+        if ! sv status "$name" 2>/dev/null | grep -q '^run:'; then
+            case "$name" in
+                agetty-*) ;;
+                *) warn "service '$name' is enabled but not running" ;;
+            esac
+        fi
+    done
+fi
+
+if [ "$JSON" -eq 1 ]; then
+    python3 - "$FINDINGS" "$FAILED" "$WARNINGS" <<'PY'
+import json
+import sys
+
+findings = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        status, name, detail = (line.rstrip("\n").split("\t", 2) + ["", ""])[:3]
+        findings.append({"status": status, "check": name, "detail": detail})
+print(json.dumps({
+    "schema": 1,            "ok": sys.argv[2] == "0",
+    "critical": sum(1 for f in findings if f["status"] == "CRITICAL"),
+    "warnings": sum(1 for f in findings if f["status"] == "WARN"),
+    "findings": findings,
+}, indent=2))
+PY
+else
+    case "$WARNINGS" in
+        0) ;;
+        1) printf '[!] 1 warning\n' >&2 ;;
+        *) printf '[!] %s warnings\n' "$WARNINGS" >&2 ;;
+    esac
+    if [ "$FAILED" -eq 0 ] && [ "$WARNINGS" -eq 0 ]; then
+        printf '[ ok ] all runtime checks passed\n'
+    elif [ "$FAILED" -eq 0 ]; then
+        printf '[ ok ] no critical findings\n'
+    fi
+fi
+
+if [ "$STRICT" -eq 1 ] && [ "$WARNINGS" -gt 0 ]; then
+    FAILED=1
 fi
 exit "$FAILED"

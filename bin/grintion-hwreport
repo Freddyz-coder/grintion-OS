@@ -1,0 +1,13 @@
+#!/bin/sh
+# grintion-hwreport - hardware report with an explicit firmware verdict.
+#
+# grintion-hwinfo always includes the firmware section. This entry point exists
+# because the dossier and documentation refer to "grintion-hwreport"; keeping it
+# a thin wrapper means there is only one detector to maintain.
+set -eu
+
+SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$SELF_DIR/grintion-hwinfo" ]; then
+    exec "$SELF_DIR/grintion-hwinfo" "$@"
+fi
+exec grintion-hwinfo "$@"

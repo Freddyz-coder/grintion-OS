@@ -36,6 +36,26 @@ Firmware binaries are distributed under vendor-specific redistributable licenses
 
 No non-redistributable or NDA-restricted blobs are bundled in standard ISO builds.
 
+## Firmware presence is reported, not assumed
+
+The base image ships no vendor firmware. `grintion-hwreport` (also available as
+`grintion-hwinfo`) resolves each PCI/USB device's modalias to its kernel module,
+asks `modinfo` which firmware files that module requests, and checks whether they
+exist under `/usr/lib/firmware`. When a Wi-Fi card is detected but its firmware
+is absent it says so directly:
+
+```
+this Wi-Fi card needs linux-firmware-intel + iwlwifi-cc-a0-77.ucode;
+it will not work on the base image
+```
+
+`grintion-driver-select` performs the same detection non-interactively. It
+writes `/etc/grintion/hardware-profile.json`, `/etc/grintion/initramfs-modules`
+and a `modules-load.d` file, and with `--apply` installs only the matching
+`linux-firmware-*` packages plus `intel-ucode` or `amd-ucode`. `grintion-install`
+runs it by default after the base copy; `--no-auto-drivers` disables it and an
+offline run leaves a manifest with the exact packages to install later.
+
 ## Hardware Compatibility List (HCL)
 
 Grintion-OS includes `grintion-hcl`, which inspects system DMI, PCI buses, storage,

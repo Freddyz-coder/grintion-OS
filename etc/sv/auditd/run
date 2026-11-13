@@ -1,17 +1,44 @@
 #!/bin/sh
+# Grintion-OS runit service: auditd
+#
+# The kernel has CONFIG_AUDIT=y and CONFIG_AUDITSYSCALL=y. The build copies the
+# audit userspace (auditd, auditctl, ausearch, aureport) and this service fails
+# visibly if it is ever missing, instead of pretending to run.
+
 exec 2>&1
 mkdir -p /var/log/audit
 chmod 0750 /var/log/audit
 
 if ! command -v auditd >/dev/null 2>&1; then
-    echo "auditd not found; waiting"
-    pause
+    echo "auditd: binary is missing from the image; refusing to fake the service"
+    exec sleep 60
+fi
+if ! command -v auditctl >/dev/null 2>&1; then
+    echo "auditd: auditctl is missing from the image; rules cannot be loaded"
+    exec sleep 60
 fi
 
-# Load rules if auditctl exists
-if command -v auditctl >/dev/null 2>&1 && [ -f /etc/audit/audit.rules ]; then
-    auditctl -R /etc/audit/audit.rules || true
+# A watch on a path that does not exist makes auditctl fail the whole file.
+# The live image has no /etc/ssh/sshd_config and no ESP config, so build a
+# filtered copy and load that.
+filtered=/run/audit/audit.rules
+mkdir -p /run/audit
+: > "$filtered"
+if [ -f /etc/audit/audit.rules ]; then
+    while IFS= read -r line; do
+        case "$line" in
+            -w\ *)
+                target=$(printf '%s\n' "$line" | awk '{print $2}')
+                [ -e "$target" ] || continue
+                ;;
+        esac
+        printf '%s\n' "$line" >> "$filtered"
+    done < /etc/audit/audit.rules
+    if ! auditctl -R "$filtered"; then
+        echo "auditd: failed to load $filtered"
+        exit 1
+    fi
 fi
 
+echo "auditd: starting"
 exec auditd -f
-

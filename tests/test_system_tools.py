@@ -463,7 +463,7 @@ def test_pacman_uses_the_image_snapshot_not_rolling_mirrors() -> None:
     )
     expected = f"https://archive.archlinux.org/repos/{date}/$repo/os/$arch"
     conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
-    assert conf.count(expected) == 2  # core and extra
+    assert conf.count(expected) == 3  # core, extra and multilib
     assert "geo.mirror.pkgbuild.com" not in conf
     assert "archive.archlinux.org/repos/2026/11/01" in conf
 

@@ -8,10 +8,10 @@ Grintion-OS supports four system security profiles managed via `grintion-securit
 
 | Profile | Target Environment | Firewall Policy | AppArmor Mode | USB Policy | Network | Audit Trail |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`workstation`** | Desktop / Workstation | Drop unsolicited inbound | Enforce shipped daemon profiles | Allowed | Enabled | Rules staged; no daemon |
-| **`server`** | Hardened Headless Server | Strict inbound drop; no service ports opened by default | Enforce all | Data-block enabled | Enabled | Rules staged; no daemon |
-| **`kiosk`** | Display / Single-app Kiosk | Strict inbound drop | Enforce all | Data-block enabled | Enabled | Rules staged; no daemon |
-| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled | Rules staged; no daemon |
+| **`workstation`** | Desktop / Workstation | Drop unsolicited inbound | Enforce shipped daemon profiles | Allowed | Enabled | Enabled (`auditd`) |
+| **`server`** | Hardened Headless Server | Strict inbound drop; no service ports opened by default | Enforce all | Data-block enabled | Enabled | Enabled (`auditd`) |
+| **`kiosk`** | Display / Single-app Kiosk | Strict inbound drop | Enforce all | Data-block enabled | Enabled | Enabled (`auditd`) |
+| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled | Enabled (`auditd`) |
 
 The security profile can be chosen during installation via `grintion-install --security-profile <PROF>` and inspected at any time with `grintion-security status` or `grintion-security-report`.
 
@@ -24,10 +24,12 @@ policy. `verify` checks the active `nft list ruleset` chain marker, AppArmor
 enforcement, the USB config, and auditd availability instead of trusting the
 configuration file alone.
 
-**Auditd is not shipped in the current base image.** The rules and service file
-are staged for a future package, but `auditd`/`auditctl` userspace is absent, so
-the profile reports a warning. Do not read the profile table as a claim that an
-audit daemon is running.
+**Auditd is shipped and enabled in the base image.** The image includes
+`auditd`, `auditctl`, `ausearch` and `aureport` with their library closure,
+focused rules under `/etc/audit`, and a runit service that starts the daemon at
+boot. Rules for binaries and paths absent from a minimal image are filtered
+during the rootfs build instead of making `auditd` fail to start. Profile
+verification checks the daemon and `auditctl -s` state.
 
 ## 2. Mandatory Access Control (AppArmor)
 
@@ -71,8 +73,8 @@ profile file that is not loaded confines nothing, so do not treat the files in
 
 ## 4. Audit Logging & Privileged Tracing
 
-- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` are staged and describe monitoring for `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes.
-- The current base image does **not** include the `auditd`/`auditctl` userspace. The security profile reports auditd as a warning; it does not claim that a daemon is consuming those rules. Kernel audit support may still be present.
+- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` monitor `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes. The image ships `auditd`, `auditctl`, `ausearch` and `aureport`, and the service starts at boot.
+- Rules naming binaries or paths absent from the minimal image are filtered during the rootfs build; `auditd` fails closed on a malformed rule, so the build validates the resulting file before enabling the service.
 - Sudo I/O logging is configured separately via `/etc/sudoers.d/audit-log` and does not depend on auditd.
 - Inspect available logs with `grintion-audit-log` or `grintion-audit-log --sudo` when the relevant daemon or sudo I/O files exist.
 

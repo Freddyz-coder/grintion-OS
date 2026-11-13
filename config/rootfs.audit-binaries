@@ -1,0 +1,6 @@
+# auditd userspace is copied into the image with its complete shared-library
+# closure. A service file without these binaries is worse than no service.
+auditd
+auditctl
+ausearch
+aureport

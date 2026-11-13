@@ -29,6 +29,7 @@ need_cmd install
 need_cmd ldd
 need_cmd cpio
 need_cmd gzip
+need_cmd zstd
 need_cmd sha256sum
 
 log "assembling live rootfs for Grintion-OS $GRINTION_VERSION ($KREL)"
@@ -104,6 +105,22 @@ while IFS= read -r cmd; do
         || die "required MAC command is missing: $cmd (install apparmor or set GRINTION_APPARMOR_ROOT)"
     install -D -m 0755 "$(readlink -f "$src")" "$ROOTFS/usr/bin/$cmd"
 done < "$CONFIG/rootfs.mac-binaries"
+
+# auditd is a real service in this image, so its userspace is required, not
+# optional. Copy the binaries with their complete library closure; a service
+# file that can only print "auditd not found" is worse than no service.
+if [ ! -f "$CONFIG/rootfs.audit-binaries" ]; then
+    die "config/rootfs.audit-binaries is missing"
+fi
+while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    case "$cmd" in \#*) continue ;; esac
+    src="$(type -P "$cmd" 2>/dev/null || true)"
+    [ -n "$src" ] || die "required audit command is missing on the host: $cmd"
+    python3 "$GRINTION_REPO_ROOT/build/copy-with-libs.py" \
+        --root "$ROOTFS" --dest usr/bin "$src" \
+        || die "failed to copy audit command: $cmd"
+done < "$CONFIG/rootfs.audit-binaries"
 
 ln -sfn bash "$ROOTFS/usr/bin/sh"
 [ -x "$ROOTFS/usr/bin/vim" ] && ln -sfn vim "$ROOTFS/usr/bin/vi"
@@ -492,11 +509,20 @@ for service in agetty-tty1 agetty-tty2 agetty-ttyS0 network firewall syslog loca
     ln -sfn "/etc/sv/$service" "$ROOTFS/var/service/$service"
 done
 
+# zram is the RAM-efficiency default, selfheal repairs broken state after
+# boot-health, and auditd is now backed by a real userspace.
+for service in zram selfheal auditd; do
+    [ -x "$ROOTFS/etc/sv/$service/run" ] || die "service is missing or not executable: $service"
+    ln -sfn "/etc/sv/$service" "$ROOTFS/var/service/$service"
+done
+
 # ---------------------------------------------------------------- modes
 log "applying ownership-sensitive modes"
 chmod 0600 "$ROOTFS/etc/shadow"
 chmod 0600 "$ROOTFS/etc/gshadow" 2>/dev/null || true
 chmod 0440 "$ROOTFS/etc/sudoers"
+chmod 0640 "$ROOTFS/etc/audit/auditd.conf" "$ROOTFS/etc/audit/audit.rules" 2>/dev/null || true
+chmod 0750 "$ROOTFS/etc/audit" "$ROOTFS/etc/audit/rules.d" 2>/dev/null || true
 chmod 0755 "$ROOTFS/etc/runit/1" "$ROOTFS/etc/runit/2" "$ROOTFS/etc/runit/3"
 chmod 0755 "$ROOTFS"/etc/sv/*/run
 chmod 0700 "$ROOTFS/var/lib/garb" "$ROOTFS/var/lib/dhcpcd"
@@ -535,6 +561,7 @@ done
 # ---------------------------------------------------------------- initramfs
 log "writing the live initramfs"
 mkdir -p "$OUTPUT"
-python3 "$GRINTION_REPO_ROOT/build/mkinitramfs.py" "$ROOTFS" "$OUTPUT/initramfs.img" --epoch "$SOURCE_DATE_EPOCH"
+python3 "$GRINTION_REPO_ROOT/build/mkinitramfs.py" "$ROOTFS" "$OUTPUT/initramfs.img" \
+    --epoch "$SOURCE_DATE_EPOCH" --compress zstd
 
 log "live rootfs complete: $OUTPUT/initramfs.img ($(du -h "$OUTPUT/initramfs.img" | cut -f1))"

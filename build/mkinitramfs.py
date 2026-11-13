@@ -12,9 +12,12 @@ from __future__ import annotations
 import argparse
 import gzip
 import os
+import shutil
 import stat
 import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Directories whose contents are supplied by the kernel at runtime.
@@ -60,6 +63,10 @@ def main() -> int:
     parser.add_argument("root")
     parser.add_argument("output")
     parser.add_argument("--epoch", type=int, default=int(os.environ.get("SOURCE_DATE_EPOCH", "1767225600")))
+    parser.add_argument(
+        "--compress", choices=("gzip", "zstd"), default="gzip",
+        help="gzip is compatible with every kernel; zstd boots faster and uses less RAM (CONFIG_RD_ZSTD)",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -132,11 +139,36 @@ def main() -> int:
     add_entry(out, "TRAILER!!!", 0, b"", ino, args.epoch)
     out += b"\0" * ((-len(out)) % 512)
 
-    with open(output, "wb") as raw:
-        with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as gz:
-            gz.write(out)
+    if args.compress == "gzip":
+        with open(output, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as gz:
+                gz.write(out)
+    else:
+        zstd = shutil.which("zstd")
+        if not zstd:
+            print("[-] --compress zstd requires the zstd command", file=sys.stderr)
+            return 1
+        # Compress a temporary cpio file so the zstd command can seek and use
+        # multiple workers. --no-check keeps the output byte-for-byte stable.
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".initramfs-", delete=False) as handle:
+            handle.write(out)
+            temporary = handle.name
+        try:
+            result = subprocess.run(
+                [zstd, "-19", "-T0", "--no-progress", "--no-check", "-q", "-f",
+                 temporary, "-o", str(output)],
+                check=False,
+            )
+            if result.returncode != 0:
+                print(f"[-] zstd failed with status {result.returncode}", file=sys.stderr)
+                return 1
+        finally:
+            os.unlink(temporary)
 
-    print(f"[+] {output} ({output.stat().st_size} bytes, {len(entries)} entries)")
+    # zstd creates its output with a restrictive mode; initramfs images are
+    # normally readable by the build user and the ISO tooling.
+    os.chmod(output, 0o644)
+    print(f"[+] {output} ({output.stat().st_size} bytes, {len(entries)} entries, {args.compress})")
     return 0
 
 

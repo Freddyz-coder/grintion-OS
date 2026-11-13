@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.0] - 2026-11-13
+
+### Added
+
+- **32-bit compatibility policy.** `grintion-arch` reports CPU, kernel and
+  userland bitness, IA32 emulation and the 32-bit loader. The installer refuses
+  a 64-bit image on a 32-bit-only CPU instead of writing an unbootable disk, and
+  `--compat32` installs `lib32-glibc`/`lib32-gcc-libs` on capable systems.
+- **Automatic hardware selection.** `grintion-driver-select` resolves PCI/USB
+  modalias values, finds the driver module and its firmware with `modinfo`,
+  reports missing firmware per device, and installs only the matching firmware
+  and CPU microcode packages. `grintion-install` applies it by default and adds
+  the microcode early-load image to Limine.
+- **Firmware-aware hardware reports.** `grintion-hwreport` (and
+  `grintion-hwinfo`) state explicitly when a Wi-Fi card needs
+  `linux-firmware-*` and will not work on the base image.
+- **Self-healing beyond boot-health.** `grintion-selfheal` repairs tmp modes, a
+  read-only root, broken service links, stale locks, resolver state, loopback,
+  unloaded AppArmor policy, inactive zram and exited services.
+- **Real auditd.** The image now ships `auditd`, `auditctl`, `ausearch` and
+  `aureport` with their library closure, focused rules, and an enabled service.
+- **Snapshot retention and safer rollback.** `grintion-snapshot rollback`
+  supports `--dry-run`/`--yes`, keeps a pre-rollback safety snapshot and retains
+  only the three newest `@broken-*` roots; `prune` and `status` were added.
+
+### Changed
+
+- **Live and installed images use zstd initramfs.** The 141 MiB gzip live
+  initramfs is replaced by zstd (kernel `CONFIG_RD_ZSTD`); the measured image
+  drops from 141 MiB to 111 MiB and compression takes 50 s instead of 112 s.
+  The installer copies with `rsync --whole-file`
+  because the source is local RAM, and the live overlay is capped at 50% of RAM.
+- **RAM efficiency.** zram is enabled with zstd, sysctl uses swappiness 100 and
+  `page-cluster=0`, and Btrfs installs use `compress=zstd:1`.
+- **AppArmor** gained profiles for dhcpcd, wpa_supplicant and bluetoothd, and the
+  boot service now verifies kernel enforcement instead of trusting parser exit
+  codes.
+- **grintion-doctor** now checks architecture, kernel features, AppArmor kernel
+  state, auditd consistency, firmware presence, services, zram, disk/inode
+  pressure, snapshots, boot health, time, DNS and entropy, with `--json` and
+  `--strict`.
+
+### Release
+
+- Rebuilt the 0.14.0 release image: 132,139,008 bytes (126 MiB), SHA-256
+  `e8ec502424a52636848e731c0b5b899bbbf2a1e69f88b5dd11de078cb4bc0428`.
+- The final ISO boots under QEMU SeaBIOS and OVMF UEFI to the 0.14.0 live root
+  shell with kernel `6.12.114-grintion`; DHCP, nftables, AppArmor, sudo, the
+  framebuffer console and the runtime `grintion-doctor` check pass.
+
+---
+
 ## [0.13.1] - 2026-11-12
 
 ### Security

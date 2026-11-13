@@ -39,6 +39,11 @@ SKIP_SMART=0
 SKIP_SELF_TEST=0
 SERIAL_CONSOLE=0
 SELF_TEST_OK=1
+AUTO_DRIVERS=1
+DRIVERS_READY=1
+COMPAT32=0
+COMPAT32_READY=1
+MICROCODE_MODULE=""
 CRYPT_NAME="grintion"
 SWAP_CRYPT_NAME="grintion-swap"
 HOME_CRYPT_NAME="grintion-home"
@@ -107,6 +112,8 @@ Options:
   --skip-smart          Skip the SMART health preflight
   --skip-self-test      Skip the post-install self-test
   --serial              Put ttyS0 last so LUKS prompts appear on serial
+  --compat32            Install 32-bit glibc/gcc runtime on a 64-bit system
+  --no-auto-drivers     Do not auto-install firmware/microcode for this hardware
   --unattended          Never prompt; requires --disk/--custom, --user and password
   --dry-run             Validate the plan and exit without changing anything
   --no-bootloader       Skip Limine installation
@@ -213,6 +220,8 @@ PY
     _value=$(config_value encrypt);          case "$_value" in 1|true|True|yes) ENCRYPT=1 ;; *) ENCRYPT=0 ;; esac
     _value=$(config_value separate_home);    case "$_value" in 1|true|True|yes) SEPARATE_HOME=1 ;; esac
     _value=$(config_value serial_console);   case "$_value" in 1|true|True|yes) SERIAL_CONSOLE=1 ;; *) SERIAL_CONSOLE=0 ;; esac
+    _value=$(config_value compat32);         case "$_value" in 1|true|True|yes) COMPAT32=1 ;; esac
+    _value=$(config_value auto_drivers);     case "$_value" in 0|false|False|no) AUTO_DRIVERS=0 ;; esac
     unset _value
 fi
 
@@ -252,6 +261,9 @@ while [ $# -gt 0 ]; do
         --skip-smart)    SKIP_SMART=1; shift ;;
         --skip-self-test) SKIP_SELF_TEST=1; shift ;;
         --serial)        SERIAL_CONSOLE=1; shift ;;
+        --compat32)      COMPAT32=1; shift ;;
+        --auto-drivers)  AUTO_DRIVERS=1; shift ;;
+        --no-auto-drivers) AUTO_DRIVERS=0; shift ;;
         --unattended)    UNATTENDED=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --no-bootloader) NO_BOOTLOADER=1; shift ;;
@@ -389,6 +401,18 @@ fi
 
 if secure_boot_enabled && [ "$FORCE" -ne 1 ]; then
     die "Secure Boot is enabled. Grintion-OS does not ship a signed boot chain, so the installed system would not boot. Disable Secure Boot in firmware, or rerun with --force only if you will provide your own signed bootloader."
+fi
+
+# Architecture policy: the release image is x86_64. A CPU without long mode
+# cannot execute its kernel, so refuse before partitioning rather than leaving
+# an unbootable disk. On a 64-bit machine, 32-bit software is allowed through
+# CONFIG_IA32_EMULATION; --compat32 installs the 32-bit runtime libraries.
+if command -v grintion-arch >/dev/null 2>&1; then
+    if ! grintion-arch check --require install; then
+        [ "$DRY_RUN" -eq 1 ] || die "this machine cannot run the x86_64 Grintion-OS image"
+    fi
+else
+    warn "grintion-arch is missing; architecture compatibility was not checked"
 fi
 
 case "$FILESYSTEM" in
@@ -644,7 +668,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
             "$CUSTOM_PARTITIONS" "${ROOT_PART_SPEC:-}" "${ESP_PART_SPEC:-}" "${SWAP_PART_SPEC:-}" \
             "${HOME_PART_SPEC:-}" "$ENCRYPT_HOME" "$HOME_SIZE_MIB" "$SWAP_FILE_MIB" \
             "$SECURE_ERASE" "$KEEP_HOME" "$REMOVABLE" "$RECOVERY_PARTITION" "$RECOVERY_SIZE_MIB" \
-            "$SECURITY_PROFILE" "$KERNEL_FLAVOR" <<'PY'
+            "$SECURITY_PROFILE" "$KERNEL_FLAVOR" "$COMPAT32" "$AUTO_DRIVERS" <<'PY'
 import json
 import sys
 
@@ -652,7 +676,8 @@ import sys
  user, desktop, no_bootloader, serial, target,
  custom, root_part, esp_part, swap_part, home_part, encrypt_home,
  home_size, swap_file, secure_erase, keep_home, removable,
- recovery_partition, recovery_size, security_profile, kernel_flavor) = sys.argv[1:]
+ recovery_partition, recovery_size, security_profile, kernel_flavor,
+ compat32, auto_drivers) = sys.argv[1:]
 
 plan = {
     "schema": 2,
@@ -689,6 +714,8 @@ plan = {
     "user": user,
     "desktop": desktop or "none",
     "kernel": kernel_flavor,
+    "compat32": compat32 == "1",
+    "auto_drivers": auto_drivers == "1",
     "bootloader": "skipped" if no_bootloader == "1" else "limine-bios-uefi",
     "serial_console": serial == "1",
     "target": target,
@@ -710,6 +737,8 @@ Plan:
   hostname:   $HOSTNAME
   user:       $USER_NAME (wheel)
   kernel:     $KERNEL_FLAVOR$([ "$KERNEL_FLAVOR" != "lts" ] && echo ' (downloads Arch kernel + headers, keeps LTS fallback)')
+  compat32:   $([ "$COMPAT32" -eq 1 ] && echo '32-bit runtime libraries (64-bit machine only)' || echo 'not requested')
+  drivers:    $([ "$AUTO_DRIVERS" -eq 1 ] && echo 'auto-select firmware, microcode and modules' || echo 'manual')
   bootloader: $([ "$NO_BOOTLOADER" -eq 1 ] && echo skipped || echo Limine BIOS+UEFI)
   target:     $TARGET
 Dry run complete; nothing was changed.
@@ -941,7 +970,7 @@ ESP_UUID="$(blkid -s UUID -o value "$ESP")"
 log "mounting the target"
 mkdir -p "$TARGET"
 if [ "$FILESYSTEM" = "btrfs" ]; then
-    mount -o noatime,subvol=@ "$ROOT_DEV" "$TARGET"
+    mount -o noatime,compress=zstd:1,subvol=@ "$ROOT_DEV" "$TARGET"
 else
     mount -o noatime "$ROOT_DEV" "$TARGET"
 fi
@@ -960,7 +989,10 @@ if [ "$FILESYSTEM" = "btrfs" ]; then
 fi
 
 log "copying the live root filesystem"
-rsync -aHAX --numeric-ids --one-file-system \
+# --whole-file skips rsync's delta algorithm: this is a local copy from RAM to
+# disk, where computing block checksums costs more than it saves. The live
+# overlay is read-only below the upper layer, so this is a straight copy.
+rsync -aHAX --whole-file --numeric-ids --one-file-system \
     --exclude=/proc/'*' --exclude=/sys/'*' --exclude=/dev/'*' \
     --exclude=/run/'*' --exclude=/tmp/'*' --exclude=/mnt/'*' \
     --exclude=/media/'*' --exclude=/lost+found \
@@ -1006,7 +1038,7 @@ EOF
 ROOT_FS_OPTS="defaults,noatime"
 ROOT_PASS=1
 if [ "$FILESYSTEM" = "btrfs" ]; then
-    ROOT_FS_OPTS="defaults,noatime,subvol=@"
+    ROOT_FS_OPTS="defaults,noatime,compress=zstd:1,subvol=@"
     ROOT_PASS=0
 fi
 cat > "$TARGET/etc/fstab" <<EOF
@@ -1024,6 +1056,38 @@ if [ "$FILESYSTEM" = "btrfs" ]; then
 fi
 if [ -n "$SWAP_UUID" ]; then
     printf 'UUID=%s  none  swap  defaults  0 0\n' "$SWAP_UUID" >> "$TARGET/etc/fstab"
+fi
+
+# The installed system keeps the same RAM policy as the live image: compressed
+# zram swap, self-healing, and functional audit. The service directory is copied
+# by rsync; these links are explicit so a partial copy cannot silently disable
+# them.
+for service in zram selfheal auditd; do
+    if [ -d "$TARGET/etc/sv/$service" ]; then
+        ln -sfn "/etc/sv/$service" "$TARGET/var/service/$service"
+    fi
+done
+
+if [ "$COMPAT32" -eq 1 ]; then
+    log "installing 32-bit compatibility libraries"
+    mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
+    mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
+    mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
+    mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
+    mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
+    mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
+    [ -f /etc/resolv.conf ] && cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+    if chroot "$TARGET" /usr/bin/pacman -S --needed --noconfirm lib32-glibc lib32-gcc-libs; then
+        log "32-bit compatibility libraries installed"
+    else
+        COMPAT32_READY=0
+        warn "32-bit compatibility libraries were not installed; enable [multilib] and rerun pacman -S lib32-glibc lib32-gcc-libs"
+    fi
+    for path in run dev/pts dev sys proc; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount -l "$TARGET/$path" 2>/dev/null || true
+        fi
+    done
 fi
 
 if [ "$SWAP_FILE_MIB" -gt 0 ]; then
@@ -1315,6 +1379,59 @@ EOF
     fi
 fi
 
+# Select firmware, CPU microcode and modules from the hardware this machine
+# actually has. The base image intentionally carries no vendor firmware. This
+# runs after the bootloader so the microcode image can be placed next to the
+# kernel, and it is best-effort: an offline install still produces a bootable
+# system and records exactly what to install later.
+if [ "$AUTO_DRIVERS" -eq 1 ] && [ "$NO_BOOTLOADER" -eq 0 ]; then
+    log "selecting drivers, firmware and microcode for this hardware"
+    mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
+    mountpoint -q "$TARGET/proc"    || mount -t proc proc "$TARGET/proc"
+    mountpoint -q "$TARGET/sys"     || mount -t sysfs sys "$TARGET/sys"
+    mountpoint -q "$TARGET/dev"     || mount --bind /dev "$TARGET/dev"
+    mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
+    mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
+    [ -f /etc/resolv.conf ] && cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+    if command -v grintion-driver-select >/dev/null 2>&1; then
+        if grintion-driver-select --root "$TARGET" --apply > /tmp/grintion-drivers.$$ 2>&1; then
+            log "driver/firmware selection completed"
+        else
+            DRIVERS_READY=0
+            warn "driver/firmware packages were not fully installed; the manifest is in $TARGET/etc/grintion/hardware-profile.json"
+        fi
+        sed -n '1,20p' /tmp/grintion-drivers.$$ || true
+        rm -f /tmp/grintion-drivers.$$
+    else
+        DRIVERS_READY=0
+        warn "grintion-driver-select is missing from the live image"
+    fi
+    for path in run dev/pts dev sys proc; do
+        if mountpoint -q "$TARGET/$path" 2>/dev/null; then
+            umount -l "$TARGET/$path" 2>/dev/null || true
+        fi
+    done
+
+    # Limine passes modules in order. Microcode must precede the initramfs so
+    # the kernel applies it before userspace starts.
+    MICROCODE_MODULE=$(find "$TARGET/boot/efi/EFI/grintion" -maxdepth 1 -name '*-ucode.img' -print -quit 2>/dev/null || true)
+    if [ -n "$MICROCODE_MODULE" ] && [ -f "$TARGET/boot/efi/limine.conf" ]; then
+        mc_name=$(basename "$MICROCODE_MODULE")
+        for conf in "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"; do
+            [ -f "$conf" ] || continue
+            awk -v mc="$mc_name" '
+                BEGIN { done=0 }
+                /^[[:space:]]*module_path:/ && !done {
+                    printf "    module_path: boot():/EFI/grintion/%s\n", mc
+                    done=1
+                }
+                { print }
+            ' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+        done
+        log "CPU microcode early-load image added: $mc_name"
+    fi
+fi
+
 if [ "$KERNEL_FLAVOR" != "lts" ]; then
     log "installing optional kernel flavor: $KERNEL_FLAVOR"
     mkdir -p "$TARGET/proc" "$TARGET/sys" "$TARGET/dev" "$TARGET/dev/pts" "$TARGET/run"
@@ -1387,6 +1504,14 @@ echo "self-test: $([ "$SELF_TEST_OK" -eq 1 ] && echo passed || echo FAILED)"
 echo "hostname:  $HOSTNAME"
 echo "user:      $USER_NAME (wheel)"
 echo "kernel:    $KERNEL_FLAVOR$([ "$KERNEL_READY" -eq 1 ] || echo ' (NOT installed; LTS remains available)')"
+if [ "$COMPAT32" -eq 1 ]; then
+    echo "compat32:  $([ "$COMPAT32_READY" -eq 1 ] && echo 'installed (32-bit programs can run)' || echo 'NOT installed; install lib32-glibc lib32-gcc-libs')"
+fi
+if [ "$AUTO_DRIVERS" -eq 1 ]; then
+    echo "drivers:   $([ "$DRIVERS_READY" -eq 1 ] && echo 'auto-selected; firmware manifest in /etc/grintion/hardware-profile.json' || echo 'incomplete; see /etc/grintion/hardware-profile.json')"
+else
+    echo "drivers:   manual (auto-selection disabled)"
+fi
 if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
     if [ "$DESKTOP_READY" -eq 1 ]; then
         echo "desktop:   $DESKTOP (ready on boot)"

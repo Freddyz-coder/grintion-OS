@@ -1,39 +1,26 @@
-# Grintion-OS auditd rules
-# Documented rule set for security-sensitive system monitoring
+## Generated from rules.d/grintion.rules. Loaded by the auditd runit service
+## with `auditctl -R` before auditd starts, so rules exist even if the daemon
+## needs to restart later.
 
-# Delete all existing rules
 -D
-
-# Buffer size
 -b 8192
-
-# Failure mode: 1 = printk, 2 = panic
+--backlog_wait_time 60000
 -f 1
 
-# Monitor identity changes
 -w /etc/passwd -p wa -k identity
 -w /etc/shadow -p wa -k identity
 -w /etc/group -p wa -k identity
 -w /etc/gshadow -p wa -k identity
--w /etc/security/opasswd -p wa -k identity
+-w /etc/sudoers -p wa -k privilege
+-w /etc/sudoers.d -p wa -k privilege
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/apparmor.d -p wa -k mac-policy
+-w /etc/grintion -p wa -k grintion-config
+-w /boot/efi/limine.conf -p wa -k boot-config
 
-# Monitor system environment and network config
--w /etc/grintion/ -p wa -k grintion-config
--w /etc/issue -p wa -k system-locale
--w /etc/hostname -p wa -k system-locale
--w /etc/hosts -p wa -k system-network
-
-# Monitor privilege escalation
--w /bin/su -p x -k priv_esc
--w /usr/bin/sudo -p x -k priv_esc
--w /etc/sudoers -p wa -k priv_esc
--w /etc/sudoers.d/ -p wa -k priv_esc
-
-# Monitor security system alterations
--w /etc/apparmor/ -p wa -k mac_policy
--w /etc/apparmor.d/ -p wa -k mac_policy
--w /etc/usbguard/ -p wa -k usbguard
-
-# Make the configuration immutable until next reboot
--e 2
-
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch=b64 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege
+-a always,exit -F arch=b32 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege

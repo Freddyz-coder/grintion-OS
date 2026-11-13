@@ -54,6 +54,26 @@ system immediately.
 `garb upgrade` automatically invokes `grintion-snapshot create pre-upgrade` prior
 to executing package upgrades on Btrfs roots.
 
+Rollback is explicit and reversible:
+
+```sh
+sudo grintion-snapshot rollback before-upgrade --dry-run
+sudo grintion-snapshot rollback before-upgrade --yes
+sudo grintion-snapshot prune --keep 5 --dry-run
+sudo grintion-snapshot status --json
+```
+
+A rollback first creates a read-only `pre-rollback-<timestamp>` safety snapshot
+(best effort on a full filesystem), moves the active `@` to `@broken-<timestamp>`,
+and keeps only the three newest broken roots. `/home` is never touched.
+
+### Self-healing
+
+`grintion-selfheal` runs after `boot-health` and repairs tmp modes, a read-only
+root, broken service links, stale locks, resolver state, loopback, unloaded
+AppArmor policy, inactive zram and exited services. See
+[SELF-HEALING.md](SELF-HEALING.md).
+
 ---
 
 ## 2. Boot Health Monitoring and Auto-Revert
@@ -99,7 +119,7 @@ sudo grintion-boot list
 sudo grintion-boot list --json
 
 # Set default boot entry
-sudo grintion-boot set-default "Grintion-OS 0.13.1"
+sudo grintion-boot set-default "Grintion-OS 0.14.0"
 
 # Set boot menu timeout in seconds
 sudo grintion-boot set-timeout 5

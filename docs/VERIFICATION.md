@@ -1,8 +1,38 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.13.1, 0.13.0,
-0.12.1, 0.12.0 and the earlier work. It does not claim coverage of hardware or
-configurations that were not tested.
+This document records what was actually executed for Grintion-OS 0.14.0, 0.13.1,
+0.13.0, 0.12.1, 0.12.0 and the earlier work. It does not claim coverage of
+hardware or configurations that were not tested.
+
+**0.14.0 verification status (2026-11-13):** the hardware-support and resilience
+release was built from the 0.14.0 worktree; `BUILD-INFO` records source commit
+`e1a66b7` because the release version and documentation changes were still
+uncommitted at build time. The final ISO boots under QEMU SeaBIOS and OVMF UEFI
+and reaches the live root shell as Grintion-OS 0.14.0 with kernel
+`6.12.114-grintion`, DHCP, nftables, AppArmor enforce mode, sudo, the
+framebuffer console and `grintion-doctor` exit 0. The boot test does not cover
+the installer or an installed-system reboot, and no bare-metal or 32-bit
+hardware run was made.
+
+## 0.14.0 release results (2026-11-13)
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 132,139,008 bytes (126 MiB) |
+| SHA-256 | `e8ec502424a52636848e731c0b5b899bbbf2a1e69f88b5dd11de078cb4bc0428` |
+| `BUILD-INFO` source commit | `e1a66b7` (0.14.0 release changes were uncommitted at build time) |
+
+| Check | Result |
+| --- | --- |
+| `make check` | 189 passed |
+| BIOS live boot | Passed under QEMU SeaBIOS; 0.14.0, kernel `6.12.114-grintion`, DHCP, nftables and AppArmor enforce mode |
+| UEFI live boot | Passed under QEMU OVMF with the same assertions |
+| Live service/session checks | Root shell, network and AppArmor services running, `sudo -n true`, framebuffer console and `grintion-doctor` exit 0 |
+| Architecture policy | Covered by `grintion-doctor` and the phase-11 unit tests; no 32-bit-only hardware run |
+| auditd | Covered by `grintion-doctor` (userspace and running daemon); fault injection was not performed |
+| Driver/firmware selection | Modalias resolution, firmware lookup and package planning covered by unit tests; no physical-device firmware install was performed |
+| Installer / installed reboot | Not rerun for 0.14.0 |
+| Bare-metal hardware | Not tested |
 
 **0.13.1 verification status (2026-11-12):** the security and stability patch
 was built from source release commit `4900b8d`. `make check` passes with 181

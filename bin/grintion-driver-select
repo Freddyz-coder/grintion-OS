@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""grintion-driver-select - select drivers, firmware, microcode and initramfs modules.
+
+The base image deliberately ships no vendor firmware. This tool reads the
+machine's PCI/USB modalias values, resolves them against modules.alias, asks
+modinfo which firmware each module needs, checks whether that firmware exists
+under /usr/lib/firmware, and maps missing files to the smallest Arch firmware
+package set. On a live system it can install those packages, write a module
+autoload file and record the result for the installer.
+
+No network access is required for the report. --apply is best effort: a missing
+repository or offline machine leaves the manifest in place and tells the user
+exactly which packages to install later.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SYSFS = Path(os.environ.get("GRINTION_SYSFS", "/sys"))
+FIRMWARE_DIRS = [
+    Path(p) for p in os.environ.get(
+        "GRINTION_FIRMWARE_DIRS", "/usr/lib/firmware:/lib/firmware"
+    ).split(":")
+]
+MODULES_DIR = Path(
+    os.environ.get("GRINTION_MODULES_DIR", "/lib/modules/" + platform.release())
+)
+OUTPUT_DIR = Path(os.environ.get("GRINTION_ETC", "/etc/grintion"))
+MODINFO = os.environ.get("GRINTION_MODINFO", "modinfo")
+
+
+def read(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return default
+
+
+def check_firmware(name: str, root: Path = Path("/")) -> bool:
+    if not name:
+        return True
+    for directory in FIRMWARE_DIRS:
+        base = root / directory.relative_to("/") if root != Path("/") else directory
+        for suffix in ("", ".zst", ".xz", ".gz"):
+            if (base / (name + suffix)).is_file():
+                return True
+    return False
+
+
+def modules_alias(modules_dir: Path = MODULES_DIR) -> list[tuple[str, str]]:
+    alias_file = modules_dir / "modules.alias"
+    aliases: list[tuple[str, str]] = []
+    try:
+        for line in alias_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.startswith("alias "):
+                continue
+            parts = line.split()
+            if len(parts) >= 3:
+                aliases.append((parts[1], parts[2]))
+    except OSError:
+        pass
+    return aliases
+
+
+def builtin_modules(modules_dir: Path = MODULES_DIR) -> set[str]:
+    names: set[str] = set()
+    try:
+        for line in (modules_dir / "modules.builtin").read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
+            if line.strip():
+                names.add(Path(line.strip()).stem)
+    except OSError:
+        pass
+    return names
+
+
+def resolve_modalias(modalias: str, aliases: list[tuple[str, str]]) -> list[str]:
+    # modules.alias patterns use shell globs, including * and ?.
+    found = [module for pattern, module in aliases if fnmatch.fnmatchcase(modalias, pattern)]
+    # Prefer a single exact-ish match; multiple matches are all useful.
+    return list(dict.fromkeys(found))
+
+
+def module_firmware(module: str) -> list[str]:
+    if not module:
+        return []
+    try:
+        result = subprocess.run(
+            [MODINFO, "-F", "firmware", module],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def firmware_packages(files: list[str]) -> list[str]:
+    packages: set[str] = set()
+    for name in files:
+        base = name.rsplit("/", 1)[-1]
+        if base.startswith("iwlwifi") or base.startswith("i915") or base.startswith("btintel"):
+            packages.add("linux-firmware-intel")
+        elif base.startswith(("rtw88", "rtl88", "rtl81", "rtl87")):
+            packages.add("linux-firmware-rtw88" if base.startswith("rtw88")
+                         else "linux-firmware-rtw89" if base.startswith("rtw89")
+                         else "linux-firmware-realtek")
+        elif base.startswith(("rtw89",)):
+            packages.add("linux-firmware-rtw89")
+        elif base.startswith(("ath", "qca")):
+            packages.add("linux-firmware-atheros")
+        elif base.startswith(("amdgpu", "radeon")):
+            packages.add("linux-firmware-amdgpu")
+        elif base.startswith(("nvidia", "nouveau")):
+            packages.add("linux-firmware-nvidia")
+        elif base.startswith(("brcm", "bcm")):
+            packages.add("linux-firmware-broadcom")
+        elif base.startswith(("mt76", "mt79", "mediatek")):
+            packages.add("linux-firmware-mediatek")
+        elif base.startswith(("btrtl", "rtl_bt")):
+            packages.add("linux-firmware-realtek")
+        else:
+            packages.add("linux-firmware")
+    return sorted(packages)
+
+
+def cpu_vendor() -> str:
+    text = read(Path("/proc/cpuinfo"))
+    for line in text.splitlines():
+        if line.lower().startswith("vendor_id"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def microcode_package() -> str | None:
+    vendor = cpu_vendor().lower()
+    if vendor == "genuineintel":
+        return "intel-ucode"
+    if vendor == "authenticamd":
+        return "amd-ucode"
+    return None
+
+
+def devices() -> list[dict]:
+    items: list[dict] = []
+    pci_root = SYSFS / "bus" / "pci" / "devices"
+    for device in sorted(pci_root.glob("*")):
+        modalias = read(device / "modalias")
+        if not modalias:
+            continue
+        class_code = read(device / "class")
+        normalized = class_code[2:6] if class_code.startswith("0x") else class_code[:4]
+        driver = ""
+        try:
+            if (device / "driver").is_symlink():
+                driver = (device / "driver").resolve().name
+        except OSError:
+            pass
+        items.append({
+            "bus": "pci",
+            "slot": device.name,
+            "class": normalized,
+            "wireless": normalized == "0280",
+            "vendor": read(device / "vendor"),
+            "device": read(device / "device"),
+            "modalias": modalias,
+            "driver": driver,
+        })
+    usb_root = SYSFS / "bus" / "usb" / "devices"
+    for device in sorted(usb_root.glob("*")):
+        modalias = read(device / "modalias")
+        if not modalias:
+            continue
+        items.append({
+            "bus": "usb",
+            "slot": device.name,
+            "class": "",
+            "wireless": False,
+            "vendor": read(device / "idVendor"),
+            "device": read(device / "idProduct"),
+            "modalias": modalias,
+            "driver": "",
+        })
+    return items
+
+
+def collect(root: Path = Path("/")) -> dict:
+    aliases = modules_alias()
+    builtins = builtin_modules()
+    selected: list[dict] = []
+    all_packages: set[str] = set()
+    all_modules: set[str] = set()
+    for item in devices():
+        modules = resolve_modalias(item["modalias"], aliases)
+        if not modules and item["driver"]:
+            modules = [item["driver"]]
+        firmware: list[str] = []
+        for module in modules:
+            firmware.extend(module_firmware(module))
+        firmware = list(dict.fromkeys(firmware))
+        missing = [name for name in firmware if not check_firmware(name, root)]
+        packages = firmware_packages(missing)
+        if missing:
+            all_packages.update(packages)
+        loadable = [m for m in modules if m not in builtins]
+        all_modules.update(loadable)
+        if not modules and not firmware:
+            continue
+        selected.append({
+            **item,
+            "modules": modules,
+            "builtin": [m for m in modules if m in builtins],
+            "firmware": firmware,
+            "missing_firmware": missing,
+            "packages": packages,
+            "works_on_base": not missing,
+            "message": (
+                f"this {'Wi-Fi card' if item['wireless'] else 'device'} needs "
+                f"{', '.join(packages) or 'no extra package'}"
+                + (f" + {', '.join(missing)}" if missing else "")
+                + "; it will not work on the base image until that firmware is installed."
+                if missing else "firmware present"
+            ),
+        })
+
+    microcode = microcode_package()
+    if microcode:
+        all_packages.add(microcode)
+    firmware_root_present = any(d.is_dir() for d in FIRMWARE_DIRS)
+    boot_dir = root / "boot"
+    microcode_file = None
+    for candidate in ("intel-ucode.img", "amd-ucode.img"):
+        if (boot_dir / candidate).is_file():
+            microcode_file = str(boot_dir / candidate)
+            break
+
+    return {
+        "schema": 1,
+        "kernel": platform.release(),
+        "base_image_has_firmware": firmware_root_present,
+        "devices": selected,
+        "packages": sorted(all_packages),
+        "modules": sorted(all_modules),
+        "microcode_package": microcode,
+        "microcode_file": microcode_file,
+        "missing_firmware_count": sum(len(d["missing_firmware"]) for d in selected),
+    }
+
+
+def write_manifest(data: dict, root: Path) -> None:
+    try:
+        etc = root / OUTPUT_DIR.relative_to("/")
+        etc.mkdir(parents=True, exist_ok=True)
+        (etc / "hardware-profile.json").write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        # modules-load.d is a system directory, not a file under /etc/grintion.
+        # udev/module-init-tools read /etc/modules-load.d, so writing inside the
+        # Grintion config directory would silently autoload nothing.
+        modules_dir = root / "etc/modules-load.d"
+        modules_dir.mkdir(parents=True, exist_ok=True)
+        (modules_dir / "grintion-hardware.conf").write_text(
+            "# Generated by grintion-driver-select from detected hardware.\n"
+            + "\n".join(data["modules"]) + ("\n" if data["modules"] else ""),
+            encoding="utf-8",
+        )
+        (etc / "initramfs-modules").write_text(
+            "# Modules with firmware for detected hardware (early-load candidates).\n"
+            + "\n".join(data["modules"]) + ("\n" if data["modules"] else ""),
+            encoding="utf-8",
+        )
+    except OSError:
+        # A non-root report is still useful; only the manifest is skipped.
+        pass
+
+
+def install_packages(packages: list[str], root: Path) -> tuple[bool, str]:
+    if not packages:
+        return True, "no packages needed"
+    if root != Path("/"):
+        pacman = root / "usr/bin/pacman"
+        if not pacman.exists():
+            return False, f"pacman is not installed in {root}"
+        command = ["chroot", str(root), "/usr/bin/pacman", "-S", "--needed", "--noconfirm"]
+    else:
+        if not shutil.which("pacman"):
+            return False, "pacman is not installed"
+        command = ["pacman", "-S", "--needed", "--noconfirm"]
+    try:
+        result = subprocess.run(command + packages, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        return False, str(exc)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        return False, detail[-1] if detail else f"pacman exited {result.returncode}"
+    return True, "installed"
+
+
+def print_report(data: dict) -> None:
+    print("Grintion-OS driver/firmware selection")
+    print(f"kernel: {data['kernel']}")
+    print(f"base firmware tree: {'present' if data['base_image_has_firmware'] else 'ABSENT (/usr/lib/firmware)'}")
+    print(f"missing firmware files: {data['missing_firmware_count']}")
+    for device in data["devices"]:
+        modules = ", ".join(device["modules"]) or "(no module matched)"
+        print(f"  {device['bus']} {device['slot']} [{device['vendor']}:{device['device']}] driver={modules}")
+        if device["missing_firmware"]:
+            print(f"    {device['message']}")
+    print(f"packages: {', '.join(data['packages']) or 'none'}")
+    print(f"microcode: {data['microcode_package'] or 'not detected'}")
+    if data["modules"]:
+        print(f"autoload modules: {', '.join(data['modules'])}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="grintion-driver-select")
+    parser.add_argument("--json", action="store_true", help="machine-readable report")
+    parser.add_argument("--apply", action="store_true", help="install required packages and write the manifest")
+    parser.add_argument("--offline", action="store_true", help="write the manifest without installing")
+    parser.add_argument("--root", default="/", help="target root for an installed system")
+    parser.add_argument("--initramfs-modules", action="store_true", help="print only module names for an initramfs")
+    args = parser.parse_args()
+
+    root = Path(args.root).resolve()
+    data = collect(root)
+    write_manifest(data, root)
+
+    if args.initramfs_modules:
+        print("\n".join(data["modules"]))
+        return 0
+
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        print_report(data)
+
+    if args.offline:
+        print(f"offline: install with pacman -S {' '.join(data['packages']) or '(nothing)'}")
+        return 0
+    if not args.apply:
+        return 0
+
+    ok, message = install_packages(data["packages"], root)
+    data["apply"] = {"ok": ok, "message": message}
+    write_manifest(data, root)
+    if not ok:
+        print(f"[!] driver packages were not installed: {message}", file=sys.stderr)
+        print(f"[!] run later: pacman -S {' '.join(data['packages'])}", file=sys.stderr)
+        return 1
+    # Copy a CPU microcode image next to the installed kernel when available.
+    for candidate in ("intel-ucode.img", "amd-ucode.img"):
+        source = root / "boot" / candidate
+        if source.is_file():
+            esp = root / "boot" / "efi" / "EFI" / "grintion"
+            if esp.is_dir():
+                shutil.copy2(source, esp / candidate)
+    print(f"[ ok ] {message}: {', '.join(data['packages']) or 'nothing to install'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

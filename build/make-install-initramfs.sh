@@ -16,6 +16,7 @@ BUSYBOX="$GRINTION_REPO_ROOT/tools/bin/busybox"
 need_cmd python3
 need_cmd ldd
 need_cmd cryptsetup
+need_cmd zstd
 [ -x "$BUSYBOX" ] || die "tools/bin/busybox is missing; run make tools"
 [ -f "$GRINTION_REPO_ROOT/init/install-init" ] || die "init/install-init is missing"
 
@@ -56,5 +57,6 @@ done
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/install-init" "$ROOT/init"
 install -D -m 0755 "$GRINTION_REPO_ROOT/init/recovery.sh" "$ROOT/recovery.sh"
 
-python3 "$GRINTION_REPO_ROOT/build/mkinitramfs.py" "$ROOT" "$OUTPUT/initramfs-install.img" --epoch "$SOURCE_DATE_EPOCH"
+python3 "$GRINTION_REPO_ROOT/build/mkinitramfs.py" "$ROOT" "$OUTPUT/initramfs-install.img" \
+    --epoch "$SOURCE_DATE_EPOCH" --compress zstd
 log "installed initramfs complete: $OUTPUT/initramfs-install.img ($(du -h "$OUTPUT/initramfs-install.img" | cut -f1))"

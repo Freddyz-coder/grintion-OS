@@ -25,7 +25,7 @@ if ! mountpoint -q /dev; then
 fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
-mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec,size=25%
 mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup -o nsdelegate 2>/dev/null || true
 
@@ -54,7 +54,10 @@ if [ -n "$PERSIST_DEV" ]; then
 fi
 
 if [ -z "$UPPER" ]; then
-    mount -t tmpfs -o mode=0755 tmpfs /run/overlay
+    # The overlay upper layer is RAM. Cap it at half of physical memory so a
+    # package install can fail cleanly instead of triggering the OOM killer,
+    # and let zram absorb the pressure once the zram service starts.
+    mount -t tmpfs -o mode=0755,size=50% tmpfs /run/overlay
     mkdir -p /run/overlay/upper /run/overlay/work
     chmod 0700 /run/overlay/upper /run/overlay/work
     UPPER=/run/overlay/upper

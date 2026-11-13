@@ -1,0 +1,96 @@
+# AppArmor profile for the DHCP client.
+#
+# dhcpcd needs raw packet access, interface configuration, and write access to
+# the resolver file. It must never read credentials, private keys, raw disks or
+# kernel memory, and it never needs global administrative capabilities.
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/usr/sbin/dhcpcd flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network inet stream,
+  network inet dgram,
+  network inet raw,
+  network inet6 stream,
+  network inet6 dgram,
+  network inet6 raw,
+  network packet raw,
+  network netlink raw,
+
+  capability net_admin,
+  capability net_raw,
+  capability net_bind_service,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
+
+  /usr/sbin/dhcpcd mr,
+  /usr/libexec/dhcpcd-run-hooks ix,
+  /usr/libexec/dhcpcd-hooks/** r,
+  /usr/libexec/dhcpcd-hooks/** ix,
+  /usr/bin/sh ix,
+  /bin/sh ix,
+  /usr/bin/env ix,
+
+  /etc/dhcpcd.conf r,
+  /etc/resolv.conf rw,
+  /etc/hosts rw,
+  /etc/ntp.conf r,
+  /run/dhcpcd/** rw,
+  /var/lib/dhcpcd/** rwkl,
+  /proc/sys/net/** rw,
+  /sys/class/net/** r,
+  /sys/devices/** r,
+  /run/udev/** r,
+  /dev/null rw,
+  /dev/urandom r,
+
+  # Credential, boot and raw-device boundary.
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /etc/ssl/private/** rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /boot/** rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/** w,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+
+  deny /tmp/** x,
+  deny /var/tmp/** x,
+  deny /dev/shm/** x,
+  deny /etc/apparmor.d/** w,
+
+  deny ptrace,
+  deny mount,
+  deny pivot_root,
+}

@@ -1,0 +1,29 @@
+## Grintion-OS audit rules.
+##
+## The kernel audit subsystem is built in (CONFIG_AUDIT=y, CONFIG_AUDITSYSCALL=y).
+## These rules focus on identity, privilege, boot, module and MAC changes, which
+## are the events a workstation or server actually needs to retain. They avoid
+## logging every execve, which would flood storage without adding much signal.
+
+-D
+-b 8192
+--backlog_wait_time 60000
+-f 1
+
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k privilege
+-w /etc/sudoers.d -p wa -k privilege
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/apparmor.d -p wa -k mac-policy
+-w /etc/grintion -p wa -k grintion-config
+-w /boot/efi/limine.conf -p wa -k boot-config
+
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
+-a always,exit -F arch=b64 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege
+-a always,exit -F arch=b32 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege

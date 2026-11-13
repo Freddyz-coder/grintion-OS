@@ -1,0 +1,91 @@
+# AppArmor profile for wpa_supplicant.
+#
+# The base image installs wpa_supplicant at /usr/bin/wpa_supplicant. The
+# supplicant parses untrusted 802.11 frames, so it is a valuable confinement
+# target. It needs wireless netlink, rfkill and its own configuration state; it
+# never needs credentials, raw block devices or kernel memory.
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/usr/bin/wpa_supplicant flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network packet raw,
+  network netlink raw,
+
+  capability net_admin,
+  capability net_raw,
+  capability net_bind_service,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
+
+  /usr/bin/wpa_supplicant mr,
+  /usr/bin/wpa_cli ix,
+  /usr/bin/sh ix,
+  /bin/sh ix,
+
+  /etc/wpa_supplicant/** rw,
+  /etc/grintion/network.conf r,
+  /run/wpa_supplicant/** rw,
+  /var/lib/wpa_supplicant/** rwkl,
+  /dev/rfkill rw,
+  /dev/null rw,
+  /dev/urandom r,
+  /sys/class/net/** r,
+  /sys/class/ieee80211/** r,
+  /sys/devices/** r,
+  /proc/sys/net/** rw,
+
+  # Credential, boot and raw-device boundary.
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /etc/ssl/private/** rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /boot/** rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/** w,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+
+  deny /tmp/** x,
+  deny /var/tmp/** x,
+  deny /dev/shm/** x,
+  deny /etc/apparmor.d/** w,
+
+  deny ptrace,
+  deny mount,
+  deny pivot_root,
+}

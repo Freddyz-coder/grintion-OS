@@ -22,6 +22,9 @@ Commands:
   delete NAME       Delete a snapshot by name
   boot NAME         Create a writable copy and add a Limine boot entry
   rollback NAME     Roll back active root (@) to a snapshot
+                    options: --dry-run, --yes
+  prune [--keep N]  Keep the newest N snapshots (default 5); --dry-run
+  status [--json]   Show root, snapshot count and free space
   -h, --help        Show this help
 
 The root filesystem must be Btrfs. /home on a separate @home subvolume is not
@@ -162,30 +165,124 @@ EOF
 
 cmd_rollback() {
     require_btrfs
-    local snap_name="${1:-}" path
+    local dry_run=0 assume_yes=0 snap_name=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) dry_run=1 ;;
+            --yes|-y) assume_yes=1 ;;
+            -*) die "unknown rollback option: $1" ;;
+            *) [ -z "$snap_name" ] || die "only one snapshot name is accepted"; snap_name=$1 ;;
+        esac
+        shift
+    done
+    [ -n "$snap_name" ] || die "a snapshot name is required"
+    local path
     path=$(snapshot_path "$snap_name")
     btrfs subvolume show "$path" >/dev/null 2>&1 || die "no such snapshot: $snap_name"
 
-    local root_src stage
+    local root_src stage ts
     root_src=$(findmnt -n -o SOURCE -T / 2>/dev/null | sed 's/\[.*\]$//')
     [ -n "$root_src" ] || die "could not determine root device for rollback"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+
+    printf 'rollback plan:\n  target snapshot: %s\n  active root:     @ -> @broken-%s\n  restored root:   @ (from @snapshots/%s)\n  /home:           untouched\n' \
+        "$snap_name" "$ts" "$snap_name"
+    if [ "$dry_run" -eq 1 ]; then
+        printf '[DRY-RUN] no changes made\n'
+        return 0
+    fi
+    if [ "$assume_yes" -eq 0 ] && [ -t 0 ]; then
+        printf 'Type ROLLBACK to replace the active root: '
+        read -r confirm
+        [ "$confirm" = "ROLLBACK" ] || die "rollback aborted"
+    fi
 
     stage=$(mktemp -d /run/grintion-rollback.XXXXXX)
     mount -o subvolid=5 "$root_src" "$stage" 2>/dev/null || mount "$root_src" "$stage"
+    [ -d "$stage/@" ] || { umount "$stage"; rmdir "$stage"; die "the top-level subvolume has no @ root"; }
+    [ -d "$stage/@snapshots/$snap_name" ] || { umount "$stage"; rmdir "$stage"; die "snapshot disappeared from the top-level subvolume"; }
 
-    local ts
-    ts="$(date -u +%Y%m%dT%H%M%SZ)"
-    if [ -d "$stage/@" ]; then
-        mv "$stage/@" "$stage/@broken-$ts"
+    # Keep a safety snapshot of the root we are about to replace. This is best
+    # effort: rollback must still work when the filesystem is nearly full.
+    btrfs subvolume snapshot -r "$stage/@" "$stage/@snapshots/pre-rollback-$ts" >/dev/null 2>&1 \
+        && printf '[+] safety snapshot: @snapshots/pre-rollback-%s\n' "$ts" \
+        || printf '[!] no safety snapshot (filesystem may be full)\n' >&2
+
+    if [ -e "$stage/@broken-$ts" ]; then
+        ts="$ts-$$";
     fi
-
+    mv "$stage/@" "$stage/@broken-$ts"
     btrfs subvolume snapshot "$stage/@snapshots/$snap_name" "$stage/@" >/dev/null
     btrfs property set -ts "$stage/@" ro false >/dev/null 2>&1 || true
 
+    # Keep the three most recent broken roots so a second rollback does not
+    # permanently fill the disk with dead copies.
+    { ls -1d "$stage"/@broken-* 2>/dev/null || true; } | sort -r | tail -n +4 | while IFS= read -r old; do
+        btrfs subvolume delete "$old" >/dev/null 2>&1 || true
+    done
+
     umount "$stage"
     rmdir "$stage"
-    printf '[+] successfully rolled back to snapshot %s (previous root saved as @broken-%s)\n' "$snap_name" "$ts"
+    printf '[+] rolled back to %s (previous root saved as @broken-%s)\n' "$snap_name" "$ts"
     printf '[+] reboot to load the restored system\n'
+}
+
+cmd_prune() {
+    require_btrfs
+    local keep=5 dry_run=0 name
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --keep) keep=${2:-}; shift ;;
+            --dry-run) dry_run=1 ;;
+            -*) die "unknown prune option: $1" ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+        shift
+    done
+    case "$keep" in ''|*[!0-9]*) die "--keep requires a number" ;; esac
+    local listing count=0
+    listing=$(mktemp)
+    btrfs subvolume list -o "$SNAP_DIR" 2>/dev/null | awk '{print $NF}' | sed 's|.*/||' | sort -r > "$listing" || true
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        count=$((count + 1))
+        [ "$count" -le "$keep" ] && continue
+        if [ "$dry_run" -eq 1 ]; then
+            printf '[DRY-RUN] would delete %s/%s\n' "$SNAP_DIR" "$name"
+        else
+            btrfs subvolume delete "$SNAP_DIR/$name" >/dev/null 2>&1 \
+                && printf 'deleted %s/%s\n' "$SNAP_DIR" "$name"
+        fi
+    done < "$listing"
+    rm -f "$listing"
+    [ "$count" -le "$keep" ] && printf 'nothing to prune (%s snapshot(s), keep %s)\n' "$count" "$keep"
+    return 0
+}
+
+cmd_status() {
+    require_btrfs
+    local json=0 count
+    [ "${1:-}" = "--json" ] && json=1
+    count=$(btrfs subvolume list -o "$SNAP_DIR" 2>/dev/null | wc -l)
+    if [ "$json" -eq 1 ]; then
+        python3 - "$SNAP_DIR" "$count" <<'PY'
+import json
+import shutil
+import sys
+usage = shutil.disk_usage(sys.argv[1])
+print(json.dumps({
+    "schema": 1,
+    "snapshot_dir": sys.argv[1],
+    "snapshots": int(sys.argv[2]),
+    "free_bytes": usage.free,
+    "total_bytes": usage.total,
+}, indent=2))
+PY
+    else
+        printf 'snapshot dir: %s\n' "$SNAP_DIR"
+        printf 'snapshots:    %s\n' "$count"
+        df -h "$SNAP_DIR" | awk 'NR==2 {print "free:         " $4 " of " $2}'
+    fi
 }
 
 [ $# -gt 0 ] || { usage; exit 2; }
@@ -196,7 +293,9 @@ case "$COMMAND" in
     list)     cmd_list "${1:-}" ;;
     delete)   cmd_delete "${1:-}" ;;
     boot)     cmd_boot "${1:-}" ;;
-    rollback) cmd_rollback "${1:-}" ;;
+    rollback) shift; cmd_rollback "$@" ;;
+    prune)    shift; cmd_prune "$@" ;;
+    status)   cmd_status "${1:-}" ;;
     -h|--help) usage ;;
     *) die "unknown command: $COMMAND (see --help)" ;;
 esac

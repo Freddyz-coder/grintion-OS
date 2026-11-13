@@ -7,11 +7,15 @@ The default output redacts serial numbers and MAC addresses. Use
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
-import re
+import platform
+import subprocess
 import time
 from pathlib import Path
+
+SYSFS = Path(os.environ.get("GRINTION_SYSFS", "/sys"))
 
 PCI_CLASSES = {
     "0100": "IDE interface",
@@ -61,12 +65,13 @@ def secure_boot_state() -> str:
 
 def pci_devices() -> list[dict]:
     devices = []
-    for device in sorted(Path("/sys/bus/pci/devices").glob("*")):
+    for device in sorted((SYSFS / "bus" / "pci" / "devices").glob("*")):
         class_code = read_text(device / "class")
         normalized = class_code[2:6] if class_code.startswith("0x") else class_code[:4]
         driver = ""
         try:
-            driver = (device / "driver").resolve().name
+            if (device / "driver").is_symlink():
+                driver = (device / "driver").resolve().name
         except OSError:
             pass
         devices.append({
@@ -82,7 +87,7 @@ def pci_devices() -> list[dict]:
 
 def usb_devices() -> list[dict]:
     devices = []
-    for device in sorted(Path("/sys/bus/usb/devices").glob("*")):
+    for device in sorted((SYSFS / "bus" / "usb" / "devices").glob("*")):
         vendor = read_text(device / "idVendor")
         if not vendor:
             continue
@@ -99,7 +104,7 @@ def usb_devices() -> list[dict]:
 
 def network_interfaces(include: bool) -> list[dict]:
     interfaces = []
-    for interface in sorted(Path("/sys/class/net").glob("*")):
+    for interface in sorted((SYSFS / "class" / "net").glob("*")):
         driver = ""
         try:
             driver = (interface / "device" / "driver").resolve().name
@@ -118,7 +123,7 @@ def network_interfaces(include: bool) -> list[dict]:
 
 def storage_devices(include: bool) -> list[dict]:
     devices = []
-    for device in sorted(Path("/sys/class/block").glob("*")):
+    for device in sorted((SYSFS / "class" / "block").glob("*")):
         if (device / "partition").exists():
             continue
         try:
@@ -134,6 +139,162 @@ def storage_devices(include: bool) -> list[dict]:
             "removable": read_text(device / "removable"),
         })
     return devices
+
+
+FIRMWARE_DIRS = [
+    Path(p)
+    for p in os.environ.get(
+        "GRINTION_FIRMWARE_DIRS", "/usr/lib/firmware:/lib/firmware"
+    ).split(":")
+]
+MODULES_DIR = Path(
+    os.environ.get("GRINTION_MODULES_DIR", "/lib/modules/" + platform.release())
+)
+MODINFO = os.environ.get("GRINTION_MODINFO", "modinfo")
+
+
+def firmware_present(name: str) -> bool:
+    for directory in FIRMWARE_DIRS:
+        for suffix in ("", ".zst", ".xz", ".gz"):
+            if (directory / (name + suffix)).is_file():
+                return True
+    return False
+
+
+def module_aliases() -> list[tuple[str, str]]:
+    aliases: list[tuple[str, str]] = []
+    try:
+        for line in (MODULES_DIR / "modules.alias").read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "alias":
+                aliases.append((parts[1], parts[2]))
+    except OSError:
+        pass
+    return aliases
+
+
+def builtin_modules() -> set[str]:
+    try:
+        return {
+            Path(line.strip()).stem
+            for line in (MODULES_DIR / "modules.builtin").read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+            if line.strip()
+        }
+    except OSError:
+        return set()
+
+
+def module_firmware(module: str, cache: dict[str, list[str]] | None = None) -> list[str]:
+    if cache is not None and module in cache:
+        return cache[module]
+    try:
+        result = subprocess.run(
+            [MODINFO, "-F", "firmware", module],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    files = [] if result.returncode != 0 else [
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    ]
+    if cache is not None:
+        cache[module] = files
+    return files
+
+
+def firmware_packages(files: list[str]) -> list[str]:
+    packages: set[str] = set()
+    for name in files:
+        base = name.rsplit("/", 1)[-1]
+        if base.startswith(("iwlwifi", "i915", "btintel")):
+            packages.add("linux-firmware-intel")
+        elif base.startswith("rtw88"):
+            packages.add("linux-firmware-rtw88")
+        elif base.startswith("rtw89"):
+            packages.add("linux-firmware-rtw89")
+        elif base.startswith(("rtl", "btrtl")):
+            packages.add("linux-firmware-realtek")
+        elif base.startswith(("ath", "qca")):
+            packages.add("linux-firmware-atheros")
+        elif base.startswith(("amdgpu", "radeon")):
+            packages.add("linux-firmware-amdgpu")
+        elif base.startswith(("nvidia", "nouveau")):
+            packages.add("linux-firmware-nvidia")
+        elif base.startswith(("brcm", "bcm")):
+            packages.add("linux-firmware-broadcom")
+        elif base.startswith(("mt76", "mt79", "mediatek")):
+            packages.add("linux-firmware-mediatek")
+        else:
+            packages.add("linux-firmware")
+    return sorted(packages)
+
+
+def firmware_report() -> dict:
+    """Explain, per device, whether the base image can drive it.
+
+    This is deliberately an honest report: Grintion-OS ships no vendor firmware
+    in the base image, so a Wi-Fi card can be detected, matched to iwlwifi, and
+    still be unusable until linux-firmware-intel is installed.
+    """
+    aliases = module_aliases()
+    builtins = builtin_modules()
+    firmware_cache: dict[str, list[str]] = {}
+    devices: list[dict] = []
+    for device in pci_devices():
+        class_name = device["class_name"]
+        if device["class"] not in {"0200", "0280", "0300", "0302", "0401", "0403"}:
+            continue
+        modalias = read_text(SYSFS / "bus" / "pci" / "devices" / device["slot"] / "modalias")
+        modules = [
+            module for pattern, module in aliases
+            if modalias and fnmatch.fnmatchcase(modalias, pattern)
+        ]
+        modules = list(dict.fromkeys(modules))
+        if not modules and device["driver"]:
+            modules = [device["driver"]]
+        firmware: list[str] = []
+        for module in modules:
+            firmware.extend(module_firmware(module, firmware_cache))
+        firmware = list(dict.fromkeys(firmware))
+        missing = [name for name in firmware if not firmware_present(name)]
+        packages = firmware_packages(missing)
+        if not modules and not firmware:
+            continue
+        if missing:
+            label = "Wi-Fi card" if device["class"] == "0280" else "device"
+            message = (
+                f"this {label} needs {', '.join(packages)} + {', '.join(missing)}; "
+                "it will not work on the base image"
+            )
+        else:
+            message = "firmware present"
+        devices.append({
+            "slot": device["slot"],
+            "class": class_name,
+            "driver": ", ".join(modules),
+            "builtin": [m for m in modules if m in builtins],
+            "firmware": firmware,
+            "missing_firmware": missing,
+            "packages": packages,
+            "works_on_base": not missing,
+            "message": message,
+        })
+    return {
+        "firmware_root_present": any(directory.is_dir() for directory in FIRMWARE_DIRS),
+        "roots": [str(directory) for directory in FIRMWARE_DIRS],
+        "kernel": platform.release(),
+        "devices": devices,
+        "missing_count": sum(len(d["missing_firmware"]) for d in devices),
+        "verdict": (
+            "base image ships no vendor firmware; devices with missing files will not work until their packages are installed"
+            if any(not d["works_on_base"] for d in devices)
+            else "all detected device firmware is present"
+        ),
+    }
 
 
 def cpu_info() -> dict:
@@ -200,6 +361,7 @@ def collect(include: bool) -> dict:
         "usb": usb_devices(),
         "network": network_interfaces(include),
         "storage": storage_devices(include),
+        "device_firmware": firmware_report(),
     }
 
 
@@ -230,6 +392,15 @@ def print_text(payload: dict) -> None:
     print("storage:")
     for device in payload["storage"]:
         print(f"  - {device['name']} {device['size_bytes']} bytes model={device['model']!r} serial={device['serial']}")
+    firmware = payload["device_firmware"]
+    print("firmware:")
+    print(f"  tree: {', '.join(firmware['roots'])} ({'present' if firmware['firmware_root_present'] else 'ABSENT'})")
+    print(f"  missing files: {firmware['missing_count']}")
+    for device in firmware["devices"]:
+        print(f"  - {device['slot']} [{device['driver'] or 'unmatched'}] {device['message']}")
+        for name in device["missing_firmware"]:
+            print(f"      missing: {name}")
+    print(f"  verdict: {firmware['verdict']}")
 
 
 def main() -> int:

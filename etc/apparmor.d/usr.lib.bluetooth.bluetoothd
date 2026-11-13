@@ -1,0 +1,86 @@
+# AppArmor profile for bluetoothd.
+#
+# Bluetooth stacks parse complex, untrusted protocol data. The daemon needs the
+# Bluetooth address family, its configuration/state trees and the system D-Bus
+# socket; it does not need credentials, raw disks or kernel memory.
+abi <abi/3.0>,
+
+include <tunables/global>
+
+/usr/lib/bluetooth/bluetoothd flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  network bluetooth,
+  network inet stream,
+  network inet6 stream,
+  network netlink raw,
+
+  capability net_admin,
+  capability net_bind_service,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_boot,
+  deny capability mac_admin,
+  deny capability mac_override,
+  deny capability bpf,
+
+  /usr/lib/bluetooth/bluetoothd mr,
+  /usr/lib/bluetooth/** r,
+  /usr/bin/sh ix,
+  /bin/sh ix,
+
+  /etc/bluetooth/** r,
+  /var/lib/bluetooth/** rwkl,
+  /run/dbus/system_bus_socket rw,
+  /run/bluetooth/** rw,
+  /sys/class/bluetooth/** r,
+  /sys/devices/** r,
+  /dev/rfkill rw,
+  /dev/vhci rw,
+  /dev/null rw,
+  /dev/urandom r,
+
+  # Credential, boot and raw-device boundary.
+  deny /etc/shadow rwklx,
+  deny /etc/shadow- rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/gshadow- rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /etc/ssh/ssh_host_* rwklx,
+  deny /etc/ssl/private/** rwklx,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /boot/** rwklx,
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+
+  deny /proc/**/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/** w,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  deny /dev/kmsg rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/vd* rwklx,
+  deny /dev/mmcblk* rwklx,
+  deny /dev/loop* rwklx,
+  deny /dev/dm-* rwklx,
+  deny /dev/mapper/** rwklx,
+
+  deny /tmp/** x,
+  deny /var/tmp/** x,
+  deny /dev/shm/** x,
+  deny /etc/apparmor.d/** w,
+
+  deny ptrace,
+  deny mount,
+  deny pivot_root,
+}

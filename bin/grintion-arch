@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""grintion-arch - report and enforce the 32-bit / 64-bit policy.
+
+Grintion-OS x86_64 kernels are built with CONFIG_IA32_EMULATION, so a 64-bit
+machine can run 64-bit and 32-bit programs. A CPU without long mode cannot run
+the 64-bit image at all; this tool refuses that combination instead of letting
+an installation produce an unbootable disk.
+
+Exit codes: 0 supported, 1 unsupported, 2 usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import os
+import platform
+import shutil
+import struct
+import sys
+from pathlib import Path
+
+CPUINFO = Path(os.environ.get("GRINTION_CPUINFO", "/proc/cpuinfo"))
+KERNEL_CONFIG = Path(os.environ.get("GRINTION_KERNEL_CONFIG", "/proc/config.gz"))
+USERLAND_SH = Path(os.environ.get("GRINTION_USERLAND_SH", "/bin/sh"))
+IA32_LIB_DIRS = (
+    Path(os.environ.get("GRINTION_IA32_LIBS", "/usr/lib32")),
+    Path("/lib32"),
+    Path("/usr/lib"),
+)
+
+
+def read_cpu_flags() -> set[str]:
+    flags: set[str] = set()
+    try:
+        for line in CPUINFO.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("flags"):
+                flags.update(line.split(":", 1)[1].split())
+    except OSError:
+        pass
+    return flags
+
+
+def cpu_bits() -> int:
+    override = os.environ.get("GRINTION_CPU_BITS")
+    if override in {"32", "64"}:
+        return int(override)
+    return 64 if "lm" in read_cpu_flags() else 32
+
+
+def machine() -> str:
+    return os.environ.get("GRINTION_MACHINE") or platform.machine()
+
+
+def kernel_bits() -> int:
+    return 64 if machine() in {"x86_64", "amd64"} else 32
+
+
+def elf_bits(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()[:5]
+    except OSError:
+        return None
+    if len(data) < 5 or data[:4] != b"\x7fELF":
+        return None
+    return 64 if data[4] == 2 else 32 if data[4] == 1 else None
+
+
+def userland_bits() -> int:
+    override = os.environ.get("GRINTION_USERLAND_BITS")
+    if override in {"32", "64"}:
+        return int(override)
+    for candidate in (USERLAND_SH, Path("/usr/bin/sh")):
+        value = elf_bits(candidate.resolve())
+        if value:
+            return value
+    return kernel_bits()
+
+
+def kernel_config() -> dict[str, str]:
+    path = Path(os.environ.get("GRINTION_KERNEL_CONFIG_FILE", "/boot/config-" + platform.release()))
+    text = ""
+    if path.is_file():
+        text = path.read_text(encoding="utf-8", errors="replace")
+    elif KERNEL_CONFIG.is_file():
+        try:
+            text = gzip.decompress(KERNEL_CONFIG.read_bytes()).decode("utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith("CONFIG_") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    return values
+
+
+def ia32_kernel() -> bool:
+    override = os.environ.get("GRINTION_IA32_KERNEL")
+    if override is not None:
+        return override == "1"
+    return kernel_config().get("CONFIG_IA32_EMULATION") == "y"
+
+
+def ia32_loader() -> Path | None:
+    for directory in IA32_LIB_DIRS:
+        for name in ("ld-linux.so.2", "ld-linux.so.3"):
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def collect() -> dict:
+    cpu = cpu_bits()
+    kernel = kernel_bits()
+    userland = userland_bits()
+    compat_kernel = ia32_kernel()
+    loader = ia32_loader()
+    can_run_64 = cpu == 64 and kernel == 64
+    can_run_32 = (kernel == 32) or (compat_kernel and loader is not None)
+    notes: list[str] = []
+
+    if cpu == 32:
+        notes.append("the CPU has no long mode; only a 32-bit kernel and userland can run")
+    if kernel == 64 and cpu == 32:
+        notes.append("this 64-bit kernel was booted on a 32-bit-only CPU, which should be impossible")
+    if kernel == 64 and not compat_kernel:
+        notes.append("CONFIG_IA32_EMULATION is off; 32-bit binaries cannot run")
+    elif kernel == 64 and compat_kernel and loader is None:
+        notes.append("32-bit kernel support is enabled but no 32-bit dynamic loader is installed")
+    elif kernel == 64 and loader is not None:
+        notes.append("32-bit dynamically linked programs can run through " + str(loader))
+
+    if cpu == 32:
+        policy = "32-bit only"
+        recommended = "i686"
+    elif can_run_32:
+        policy = "64-bit native with 32-bit compatibility"
+        recommended = "x86_64"
+    else:
+        policy = "64-bit only"
+        recommended = "x86_64"
+
+    return {
+        "schema": 1,
+        "machine": machine(),
+        "cpu_bits": cpu,
+        "kernel_bits": kernel,
+        "userland_bits": userland,
+        "long_mode": cpu == 64,
+        "ia32_kernel": compat_kernel,
+        "ia32_loader": str(loader) if loader else None,
+        "can_run_64": can_run_64,
+        "can_run_32": can_run_32,
+        "policy": policy,
+        "recommended_image": recommended,
+        "notes": notes,
+    }
+
+
+def check(require: str) -> tuple[bool, list[str]]:
+    data = collect()
+    problems: list[str] = []
+    if require in {"any", "64"} and not data["can_run_64"]:
+        if require == "64":
+            problems.append(
+                "64-bit execution is not available: the CPU lacks long mode or the kernel is 32-bit"
+            )
+    if require in {"any", "32"} and not data["can_run_32"]:
+        problems.append(
+            "32-bit execution is not available: CONFIG_IA32_EMULATION is off or no 32-bit loader is installed"
+        )
+    if require == "any" and not (data["can_run_64"] or data["can_run_32"]):
+        problems.append("neither 32-bit nor 64-bit execution is available")
+    if require == "install" and not data["can_run_64"]:
+        problems.append(
+            "this image is x86_64 and cannot boot on a 32-bit-only CPU; use a 32-bit Grintion build"
+        )
+    return not problems, problems
+
+
+def main() -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    parser = argparse.ArgumentParser(prog="grintion-arch")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("status", parents=[common], help="show architecture capabilities")
+    p_check = sub.add_parser("check", parents=[common], help="enforce an architecture requirement")
+    p_check.add_argument(
+        "--require", choices=("32", "64", "any", "install"), default="any",
+        help="32/64-bit execution, either, or a full install on this CPU",
+    )
+    sub.add_parser("plan", parents=[common], help="print the recommended image architecture")
+    args = parser.parse_args()
+    command = args.command or "status"
+
+    if command == "check":
+        ok, problems = check(args.require)
+        data = collect()
+        if args.json:
+            print(json.dumps({**data, "require": args.require, "ok": ok, "problems": problems}, indent=2))
+        elif ok:
+            print(f"[ ok ] {args.require}: {data['policy']}")
+        else:
+            for problem in problems:
+                print(f"[-] {problem}", file=sys.stderr)
+        return 0 if ok else 1
+
+    data = collect()
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    elif command == "plan":
+        print(data["recommended_image"])
+    else:
+        print("Architecture:")
+        print(f"  machine:        {data['machine']}")
+        print(f"  CPU:            {data['cpu_bits']}-bit capable (long mode: {data['long_mode']})")
+        print(f"  kernel:         {data['kernel_bits']}-bit")
+        print(f"  userland:       {data['userland_bits']}-bit")
+        print(f"  IA32 kernel:    {'yes' if data['ia32_kernel'] else 'no'}")
+        print(f"  32-bit loader:  {data['ia32_loader'] or 'not installed'}")
+        print(f"  policy:         {data['policy']}")
+        print(f"  image:          {data['recommended_image']}")
+        for note in data["notes"]:
+            print(f"  note:           {note}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

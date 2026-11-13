@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.13.1
+- **Version:** 0.14.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,13 +17,14 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.13.1 is a security and stability release on top of 0.13.0. It bounds package
-archives and repository metadata, makes security-profile application
-transactional, adds mode-aware integrity checks, and makes boot-health state
-atomic. It keeps the 0.13.0 kernel, boot, installer, and desktop fixes. See
-[CHANGELOG.md](CHANGELOG.md).
+0.14.0 is a hardware-support and resilience release on top of 0.13.1. It adds
+32-bit userspace compatibility on 64-bit machines, automatic driver, firmware
+and CPU-microcode selection, firmware-aware hardware reports, a functional
+auditd service, zram by default, self-healing, safer snapshot rollback, stronger
+AppArmor profiles, and a zstd initramfs. It keeps the 0.13.1 security and
+stability fixes. See [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.13.1 is built from this tree. Release ISO images are published on
+Grintion-OS 0.14.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -44,9 +45,9 @@ with `make sign-release` and verified with `bin/grintion-release-verify` (see
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot, Bubblewrap application sandboxing, USBGuard data-blocking, audit rules and sudo I/O trails staged (the base image does not ship the auditd daemon), mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
-| Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots, and automated self-healing (`grintion-doctor --fix`). |
+| Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
 Documentation:
 - [Handbook](docs/HANDBOOK.md) (Full 10-chapter manual)
@@ -56,6 +57,8 @@ Documentation:
 - [Security Hardening](docs/SECURITY-HARDENING.md)
 - [Hardware & Lab Validation](docs/HARDWARE-LAB.md)
 - [Package Ecosystem](docs/PACKAGE-ECOSYSTEM.md)
+- [32-bit and 64-bit Support](docs/MULTIARCH.md)
+- [Self-Healing](docs/SELF-HEALING.md)
 - [Performance Baselines](docs/PERFORMANCE-BASELINES.md)
 - [Tracked Binary Provenance](docs/BINARY-PROVENANCE.md)
 - [Roadmap](docs/ROADMAP.md)
@@ -212,10 +215,11 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.13.1 |
+| Feature | 0.14.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
 | Graphical desktop | XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM. GNOME is not supported because `gnome-session` 51 requires `org.freedesktop.systemd1` |
@@ -226,7 +230,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). Library-only base packages are seeded as owners so Firefox and desktop installs do not fail on unowned `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
-| Signed release artifacts | Tooling and a tag-triggered release workflow exist. The 0.13.1 and 0.13.0 GitHub releases are unsigned because no release key was available; verify their SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
+| Signed release artifacts | Tooling and a tag-triggered release workflow exist. Released images are unsigned because no release key is available; verify their SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
 Unsupported configurations are not "known broken"; they are simply outside what
 this release builds and tests.
@@ -260,7 +264,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.13.0 has not undergone an independent third-party
+and atomic rollback, but 0.14.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.
