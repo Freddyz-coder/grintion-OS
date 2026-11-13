@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.1] - 2026-11-13
+
+### Fixed
+
+- **Desktop installs now provide NetworkManager, not just the package.** KDE's
+  `plasma-meta` pulled in `networkmanager`, but the image only had the
+  dhcpcd-based `network` runit service, so Plasma, XFCE and LXQt applets
+  reported "NetworkManager service not running". Every supported graphical
+  profile now installs the matching applet and enables the tracked
+  `/etc/sv/NetworkManager` service, replacing `/var/service/network` to avoid
+  two DHCP managers on one interface. `sudo grintion-desktop network` repairs
+  an existing desktop installation. The repair command waits for `runsvdir` to
+  publish the service instead of reporting a false failure after a fixed
+  three-second delay.
+
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.14.1:
+  `output/grintion-os-x86_64.iso`, 132,165,632 bytes (126 MiB), SHA-256
+  `199728dc07aeb3aa49f6956e9b2351d7c9c7a37ecad133dbb0239c6c0c4256c6`.
+- `make check` passes with 191 tests. The final image passed QEMU SeaBIOS and
+  OVMF UEFI live boot. A live probe installed NetworkManager, enabled the runit
+  service, obtained DHCP address `10.0.2.15/24`, resolved DNS, passed ICMP and
+  fetched `http://example.com`.
+
+---
+
 ## [0.14.0] - 2026-11-13
 
 ### Added

@@ -1,8 +1,42 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.14.0, 0.13.1,
-0.13.0, 0.12.1, 0.12.0 and the earlier work. It does not claim coverage of
-hardware or configurations that were not tested.
+This document records what was actually executed for Grintion-OS 0.14.1, 0.14.0,
+0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work. It does not claim coverage
+of hardware or configurations that were not tested.
+
+## 0.14.1 NetworkManager desktop results (2026-11-13)
+
+This patch fixes the desktop network backend. The full desktop package
+transaction was not rerun; the probe installed only `networkmanager`,
+`network-manager-applet` and `polkit` into a live QEMU guest, then exercised
+the same `enable_network_manager` path used by `grintion-desktop install`.
+An earlier probe showed that runsvdir can take more than three seconds to pick
+up the new link; `grintion-desktop network` now polls for supervision instead
+of printing a false failure. The release image was rebuilt after that fix.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 132,165,632 bytes (126 MiB) |
+| SHA-256 | `199728dc07aeb3aa49f6956e9b2351d7c9c7a37ecad133dbb0239c6c0c4256c6` |
+| `BUILD-INFO` source commit | `17c6de0` (0.14.1 version changes were uncommitted at build time) |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | 191 passed |
+| BIOS live boot | Passed under QEMU SeaBIOS; 0.14.1, kernel `6.12.114-grintion`, DHCP, nftables and AppArmor enforce mode |
+| UEFI live boot | Passed under QEMU OVMF with the same assertions |
+| Desktop profiles | All graphical profiles install `networkmanager`; KDE adds `plasma-nm`, GTK profiles add `network-manager-applet` |
+| Repair command | `grintion-desktop network` returned 0 and printed `NetworkManager is running` |
+| Runit supervision | `sv status NetworkManager` reported `run: NetworkManager: (pid 1259) 0s`; `/var/service/NetworkManager` existed and `/var/service/network` was removed |
+| DHCP | `nmcli` reported `connected (site only)`; `eth0` received `10.0.2.15/24` |
+| DNS and internet | `getent hosts example.com` returned addresses, `ping -c 2 8.8.8.8` passed with 0% loss, and `wget http://example.com` returned 0 |
+| Installer / installed reboot | Not rerun for 0.14.1 |
+| Desktop rendering | Not rerun for KDE, XFCE, LXQt, Sway or i3 |
+| Bare-metal hardware | Not tested |
 
 **0.14.0 verification status (2026-11-13):** the hardware-support and resilience
 release was built from the 0.14.0 worktree; `BUILD-INFO` records source commit

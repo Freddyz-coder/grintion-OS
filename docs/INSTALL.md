@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.14.0 installs from the live ISO to a target disk or existing
+Grintion-OS 0.14.1 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.14.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.14.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.14.1 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.14.1 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Grintion-OS runit service: NetworkManager
+#
+# NetworkManager is installed by the desktop profiles. The base image keeps its
+# small dhcpcd-based `network` service; installing a desktop switches to this
+# manager so the XFCE, LXQt, Plasma and GTK applets have a working backend.
+#
+# This service is deliberately enabled as /var/service/NetworkManager. There is
+# no /run/runit/service or /etc/runit/sv directory in Grintion-OS; those are
+# Artix/Arch-runit paths. Use `sv status NetworkManager` (SVDIR is /var/service).
+
+mkdir -p /var/log /run/NetworkManager /var/lib/NetworkManager \
+    /etc/NetworkManager/system-connections
+# Connection profiles can contain Wi-Fi and VPN secrets.
+chmod 0700 /etc/NetworkManager/system-connections
+exec >>/var/log/NetworkManager.log 2>&1
+
+if [ ! -x /usr/bin/NetworkManager ]; then
+    echo "NetworkManager: the binary is missing; install the 'networkmanager' package"
+    exec sleep 3600
+fi
+
+# The system bus is a hard dependency for NetworkManager's D-Bus API. The dbus
+# service starts in parallel, so wait briefly instead of failing on the first
+# boot and letting runsv start a restart loop.
+i=0
+while [ ! -S /run/dbus/system_bus_socket ] && [ "$i" -lt 15 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+if [ ! -S /run/dbus/system_bus_socket ]; then
+    echo "NetworkManager: no D-Bus system bus; enable /var/service/dbus"
+    echo "NetworkManager: starting anyway so it can retry when the bus appears"
+fi
+
+echo "NetworkManager: starting /usr/bin/NetworkManager --no-daemon"
+exec /usr/bin/NetworkManager --no-daemon

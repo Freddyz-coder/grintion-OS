@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.14.0
+- **Version:** 0.14.1
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,14 +17,17 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.14.0 is a hardware-support and resilience release on top of 0.13.1. It adds
-32-bit userspace compatibility on 64-bit machines, automatic driver, firmware
-and CPU-microcode selection, firmware-aware hardware reports, a functional
-auditd service, zram by default, self-healing, safer snapshot rollback, stronger
-AppArmor profiles, and a zstd initramfs. It keeps the 0.13.1 security and
-stability fixes. See [CHANGELOG.md](CHANGELOG.md).
+0.14.1 is a patch release on top of the 0.14.0 hardware-support release. It
+fixes desktop networking: graphical profiles now install NetworkManager and its
+matching applet, and enable a tracked runit service instead of leaving only the
+base dhcpcd service. `grintion-desktop network` repairs existing desktop
+installs. The 0.14.0 release added 32-bit userspace compatibility on 64-bit
+machines, automatic driver, firmware and CPU-microcode selection, firmware-aware
+hardware reports, a functional auditd service, zram by default, self-healing,
+safer snapshot rollback, stronger AppArmor profiles, and a zstd initramfs. See
+[CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.14.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.14.1 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -38,10 +41,10 @@ with `make sign-release` and verified with `bin/grintion-release-verify` (see
 | --- | --- |
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
-| Networking | `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). DNS fallback resolvers keep name resolution responsive from early boot. |
+| Networking | Base image: `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). Desktop profiles install NetworkManager and switch `/var/service` to `/etc/sv/NetworkManager`, so the XFCE, LXQt, i3, Sway and Plasma network applets have a working D-Bus backend. DNS fallback resolvers keep name resolution responsive from early boot. |
 | Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway were rendered in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires systemd. |
 | Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, firmware and ALSA tools. The shared `grintion-audio` helper is started by the X11 hook or XDG autostart, and unmutes every detected ALSA card; WirePlumber enumerates real sinks through udev instead of a hard-coded `plughw:0,0`. PipeWire playback was captured on the XFCE QEMU probe. Direct ALSA is only usable after PipeWire releases the PCM. |
-| Services | runit supervises two local gettys, a serial getty, networking, the nftables firewall, syslogd, optional display manager, and a local hook. |
+| Services | runit supervises two local gettys, a serial getty, networking (dhcpcd or NetworkManager), the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
@@ -215,7 +218,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.14.0 |
+| Feature | 0.14.1 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -264,7 +267,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.14.0 has not undergone an independent third-party
+and atomic rollback, but 0.14.1 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

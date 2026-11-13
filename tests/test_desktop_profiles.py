@@ -41,6 +41,42 @@ def test_every_profile_has_required_fields() -> None:
             assert "startplasma-x11" not in values["XINITRC"]
 
 
+def test_graphical_profiles_install_and_enable_networkmanager() -> None:
+    # KDE's plasma-meta pulls in networkmanager, but the base image's service is
+    # dhcpcd and has no D-Bus API. The applet then reports "NetworkManager
+    # service not running" even though the package is installed. Every profile
+    # must install the backend explicitly, and the GTK applets need nm-applet.
+    for path in sorted(PROFILES.glob("*.conf")):
+        values = read_profile(path)
+        packages = values["PACKAGES"].split()
+        assert "networkmanager" in packages, path
+        if values["NAME"] == "kde":
+            assert "plasma-nm" in packages, path
+        elif values["NAME"] != "gnome":
+            assert "network-manager-applet" in packages, path
+
+
+def test_networkmanager_service_is_tracked_and_wired() -> None:
+    service = (REPO_ROOT / "etc" / "sv" / "NetworkManager" / "run").read_text()
+    assert os.access(REPO_ROOT / "etc" / "sv" / "NetworkManager" / "run", os.X_OK)
+    assert "exec /usr/bin/NetworkManager --no-daemon" in service
+    assert "systemctl" not in service
+    assert "/run/dbus/system_bus_socket" in service
+    assert "/var/log/NetworkManager.log" in service
+
+    config = (REPO_ROOT / "etc" / "NetworkManager" / "conf.d" / "10-grintion.conf").read_text()
+    assert "dhcp=internal" in config
+    assert "rc-manager=file" in config
+
+    desktop = DESKTOP.read_text()
+    assert "enable_network_manager" in desktop
+    assert 'ln -sfn "/etc/sv/NetworkManager"' in desktop
+    assert "var/service/network" in desktop
+    assert "for _ in $(seq 1 40)" in desktop
+    assert 'list|drivers|status|network)' in desktop
+    assert "network) cmd_network" in desktop
+
+
 def test_list_json_reports_profiles() -> None:
     env = os.environ.copy()
     env["GRINTION_DESKTOP_PROFILE_DIR"] = str(PROFILES)

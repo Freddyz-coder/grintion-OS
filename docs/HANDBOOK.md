@@ -109,7 +109,9 @@ Launch the unified configuration tool via `grintion-config` or use command-line 
 
 ## 6. Networking, Roaming & Privacy
 
-The network stack is orchestrated via `grintion-network`:
+The base image's network stack is orchestrated via `grintion-network`. A
+graphical profile switches to NetworkManager automatically, so desktop applets
+use `sv status /var/service/NetworkManager` and `nmcli`, not systemctl:
 - **Scan & Connect Wi-Fi**:
   ```bash
   grintion-network scan

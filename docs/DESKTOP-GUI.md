@@ -271,6 +271,43 @@ The selected display manager is recorded in `/etc/grintion/display-manager` and
 supervised by the tracked `/etc/sv/display-manager/run` service (or `/etc/sv/greetd/run`
 when using greetd).
 
+### NetworkManager and desktop network control
+
+The base image uses the small dhcpcd-based `network` service. Every graphical
+profile installs NetworkManager plus its desktop applet, and `grintion-desktop`
+replaces `/var/service/network` with `/var/service/NetworkManager` so Plasma's
+network widget, `nm-applet`, `nmcli` and `nmtui` share one backend. The display
+manager's D-Bus service is enabled automatically.
+
+```sh
+# Check the desktop network backend
+sv status /var/service/NetworkManager
+nmcli general status
+nmcli device status
+
+# Repair an existing KDE/XFCE/LXQt install that still has only dhcpcd
+sudo grintion-desktop network
+
+# Switch back to the base dhcpcd service after removing every desktop
+sudo rm -f /var/service/NetworkManager
+sudo ln -sfn /etc/sv/network /var/service/network
+sudo sv start network
+```
+
+Grintion-OS uses `/etc/sv` and `/var/service`, not Artix's `/etc/runit/sv` or
+`/run/runit/service`; a failed `ln -s /etc/runit/sv/NetworkManager ...` is
+expected. NetworkManager is configured at
+`/etc/NetworkManager/conf.d/10-grintion.conf` with its internal DHCP client and
+direct `/etc/resolv.conf` management because this image has no
+systemd-resolved. Connection profiles are stored in
+`/etc/NetworkManager/system-connections` with mode 0700.
+
+GNOME remains unsupported because `gnome-session` requires
+`org.freedesktop.systemd1`; NetworkManager being present does not make that
+session work. Hyprland is not a built-in profile, but it can use the same
+NetworkManager service and `nm-applet`/`nmcli`; install `hyprland` and
+`networkmanager` yourself, then run `sudo grintion-desktop network`.
+
 ---
 
 ## 6. Accessibility Management (`grintion-a11y`)

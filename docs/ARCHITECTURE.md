@@ -113,7 +113,8 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 | `agetty-tty1`, `agetty-tty2` | local consoles |
 | `agetty-ttyS0` | serial console |
 | `network` | applies `/etc/grintion/network.conf` (DHCP or static), or auto-detects wired interfaces for DHCP when no interface sections exist |
-| `wpa_supplicant` | opt-in Wi-Fi association for the `[wifi]` section; enabled by `grintion-network connect` |
+| `NetworkManager` | desktop network backend with the D-Bus API used by Plasma, XFCE, LXQt and GTK applets; enabled by `grintion-desktop` in place of `network` |
+| `wpa_supplicant` | opt-in Wi-Fi association for the `[wifi]` section; enabled by `grintion-network connect` on the base dhcpcd path |
 | `firewall` | applies the active profile via `grintion-security apply-firewall`, falling back to `/etc/nftables.conf` if validation or apply fails, then sleeps |
 | `syslog` | `busybox syslogd -n -O /var/log/messages` |
 | `seatd` | provides `/run/seatd.sock` for Wayland compositors without logind |
@@ -125,6 +126,16 @@ Services are plain `runsv` directories in `/etc/sv`, linked into `/var/service`:
 atomically and restarts the services; `grintion-network connect` links
 `/etc/sv/wpa_supplicant` into `/var/service` and writes a mode-0600
 `wpa_supplicant.conf` from the plaintext passphrase or 64-hex PSK.
+
+The base image deliberately keeps this small dhcpcd path. A graphical profile
+installs NetworkManager and `grintion-desktop` replaces the `network` link with
+`/var/service/NetworkManager`; running both managers on one interface would
+fight over addresses. The NetworkManager service waits for `/run/dbus`, uses
+`dhcp=internal` and writes `/etc/resolv.conf` directly because the image has no
+systemd-resolved or resolvconf. There is no `/run/runit/service` or
+`/etc/runit/sv`; those are Artix paths. The canonical commands are
+`sv status NetworkManager` and `sudo ln -sfn /etc/sv/NetworkManager
+/var/service/NetworkManager`.
 
 `devtmpfs` creates the initial device nodes and BusyBox `mdev` applies
 `/etc/mdev.conf` for early hotplug. During service startup, standalone

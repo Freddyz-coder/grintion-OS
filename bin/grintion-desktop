@@ -60,6 +60,7 @@ Commands:
   install <desktop>     Install a desktop environment and configure display manager
   uninstall <desktop>   Remove a desktop's packages and display-manager service
   drivers               Detect GPU hardware and install graphics drivers
+  network               Enable/repair the NetworkManager runit service
   status                Show installed desktop environments, display managers & drivers
 
 Supported Desktops:
@@ -375,6 +376,90 @@ provision_dbus_accounts() {
     done
 }
 
+# Every graphical profile needs the system bus, including Sway and other
+# profiles without a display manager. Keep this in one place so NetworkManager
+# and the display manager cannot enable it with different ownership rules.
+enable_dbus_service() {
+    local dbus_user
+    dbus_user="$(dbus_service_user)"
+    ensure_service_account "$dbus_user" /run/dbus
+    mkdir -p "$TARGET_ROOT/run/dbus"
+    chown "$dbus_user:$dbus_user" "$TARGET_ROOT/run/dbus" 2>/dev/null || true
+
+    local dbus_dir="$TARGET_ROOT/etc/sv/dbus"
+    if [ -f "$dbus_dir/run" ]; then
+        chmod 0755 "$dbus_dir/run"
+        mkdir -p "$(dirname "$TARGET_ROOT/var/service/dbus")"
+        ln -sfn "/etc/sv/dbus" "$TARGET_ROOT/var/service/dbus"
+    else
+        warn "tracked dbus service is missing: $dbus_dir/run"
+    fi
+}
+
+# NetworkManager is the desktop network backend. The base image's `network`
+# service runs dhcpcd directly and has no D-Bus API, so the Plasma/XFCE/LXQt
+# applets reported "NetworkManager service not running" even though the package
+# was installed. Desktop installs therefore switch the service link from
+# `network` to NetworkManager. Keep `/etc/sv/network` in the image so a user can
+# switch back if they remove every desktop.
+enable_network_manager() {
+    local nm="$TARGET_ROOT/usr/bin/NetworkManager"
+    local service="$TARGET_ROOT/etc/sv/NetworkManager/run"
+    [ -x "$nm" ] || die "NetworkManager is installed but $nm is missing"
+    [ -f "$service" ] || die "tracked NetworkManager runit service is missing: $service"
+    chmod 0755 "$service"
+
+    # This drop-in is tracked in the image as well. The conditional preserves a
+    # user's local NetworkManager configuration if one already exists.
+    local conf="$TARGET_ROOT/etc/NetworkManager/conf.d/10-grintion.conf"
+    if [ ! -e "$conf" ]; then
+        mkdir -p "$(dirname "$conf")"
+        cat > "$conf" <<'EOF'
+[main]
+plugins=keyfile
+dhcp=internal
+dns=default
+rc-manager=file
+EOF
+        chmod 0644 "$conf"
+    fi
+    mkdir -p "$TARGET_ROOT/var/lib/NetworkManager" \
+        "$TARGET_ROOT/etc/NetworkManager/system-connections"
+    chmod 0700 "$TARGET_ROOT/etc/NetworkManager/system-connections"
+
+    enable_dbus_service
+
+    # dhcpcd and NetworkManager must not manage the same interface. Stop the
+    # old service before removing its link so the address is released cleanly.
+    if [ "$TARGET_ROOT" = "/" ] && command -v sv >/dev/null 2>&1; then
+        sv down network 2>/dev/null || true
+        sv down wpa_supplicant 2>/dev/null || true
+    fi
+    rm -f "$TARGET_ROOT/var/service/network" \
+        "$TARGET_ROOT/var/service/wpa_supplicant"
+    mkdir -p "$(dirname "$TARGET_ROOT/var/service/NetworkManager")"
+    ln -sfn "/etc/sv/NetworkManager" "$TARGET_ROOT/var/service/NetworkManager"
+
+    if [ "$TARGET_ROOT" = "/" ] && command -v sv >/dev/null 2>&1; then
+        # runsvdir notices the new link on its next scan (up to five seconds by
+        # default). Poll for the supervise directory instead of assuming a fixed
+        # delay; a successful symlink alone does not mean the daemon is running.
+        local state="" _
+        for _ in $(seq 1 40); do
+            state="$(sv status NetworkManager 2>&1 || true)"
+            if printf '%s\n' "$state" | grep -q '^run:'; then
+                log "NetworkManager is running (managed by runit: /var/service/NetworkManager)"
+                return 0
+            fi
+            sleep 0.5
+        done
+        warn "NetworkManager did not start: $(printf '%s' "$state" | tr '\n' ' ')"
+        warn "check /var/log/NetworkManager.log; the old network service is disabled"
+    else
+        log "Enabled NetworkManager as the runit network service"
+    fi
+}
+
 enable_dm_service() {
     local dm="$1"
     local sv_dir="$TARGET_ROOT/etc/sv/display-manager"
@@ -419,19 +504,7 @@ enable_dm_service() {
 
     # Every supported display manager needs the D-Bus system bus and the account
     # that the dbus package normally creates with systemd-sysusers.
-    local dbus_user
-    dbus_user="$(dbus_service_user)"
-    ensure_service_account "$dbus_user" /run/dbus
-    mkdir -p "$TARGET_ROOT/run/dbus"
-    chown "$dbus_user:$dbus_user" "$TARGET_ROOT/run/dbus" 2>/dev/null || true
-    local dbus_dir="$TARGET_ROOT/etc/sv/dbus"
-    if [ -f "$dbus_dir/run" ]; then
-        chmod 0755 "$dbus_dir/run"
-        mkdir -p "$(dirname "$TARGET_ROOT/var/service/dbus")"
-        ln -sfn "/etc/sv/dbus" "$TARGET_ROOT/var/service/dbus"
-    else
-        warn "tracked dbus service is missing: $dbus_dir/run"
-    fi
+    enable_dbus_service
 
     mkdir -p "$(dirname "$var_sv")"
     ln -sfn "/etc/sv/display-manager" "$var_sv"
@@ -762,6 +835,14 @@ Supported Desktop Environments and Window Managers in Grintion-OS:
 EOF
 }
 
+cmd_network() {
+    [ "$(id -u)" -eq 0 ] || die "NetworkManager setup requires root privileges"
+    if [ ! -x "$TARGET_ROOT/usr/bin/NetworkManager" ]; then
+        die "NetworkManager is not installed; install a desktop profile first"$'\n'"        (for example: sudo grintion-desktop install kde)"
+    fi
+    enable_network_manager
+}
+
 cmd_status() {
     echo "=== Grintion-OS Desktop & GUI Status ==="
     echo "Target root: $TARGET_ROOT"
@@ -815,6 +896,17 @@ cmd_status() {
         echo "Active (/var/service/seatd)"
     elif [ -x "$TARGET_ROOT/usr/bin/seatd" ]; then
         echo "Installed (not enabled)"
+    else
+        echo "None"
+    fi
+
+    echo -n "Network service: "
+    if [ -L "$TARGET_ROOT/var/service/NetworkManager" ]; then
+        echo "NetworkManager (/var/service/NetworkManager)"
+    elif [ -L "$TARGET_ROOT/var/service/network" ]; then
+        echo "dhcpcd (/var/service/network)"
+    elif [ -x "$TARGET_ROOT/usr/bin/NetworkManager" ]; then
+        echo "NetworkManager installed (not enabled)"
     else
         echo "None"
     fi
@@ -955,6 +1047,7 @@ cmd_install() {
     # service accounts; without them dbus-daemon warns on the console and the
     # daemons cannot start.
     provision_dbus_accounts
+    enable_network_manager
     configure_x11_security
 
     # Ensure mcookie exists for startx
@@ -1085,6 +1178,13 @@ cmd_uninstall() {
     fi
 
     rm -f "$TARGET_ROOT/var/service/display-manager" "$TARGET_ROOT/etc/grintion/display-manager"
+    # Removing the package also leaves a dangling NetworkManager link. Restore
+    # the small dhcpcd service so the machine still has networking afterwards.
+    if [ ! -x "$TARGET_ROOT/usr/bin/NetworkManager" ]; then
+        rm -f "$TARGET_ROOT/var/service/NetworkManager"
+        mkdir -p "$TARGET_ROOT/var/service"
+        ln -sfn "/etc/sv/network" "$TARGET_ROOT/var/service/network"
+    fi
     if [ -n "${XINITRC:-}" ]; then
         for file in "$TARGET_ROOT/etc/skel/.xinitrc" "$TARGET_ROOT/root/.xinitrc" "$TARGET_ROOT"/home/*/.xinitrc; do
             [ -f "$file" ] || continue
@@ -1102,7 +1202,7 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        list|drivers|status)
+        list|drivers|status|network)
             COMMAND="$1"; shift ;;
         install|uninstall)
             COMMAND="$1"
@@ -1140,6 +1240,7 @@ done
 case "${COMMAND:-install}" in
     list)    cmd_list ;;
     drivers) cmd_drivers ;;
+    network) cmd_network ;;
     status)  cmd_status ;;
     install) cmd_install "${POSITIONAL[0]:-}" ;;
     uninstall) cmd_uninstall "${POSITIONAL[0]:-}" ;;

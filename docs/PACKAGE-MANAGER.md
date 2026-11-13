@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.14.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.14.1 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -86,9 +86,12 @@ install does not fail with `exists in filesystem`. See
 Package changes to `/` require root. Run `garb install firefox` as `sudo garb
 install firefox` (or use `sudo pacman -S firefox`); a non-root invocation now
 fails with an explicit root-required message instead of pacman's misleading
-`/etc/mtab: Permission denied`. `networkmanager` is not part of this image; the
-`network` runit service manages the interface. Check it with `sv status
-/var/service/network` and `ip addr`.
+`/etc/mtab: Permission denied`. The base image uses the `network` runit service
+(dhcpcd), not NetworkManager; check it with `sv status /var/service/network` and
+`ip addr`. Installing a desktop profile adds NetworkManager and switches the
+service link to `/var/service/NetworkManager`, which is what the desktop network
+applets use. On an existing desktop install, repair the link with
+`sudo grintion-desktop network`.
 
 ```sh
 garb --backend auto install htop     # delegate if pacman/apk is installed
