@@ -629,7 +629,7 @@ before PAM ran. The conntrack check exists because an earlier kernel enabled
 | `jq --version` | Pass | Executed `jq-1.8.2` |
 | `pacman -Q jq` | Pass | Reported package `jq 1.8.2-1` |
 | `garb remove jq` | Pass | Removed `jq` with `--noconfirm` |
-| `grintion-desktop` | Pass | Script deployed to `/usr/bin/grintion-desktop` supporting XFCE, GNOME, KDE, Sway, LXQt, and GPU drivers |
+| `grintion-desktop` | Pass | Script deployed to `/usr/bin/grintion-desktop` supporting XFCE, KDE, Sway, LXQt, i3 and GPU drivers; GNOME is refused because it requires systemd |
 
 The previous mount point failure was resolved by symlinking `/etc/mtab -> /proc/self/mounts` in `build/make-rootfs.sh`. The non-interactive transaction prompt was addressed by translating `install`, `remove`, and `upgrade` to include `--noconfirm`.
 

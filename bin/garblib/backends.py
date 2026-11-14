@@ -172,6 +172,29 @@ def sync_pacman_databases(binary: str, root: Path) -> None:
         )
 
 
+def select_pacman_mirror(root: Path) -> None:
+    """Point the target's pinned pacman config at the fastest ALA endpoint.
+
+    The selector is optional: a source-tree invocation of garb may not have
+    the installed helper on PATH, and an offline system must still reach
+    pacman's normal error path. Never make a package operation fail because
+    the optimization could not run.
+    """
+    tool = shutil.which("grintion-pacman-mirror")
+    if tool is None:
+        return
+    try:
+        subprocess.run(
+            [tool, "--quiet", "--root", str(root)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[str]:
     """Translate a garb command into the external manager's argument list."""
     root = Path(args.root)
@@ -328,6 +351,12 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         )
     if backend == "pacman" and getattr(args, "command", "") in ("install", "remove", "upgrade"):
         _repair_mtab(root)
+    if backend == "pacman" and getattr(args, "command", "") in (
+        "install",
+        "update",
+        "upgrade",
+    ):
+        select_pacman_mirror(root)
     if backend == "pacman" and (
         getattr(args, "command", "") in PACMAN_SYNC_DB_COMMANDS
         or (

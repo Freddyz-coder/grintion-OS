@@ -3,7 +3,7 @@
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 current source tree provides; the most recent image built from this tree is
-0.14.2. It also records the limits of that protection and how to report a problem.
+0.14.3. It also records the limits of that protection and how to report a problem.
 
 ## Supported versions
 

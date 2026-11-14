@@ -143,7 +143,7 @@ Grintion-OS supports both Wayland and X11 without requiring systemd-logind.
 - **Desktop Profiles**: XFCE, i3, KDE Plasma, LXQt and Sway render in QEMU/KVM. GNOME is refused because `gnome-session` requires the systemd user session manager.
   ```bash
   grintion-desktop list
-  grintion-desktop install sway
+  sudo grintion-desktop install sway
   ```
 
 ---

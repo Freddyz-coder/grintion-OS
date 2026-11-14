@@ -7,7 +7,7 @@ command_not_found_handle() {
     printf '[CRITICAL] command not found: %s\n' "$1" >&2
     case "$1" in
         startx|sway|xfce4-session|gnome-session|startplasma-x11|startlxqt|i3)
-            printf 'A graphical desktop is not installed yet. Run "grintion-desktop install" to set up a GUI.\n' >&2 ;;
+            printf 'A graphical desktop is not installed yet. Run "sudo grintion-desktop install" to set up a GUI.\n' >&2 ;;
         apk)
             printf 'garb delegates to apk only when an apk binary is present.\n' >&2 ;;
         clean)

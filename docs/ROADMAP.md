@@ -4,7 +4,7 @@ Grintion-OS is an x86_64 operating system with a source-built kernel, a runit
 userland, a live RAM overlay, a disk installer, and dual-backend package
 management. This roadmap turns the 0.9.0 gap list into ordered phases.
 
-**Planning baseline:** 0.14.2. **Target:** 0.15.0 and later. Nothing here is a
+**Planning baseline:** 0.14.3. **Target:** 0.15.0 and later. Nothing here is a
 promise of a date. A phase heading marked `[x]` means the deliverable exists;
 it does **not** mean every configuration is verified. Verification is tracked
 separately in [VERIFICATION.md](VERIFICATION.md).
@@ -142,9 +142,9 @@ Wayland, without adopting systemd.
 - [x] `seatd` runit service, `seat` group membership, standalone `udev`, and
   `grintion-session` wrapper for private `XDG_RUNTIME_DIR`, D-Bus session bus,
   and seat access without systemd/logind.
-- [x] Complete desktop profile matrix: XFCE, i3, GNOME, KDE Plasma, LXQt, and
-  Sway with session bus fallback in Xsession and xinitrc hooks, eliminating
-  "No session bus running" errors.
+- [x] Complete supported desktop profile matrix: XFCE, i3, KDE Plasma, LXQt,
+  and Sway with session bus fallback in Xsession and xinitrc hooks, eliminating
+  "No session bus running" errors. GNOME is blocked on its systemd dependency.
 - [x] Display manager matrix: `greetd` runit service (`etc/sv/greetd`), PAM
   stacks for `lightdm`, `sddm`, `gdm`, and `greetd`, and automatic service account
   provisioning (`greetd`, `sddm`, `gdm`, `lightdm`).

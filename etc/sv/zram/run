@@ -5,7 +5,8 @@
 # responsive without touching the disk. The service is idempotent: it reuses an
 # already-active zram0 instead of failing on a second run.
 
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/zram.log 2>&1
 echo "Configuring in-memory ZRAM swap device"
 
 if [ -f /etc/grintion/zram.conf ]; then

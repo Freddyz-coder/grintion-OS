@@ -48,7 +48,7 @@ install -D -m 0644 "$OUTPUT/initramfs.img"          "$ISO_ROOT/initramfs.img"
 
 cat > "$ISO_ROOT/limine.conf" <<EOF
 timeout: 5
-interface_branding: Grintion-OS $GRINTION_VERSION (MISS)
+interface_branding: Grintion-OS $GRINTION_VERSION
 
 /Grintion-OS $GRINTION_VERSION (live, RAM)
     protocol: linux

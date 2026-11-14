@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 export LC_ALL=C
 
-VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.14.2')"
+VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.14.3')"
 HOSTNAME="$(hostname 2>/dev/null || echo 'grintion')"
 KERNEL="$(uname -r)"
 
@@ -42,18 +42,18 @@ PY
 
     cat <<EOF
 ========================================================================
-             Welcome to Grintion linux $VERSION
+             Welcome to Grintion-OS $VERSION
 ========================================================================
 Hostname: $HOSTNAME | Kernel: $KERNEL
 
-Grintion linux is a lean, independent, non-systemd Linux distribution built
+Grintion-OS is a lean, independent, non-systemd Linux distribution built
 for privacy, security, and developer control.
 
 Quick Configuration Guide:
   1. Network:      'grintion-network status' or 'grintion-network connect SSID'
   2. Display:      'grintion-display scale 1.25' (for HiDPI screens)
   3. Themes:       'grintion-theme mode dark'
-  4. Desktop:      'grintion-desktop install xfce' (or gnome, kde, sway, i3)
+  4. Desktop:      'sudo grintion-desktop install xfce' (or kde, lxqt, sway, i3)
   5. Applications: 'grintion-apps list' to explore curated app profiles
   6. Accessibility: 'grintion-a11y status' for screen reader and large text
   7. Health Check: 'grintion-doctor --security' for system posture

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.3] - 2026-11-14
+
+### Fixed
+
+- **Package downloads use the fastest official Arch Linux Archive endpoint.**
+  The primary archive was slow enough to make a KDE transaction painful.
+  `grintion-pacman-mirror` now probes the official ALA hosts, rewrites the three
+  dated `Server` lines to the faster reachable endpoint, and keeps the primary
+  as a fallback. `garb`, desktop installs, the installer, application profiles,
+  HWE/DKMS kernel installs and driver selection all run it first. Parallel
+  downloads increased from 5 to 10.
+- **Boot diagnostics no longer overwrite the login prompt.** `seatd`, the
+  firewall service and zram now write to `/var/log/seatd.log`,
+  `/var/log/firewall.log` and `/var/log/zram.log` instead of tty1.
+- **The OS identity no longer renders `(MISS)` as if a value were missing.**
+  `os-release` and the Limine interface branding use `Grintion-OS 0.14.3`; the
+  MISS philosophy remains in the boot banner and README.
+- **The live banner reports the actual console device.** fastfetch's terminal
+  detection showed the outer runtime name (`runsc`) instead of the tty. The
+  configuration now prints `tty` (for example `/dev/tty1`).
+- **GNOME is no longer offered where it cannot work.** The installer menu and
+  help no longer list it, the installer rejects `--desktop gnome` before
+  partitioning with the systemd requirement, and the welcome guide no longer
+  suggests it.
+
+---
+
 ## [0.14.2] - 2026-11-14
 
 ### Fixed

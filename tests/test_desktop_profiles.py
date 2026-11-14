@@ -250,7 +250,9 @@ def test_gnome_installation_is_refused_without_systemd() -> None:
     assert values.get("REQUIRES_SYSTEMD") == "1"
     desktop = DESKTOP.read_text()
     assert "requires the systemd user session manager" in desktop
-    assert "NOT SUPPORTED" in desktop
+    assert "[2] GNOME" not in desktop
+    assert "xfce/gnome" not in desktop
+    assert "[5] i3" in desktop
 
 
 def test_lxqt_uses_the_verified_lightdm_x11_path() -> None:

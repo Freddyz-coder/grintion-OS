@@ -3,9 +3,10 @@
 # Provides a seat-management socket for Wayland compositors without logind.
 # The socket is owned by root:seat; human users are added to that group by
 # grintion-desktop when a Wayland profile is installed.
-exec 2>&1
-
-mkdir -p /run
+mkdir -p /var/log /run
+# runsv sends a service's stdout to the console when it has no log service.
+# seatd's startup diagnostics must not overwrite the login prompt.
+exec >>/var/log/seatd.log 2>&1
 rm -f /run/seatd.sock
 
 if ! command -v seatd >/dev/null 2>&1; then

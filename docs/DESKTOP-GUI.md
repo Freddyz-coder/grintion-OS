@@ -12,7 +12,7 @@ The rendered-session evidence below is from 0.11.0. Grintion-OS 0.13.0 did not
 re-render a graphical session; it carries the 0.12.1 KDE target-disk install
 and adds VM pointer synchronization (see [VERIFICATION.md](VERIFICATION.md)).
 
-Verified: `grintion-desktop install xfce` and `... install i3` complete,
+Verified: `sudo grintion-desktop install xfce` and `... install i3` complete,
 LightDM starts, and both sessions render under Xorg in QEMU/KVM. The probes
 captured non-black desktops at 1280x800 (1,023,950 non-black pixels for XFCE,
 999,348 for i3), with `xfce4-session`/`xfwm4`/`xfce4-panel` and
@@ -22,8 +22,8 @@ Audio is verified end-to-end on XFCE. The kernel provides HDA, the HDA codec
 parsers and USB audio built in; the profile installs PipeWire, WirePlumber,
 `pipewire-pulse`, ALSA tools, `linux-firmware`, `wireless-regdb` and
 `sof-firmware`. The shared `grintion-audio` helper is called from the X11
-session hook and from `/etc/xdg/autostart/grintion-audio.desktop`, so GNOME,
-KDE, LXQt and XFCE sessions all start the same stack without a systemd user
+session hook and from `/etc/xdg/autostart/grintion-audio.desktop`, so KDE,
+LXQt and XFCE sessions all start the same stack without a systemd user
 manager. It unmutes every card in `/proc/asound/card*`, not just card 0.
 
 The hard-coded `plughw:0,0` PipeWire sink was removed. That sink selected the
@@ -83,7 +83,7 @@ DRM/input access through `seatd` and the `libseat` library shipped by that
 package, reads `~/.config/sway/config` with the Grintion drop-in, and starts
 `swaybg` plus `swaybar`. GNOME remains unsupported: `gnome-session` 51 starts
 its units through `org.freedesktop.systemd1` and exits before drawing, so
-`grintion-desktop install gnome` refuses before downloading anything.
+`sudo grintion-desktop install gnome` refuses before downloading anything.
 
 If the greeter does not appear:
 

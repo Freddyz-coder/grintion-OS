@@ -3,8 +3,8 @@
 # Grintion-OS: Minimalist - Independent - Secure - Stable
 #
 # Provides seamless installation, driver detection, and runit service
-# configuration for modern desktop environments (XFCE, GNOME, KDE Plasma,
-# LXQt, Sway, i3) on Grintion-OS.
+# configuration for modern desktop environments (XFCE, KDE Plasma, LXQt,
+# Sway, i3) on Grintion-OS; GNOME is refused because it requires systemd.
 
 set -Eeuo pipefail
 export LC_ALL=C
@@ -79,10 +79,10 @@ Options:
   -h, --help                                  Show this help message
 
 Examples:
-  grintion-desktop install xfce
-  grintion-desktop install gnome --dm gdm
-  grintion-desktop install kde --root /mnt
-  grintion-desktop uninstall xfce
+  sudo grintion-desktop install xfce
+  sudo grintion-desktop install lxqt
+  sudo grintion-desktop install kde --root /mnt
+  sudo grintion-desktop uninstall xfce
   grintion-desktop list --json
 EOF
 }
@@ -125,6 +125,15 @@ detect_gpu_drivers() {
     printf '%s\n' "${drivers[*]}"
 }
 
+select_pacman_mirror() {
+    local tool
+    tool=$(command -v grintion-pacman-mirror || true)
+    [ -n "$tool" ] || return 0
+    log "Selecting the fastest reachable Arch Linux Archive mirror..."
+    "$tool" --quiet --root "$TARGET_ROOT" \
+        || warn "could not benchmark ALA mirrors; keeping the configured one"
+}
+
 pkg_install() {
     local pkgs=("$@")
     if [ ${#pkgs[@]} -eq 0 ]; then
@@ -135,6 +144,10 @@ pkg_install() {
     if [ "$TARGET_ROOT" != "/" ]; then
         root_flag=("--root" "$TARGET_ROOT")
     fi
+
+    # All desktop and driver installs share the same dated snapshot. Pick the
+    # faster official endpoint once, before the transaction begins.
+    select_pacman_mirror
 
     local manager=()
     if command -v pacman >/dev/null 2>&1; then
@@ -802,32 +815,25 @@ Supported Desktop Environments and Window Managers in Grintion-OS:
       Description: Fast, lightweight, user-friendly traditional desktop.
       Recommended for: General desktop use, older hardware, lightweight setups.
 
-  [2] GNOME (gnome) - NOT SUPPORTED
-      Type: Desktop Environment (Wayland)
-      Default Display Manager: GDM
-      Description: gnome-session 51 requires the systemd user session manager
-      (org.freedesktop.systemd1). Grintion-OS runs runit without systemd or
-      logind, so the session aborts before drawing. Installation is refused.
-
-  [3] KDE Plasma (kde, plasma)
+  [2] KDE Plasma (kde, plasma)
       Type: Desktop Environment (Wayland)
       Default Display Manager: SDDM
       Description: Gorgeous, highly customizable, modular desktop environment.
       Recommended for: Power users who want customization and sleek aesthetics.
 
-  [4] LXQt (lxqt)
+  [3] LXQt (lxqt)
       Type: Desktop Environment (X11)
       Default Display Manager: LightDM
       Description: Extremely lightweight Qt-based desktop.
       Recommended for: Minimum resource usage.
 
-  [5] Sway (sway)
+  [4] Sway (sway)
       Type: Tiling Window Manager (Wayland)
       Default Display Manager: None (starts from console or LightDM)
       Description: Modern, fast i3-compatible Wayland compositor.
       Recommended for: Keyboard-driven workflow and minimalists.
 
-  [6] i3 (i3)
+  [5] i3 (i3)
       Type: Tiling Window Manager (X11)
       Default Display Manager: LightDM
       Description: Robust, manual tiling window manager.
@@ -927,7 +933,7 @@ cmd_install() {
     if [ -z "$target_de" ]; then
         cmd_list
         echo
-        printf "Select desktop to install (xfce/gnome/kde/lxqt/sway/i3): "
+        printf "Select desktop to install (xfce/kde/lxqt/sway/i3): "
         read -r target_de
     fi
 

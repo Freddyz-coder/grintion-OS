@@ -88,7 +88,7 @@ Options:
   --user NAME           Create an administrative user in the wheel group
   --password-stdin      Read the user password from standard input
   --root-password-stdin Read the root password from standard input
-  --desktop ENV         Pre-install GUI desktop (xfce, gnome, kde, lxqt, sway, i3, none)
+  --desktop ENV         Pre-install GUI desktop (xfce, kde, lxqt, sway, i3, none)
   --kernel FLAVOR       Kernel flavor: lts (default), hwe, or dkms
                         hwe/dkms install Arch's current kernel and a separate
                         Limine entry; LTS remains available as a fallback
@@ -352,16 +352,14 @@ run_guided_tui() {
     echo "   [2] XFCE 4 (Lightweight X11 desktop)"
     echo "   [3] i3 (Tiling window manager)"
     echo "   [4] Sway (Wayland tiling compositor)"
-    echo "   [5] GNOME (Modern desktop)"
-    echo "   [6] KDE Plasma (Feature-rich desktop)"
+    echo "   [5] KDE Plasma (Feature-rich desktop)"
     printf "Choose desktop [1]: "
     read -r dt_choice
     case "${dt_choice:-1}" in
         2) DESKTOP="xfce" ;;
         3) DESKTOP="i3" ;;
         4) DESKTOP="sway" ;;
-        5) DESKTOP="gnome" ;;
-        6) DESKTOP="kde" ;;
+        5) DESKTOP="kde" ;;
         *) DESKTOP="none" ;;
     esac
 
@@ -585,7 +583,7 @@ if [ "$KERNEL_FLAVOR" != "lts" ] && [ "$NO_BOOTLOADER" -eq 1 ]; then
 fi
 
 if [ "$UNATTENDED" -ne 1 ] && [ -z "$DESKTOP" ]; then
-    printf "Pre-install Desktop Environment (none/xfce/gnome/kde/lxqt/sway) [none]: "
+    printf "Pre-install Desktop Environment (none/xfce/kde/lxqt/sway/i3) [none]: "
     read -r DESKTOP
     DESKTOP=${DESKTOP:-none}
 fi
@@ -599,8 +597,11 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
         desktop_profile=kde
     fi
     case "$desktop_profile" in
-        xfce|gnome|kde|lxqt|sway|i3) ;;
-        *) die "unknown desktop environment: $DESKTOP (use none, xfce, gnome, kde, lxqt, sway, or i3)" ;;
+        gnome)
+            die "GNOME is not supported: gnome-session requires systemd, which this image does not run. Choose xfce, kde, lxqt, sway, or i3."
+            ;;
+        xfce|kde|lxqt|sway|i3) ;;
+        *) die "unknown desktop environment: $DESKTOP (use none, xfce, kde, lxqt, sway, or i3)" ;;
     esac
     [ -f "/etc/grintion/desktops.d/$desktop_profile.conf" ] \
         || die "desktop profile is missing: /etc/grintion/desktops.d/$desktop_profile.conf"
@@ -1077,6 +1078,9 @@ if [ "$COMPAT32" -eq 1 ]; then
     mountpoint -q "$TARGET/dev/pts" || mount --bind /dev/pts "$TARGET/dev/pts"
     mountpoint -q "$TARGET/run"     || mount -t tmpfs tmpfs "$TARGET/run"
     [ -f /etc/resolv.conf ] && cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+    if [ -x "$TARGET/usr/bin/grintion-pacman-mirror" ]; then
+        chroot "$TARGET" /usr/bin/grintion-pacman-mirror --quiet || true
+    fi
     if chroot "$TARGET" /usr/bin/pacman -S --needed --noconfirm lib32-glibc lib32-gcc-libs; then
         log "32-bit compatibility libraries installed"
     else
@@ -1516,7 +1520,7 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
     if [ "$DESKTOP_READY" -eq 1 ]; then
         echo "desktop:   $DESKTOP (ready on boot)"
     else
-        echo "desktop:   $DESKTOP (NOT installed; run 'grintion-desktop install $DESKTOP' after boot)"
+        echo "desktop:   $DESKTOP (NOT installed; run 'sudo grintion-desktop install $DESKTOP' after boot)"
         warn "the base system is installed, but the requested desktop is not ready"
     fi
 else

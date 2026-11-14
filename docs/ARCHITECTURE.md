@@ -2,8 +2,9 @@
 
 Grintion-OS is an x86_64 Linux operating system built around a source-built
 Linux kernel, a runit userland, a read-only live root that can be overlaid
-with RAM or persistent storage, and full support for graphical desktop
-environments (XFCE, GNOME, KDE Plasma, Sway, LXQt, i3) via garb and grintion-desktop.
+with RAM or persistent storage, and support for graphical desktop environments
+(XFCE, KDE Plasma, Sway, LXQt and i3) via garb and grintion-desktop. GNOME is
+refused because gnome-session requires the systemd user session manager.
 This document describes the moving parts and the reasoning behind them.
 
 ```text

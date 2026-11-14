@@ -20,7 +20,7 @@ fi
 dbus_user=$(sed -n 's:.*<user>\(.*\)</user>.*:\1:p' /usr/share/dbus-1/system.conf 2>/dev/null | head -n 1)
 dbus_user=${dbus_user:-dbus}
 if ! id -u "$dbus_user" >/dev/null 2>&1; then
-    echo "dbus: the '$dbus_user' account is missing; run 'grintion-desktop install <environment>'"
+    echo "dbus: the '$dbus_user' account is missing; run 'sudo grintion-desktop install <environment>'"
     exec sleep 86400
 fi
 

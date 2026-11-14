@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.14.2 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.14.3 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -149,7 +149,12 @@ Rules and limits:
   `libcrypto.so=3-64`/`libssl.so=3-64`; rolling Arch moved to OpenSSL 4, so a
   desktop transaction failed with `installing openssl (4.1.0-1) breaks
   dependency 'libcrypto.so=3-64'`. The snapshot contains OpenSSL 3.6.5 and
-  matches the seeded base.
+  matches the seeded base. Before a transaction, `garb`, `grintion-desktop`,
+  the installer, `grintion-apps`, `grintion-kernel` and `grintion-driver-select`
+  run `grintion-pacman-mirror`. It probes the official ALA endpoints and
+  rewrites the three dated `Server` lines to the faster one while preserving
+  the snapshot date and signatures. `ParallelDownloads = 10` keeps large
+  desktop transactions moving; the helper leaves the primary as a fallback.
 - `/etc/pacman.conf` sets `DisableDownloadTimeout` because the archive can move
   a large package below pacman's default low-speed cutoff. A slow but
   progressing KDE transaction therefore continues instead of aborting and

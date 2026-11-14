@@ -4,7 +4,9 @@
 # Apply the profile selected by grintion-security. If that fails, fall back to
 # the static default ruleset so a failed profile update cannot leave the system
 # with no firewall at all. Stay alive and retry instead of crash-looping.
-exec 2>&1
+mkdir -p /var/log
+# Keep the profile result off tty1; it is still recorded for diagnostics.
+exec >>/var/log/firewall.log 2>&1
 
 if command -v grintion-security >/dev/null 2>&1; then
     if grintion-security apply-firewall; then

@@ -265,6 +265,9 @@ def install_flavor(flavor: str, *, dry_run: bool = False, yes: bool = False) -> 
         if answer.strip().lower() not in ("y", "yes"):
             print("aborted", file=sys.stderr)
             return 1
+    mirror = shutil.which("grintion-pacman-mirror")
+    if mirror:
+        run([mirror, "--quiet", "--root", str(root)], check=False)
     run(argv)
     version, modules = target_version(root)
     if version is None or modules is None:

@@ -16,7 +16,7 @@
     "kernel",
     "uptime",
     "shell",
-    "terminal",
+    { "type": "command", "key": "Terminal", "text": "tty" },
     "cpu",
     "gpu",
     "memory",

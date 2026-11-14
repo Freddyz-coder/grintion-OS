@@ -169,6 +169,9 @@ cmd_install() {
 
     # shellcheck disable=SC2086
     if command -v pacman >/dev/null 2>&1; then
+        if command -v grintion-pacman-mirror >/dev/null 2>&1; then
+            grintion-pacman-mirror --quiet || true
+        fi
         pacman -S --needed --noconfirm $PACKAGES
     elif command -v garb >/dev/null 2>&1; then
         garb install $PACKAGES

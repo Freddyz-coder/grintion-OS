@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.14.2
+- **Version:** 0.14.3
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,19 +17,15 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.14.2 is a patch release on top of 0.14.1. It quiets the installed console:
-`auditd` writes to `/var/log/audit/auditd.log` and boot entries use
-`loglevel=3`, so audit, AppArmor and failed-login records no longer scroll over
-the login prompt. It also makes package installation work on a fresh
-`--desktop none` install by downloading the missing pacman databases, resolves
-common names such as `NetworkManager` and `kde-plasma`, and points Arch-guide
-commands (`pacstrap`) at the supported tools. The 0.14.1 release fixed desktop
-networking, and 0.14.0 added 32-bit userspace compatibility, automatic driver,
-firmware and CPU-microcode selection, a functional auditd service, zram,
-self-healing and stronger AppArmor profiles. See
-[CHANGELOG.md](CHANGELOG.md).
+0.14.3 is a patch release on top of 0.14.2. Package installs now probe the
+official Arch Linux Archive endpoints and use the faster reachable host, with
+the primary kept as a fallback, and pacman's parallel download count is 10.
+`seatd`, the firewall and zram write to log files instead of tty1, and the live
+banner reports the real tty rather than the outer runtime name. The `(MISS)`
+placeholder is gone from the OS identity, and GNOME is consistently refused
+because `gnome-session` requires systemd. See [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.14.2 is built from this tree. Release ISO images are published on
+Grintion-OS 0.14.3 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -113,6 +109,11 @@ On a fresh install, the first delegated `install`, `search`, `info` or
 refreshes them later. Package names are normalized to Arch's lowercase names,
 and `kde-plasma`/`network-manager` map to their Arch packages.
 
+Before a package transaction, `garb`, `grintion-desktop` and the installer
+benchmark the official Arch Linux Archive endpoints and use the faster one;
+pacman runs up to ten downloads in parallel. The snapshot date, signatures and
+package versions are unchanged.
+
 **Backend integration:** `garb` supports dual backends:
 - **Pacman backend (bundled):** Delegates to the dated Arch Linux Archive snapshot in `config/arch-snapshot` (`core`, `extra`) using the bundled `pacman` and Arch public keyrings. The snapshot matches the image's OpenSSL 3 ABI; rolling mirrors have moved to OpenSSL 4 and produce dependency conflicts.
 - **Native backend:** Uses Ed25519-signed repository indexes and SHA-256 archive verification for custom packages.
@@ -164,12 +165,12 @@ grintion-install --disk /dev/vda --user myuser --desktop xfce
 Use `grintion-desktop` on the live overlay or an installed system to install environments and auto-detect hardware graphics drivers:
 
 ```sh
-grintion-desktop list               # View supported desktop environments
-grintion-desktop install xfce       # Fast & lightweight traditional desktop (Recommended)
-grintion-desktop install kde        # KDE Plasma - verified Wayland session
-grintion-desktop install lxqt       # Ultra-lightweight Qt desktop (verified)
-grintion-desktop install sway       # Wayland tiling compositor (verified)
-grintion-desktop drivers            # Auto-detect GPU and install graphics drivers
+grintion-desktop list                # View supported desktop environments
+sudo grintion-desktop install xfce    # Fast & lightweight traditional desktop (Recommended)
+sudo grintion-desktop install kde     # KDE Plasma - verified Wayland session
+sudo grintion-desktop install lxqt    # Ultra-lightweight Qt desktop (verified)
+sudo grintion-desktop install sway    # Wayland tiling compositor (verified)
+sudo grintion-desktop drivers         # Auto-detect GPU and install graphics drivers
 ```
 
 LightDM and SDDM are supervised by runit (`/var/service/display-manager`); GDM is not used because it requires systemd-logind. See [docs/DESKTOP-GUI.md](docs/DESKTOP-GUI.md) for full instructions.
@@ -226,7 +227,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.14.2 |
+| Feature | 0.14.3 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -275,7 +276,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.14.2 has not undergone an independent third-party
+and atomic rollback, but 0.14.3 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

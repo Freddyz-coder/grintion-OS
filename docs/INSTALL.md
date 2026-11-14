@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.14.2 installs from the live ISO to a target disk or existing
+Grintion-OS 0.14.3 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.14.2 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.14.2 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.14.3 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.14.3 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -116,7 +116,7 @@ The wizard walks through:
 4. Encryption (Root LUKS2 and optional dedicated encrypted `/home`)
 5. Swap configuration (Swap partition or root swapfile)
 6. Optional recovery partition
-7. Desktop environment selection (`none`, `xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`)
+7. Desktop environment selection (`none`, `xfce`, `kde`, `sway`, `lxqt`, `i3`)
 8. Kernel flavor (`lts`, `hwe`, `dkms`)
 9. Hostname and user account credentials
 9. Confirmation screen with automatic SMART health preflight and summary review
@@ -219,7 +219,7 @@ Useful flags:
 | `--removable`, `--usb` | Install in removable/USB mode without updating UEFI NVRAM entries. |
 | `--recovery-partition` | Provision a dedicated rescue/recovery partition. |
 | `--recovery-size MIB` | Size of recovery partition (default: 2048 MiB). |
-| `--desktop ENV` | Pre-install a desktop environment (`xfce`, `gnome`, `kde`, `sway`, `lxqt`, `i3`). |
+| `--desktop ENV` | Pre-install a desktop environment (`xfce`, `kde`, `sway`, `lxqt`, `i3`). GNOME is rejected because it requires systemd. |
 | `--kernel FLAVOR` | Kernel flavor: `lts` (default source-built 6.12), `hwe` (Arch current kernel + headers), or `dkms` (HWE + matching headers + DKMS). |
 | `--dry-run` | Validate arguments, tools and the disk, then emit plan and exit. |
 | `--json` | With `--dry-run`, print the partition plan as JSON (schema 2). |
@@ -321,12 +321,12 @@ grintion-install --disk /dev/vda --user myuser --desktop xfce
 ### Installing on an active system
 
 ```sh
-grintion-desktop list              # List supported environments
-grintion-desktop install xfce      # Install XFCE desktop & LightDM
-grintion-desktop install kde       # Install KDE Plasma & SDDM
-grintion-desktop install lxqt      # Install LXQt & LightDM
-grintion-desktop install sway      # Install Sway Wayland tiling WM
-grintion-desktop drivers           # Auto-detect GPU and install drivers
+grintion-desktop list               # List supported environments
+sudo grintion-desktop install xfce   # Install XFCE desktop & LightDM
+sudo grintion-desktop install kde    # Install KDE Plasma & SDDM
+sudo grintion-desktop install lxqt   # Install LXQt & LightDM
+sudo grintion-desktop install sway   # Install Sway Wayland tiling WM
+sudo grintion-desktop drivers        # Auto-detect GPU and install drivers
 ```
 
 See [docs/DESKTOP-GUI.md](DESKTOP-GUI.md) for detailed configuration, display manager supervision with runit, and hardware acceleration guides.

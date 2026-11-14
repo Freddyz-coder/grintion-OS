@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.server
 import importlib.util
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -278,8 +280,117 @@ def test_desktop_download_survives_archive_low_speed_timeouts() -> None:
     # must disable the cutoff.
     conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
     assert "DisableDownloadTimeout" in conf
+    assert "ParallelDownloads = 10" in conf
     desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
     assert "--disable-download-timeout" in desktop
+
+
+def test_pacman_mirror_selector_rewrites_all_dated_servers(tmp_path: Path) -> None:
+    snapshot = next(
+        line.split("=", 1)[1].strip()
+        for line in (REPO_ROOT / "config" / "arch-snapshot").read_text().splitlines()
+        if line.startswith("ALA_DATE=")
+    )
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    conf = root / "etc" / "pacman.conf"
+    original_server = f"https://archive.archlinux.org/repos/{snapshot}/$repo/os/$arch"
+    conf.write_text(
+        "[options]\nParallelDownloads = 10\n\n"
+        + "".join(
+            f"[{repo}]\nServer = {original_server}\n\n"
+            for repo in ("core", "extra", "multilib")
+        )
+    )
+
+    webroot = tmp_path / "web"
+    database = webroot / "repos" / snapshot / "core" / "os" / "x86_64" / "core.db"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"x" * (128 * 1024))
+
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, directory=str(webroot), **kwargs)
+
+        def log_message(self, format: str, *args) -> None:
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        mirror = f"http://127.0.0.1:{httpd.server_port}"
+        env = os.environ.copy()
+        env["GRINTION_ALA_MIRRORS"] = mirror
+        result = subprocess.run(
+            [
+                str(REPO_ROOT / "bin" / "grintion-pacman-mirror"),
+                "--root",
+                str(root),
+                "--snapshot",
+                snapshot,
+                "--timeout",
+                "3",
+                "--quiet",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    updated = conf.read_text()
+    selected = f"Server = {mirror}/repos/{snapshot}/$repo/os/$arch"
+    assert updated.count(selected) == 3
+    assert "archive.archlinux.org" not in updated
+
+
+def test_every_pacman_install_path_uses_the_mirror_selector() -> None:
+    paths = (
+        "bin/garblib/backends.py",
+        "bin/grintion-desktop",
+        "bin/grintion-install",
+        "bin/grintion-kernel",
+        "bin/grintion-apps",
+        "bin/grintion-driver-select",
+    )
+    for relative in paths:
+        assert "grintion-pacman-mirror" in (REPO_ROOT / relative).read_text(), relative
+
+
+def test_boot_services_write_diagnostics_off_the_console() -> None:
+    for service, log in (
+        ("seatd", "/var/log/seatd.log"),
+        ("firewall", "/var/log/firewall.log"),
+        ("zram", "/var/log/zram.log"),
+    ):
+        script = (REPO_ROOT / "etc" / "sv" / service / "run").read_text()
+        assert f"exec >>{log} 2>&1" in script, service
+
+
+def test_identity_does_not_render_miss_as_a_missing_value() -> None:
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    iso = (REPO_ROOT / "build" / "build-iso.sh").read_text()
+    assert "(MISS)" not in rootfs
+    assert "(MISS)" not in iso
+
+
+def test_fastfetch_reports_the_console_device() -> None:
+    # fastfetch's terminal module guesses the parent emulator process; inside
+    # the VM that produced the report it displayed the outer runtime ('runsc').
+    # Show the actual tty device instead of a misleading process name.
+    config = (REPO_ROOT / "etc" / "fastfetch" / "config.jsonc").read_text()
+    assert '"text": "tty"' in config
+    assert '"terminal"' not in config
+
+
+def test_installer_rejects_unsupported_gnome_before_partitioning() -> None:
+    installer = INSTALLER.read_text()
+    assert "GNOME is not supported: gnome-session requires systemd" in installer
 
 
 def test_live_kde_install_fails_before_filling_the_ram_overlay() -> None:
