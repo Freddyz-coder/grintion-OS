@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The installer summary lists the first post-reboot commands**, including the
   login account and how to add a desktop after `--desktop none`.
 
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.14.2:
+  `output/grintion-os-x86_64.iso`, 132,149,248 bytes (126 MiB), SHA-256
+  `0010c63726d168c511cacd05772e84f3a26cdbc2589b905468eb111f3a0aca27`.
+- `make check` passes with 197 tests. The build used a staged AppArmor package
+  because the host has no system `apparmor_parser`. Live BIOS/UEFI boot and an
+  installed reboot were not rerun for 0.14.2.
+
 ---
 
 ## [0.14.1] - 2026-11-13

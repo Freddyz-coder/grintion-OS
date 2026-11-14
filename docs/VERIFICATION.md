@@ -4,6 +4,35 @@ This document records what was actually executed for Grintion-OS 0.14.2,
 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work. It does
 not claim coverage of hardware or configurations that were not tested.
 
+## 0.14.2 quiet console and fresh-install packages (2026-11-14)
+
+This patch quiets the installed console and fixes package operations on a fresh
+`--desktop none` install. The ISO was rebuilt, but live boot, the installer and
+an installed reboot were not rerun for 0.14.2. The new behavior is covered by
+the static gate and unit tests with a fake pacman; it has not been observed on a
+booted guest in this release.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 132,149,248 bytes (126 MiB) |
+| SHA-256 | `0010c63726d168c511cacd05772e84f3a26cdbc2589b905468eb111f3a0aca27` |
+| `BUILD-INFO` source commit | `cf1f3b0` (0.14.2 release commit) |
+| Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | 197 passed |
+| `make iso` | Passed; AppArmor profiles validated with the staged Arch package (`GRINTION_APPARMOR_ROOT`) because no system `apparmor_parser` was installed |
+| Installed console boot | Not rerun for 0.14.2 |
+| BIOS/UEFI live boot | Not rerun for 0.14.2 |
+| Fresh-install package install | Unit tests only; not rerun on a booted install |
+| Installer / installed reboot | Not rerun for 0.14.2 |
+| Bare-metal hardware | Not tested |
+
 ## 0.14.1 NetworkManager desktop results (2026-11-13)
 
 This patch fixes the desktop network backend. The full desktop package
