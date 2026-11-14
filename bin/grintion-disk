@@ -1,0 +1,487 @@
+#!/usr/bin/env python3
+"""grintion-disk - storage inventory, usage, SMART health, TRIM and fstab checks.
+
+Subcommands:
+  list     block devices with type, size, filesystem and mountpoints
+  usage    real filesystem usage with optional threshold failure
+  health   SMART health for whole disks (degrades to "unavailable")
+  trim     run fstrim on discard-capable mounts (--dry-run to preview)
+  fstab    validate /etc/fstab entries without mounting anything
+
+Everything except `trim` is read-only, so it is safe to run from the live
+overlay. Exit status: 0 ok, 1 findings, 2 usage or environment error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+PSEUDO_FS = {
+    "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs", "debugfs",
+    "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue",
+    "nsfs", "overlay", "pipefs", "proc", "pstore", "ramfs", "rootfs",
+    "rpc_pipefs", "securityfs", "selinuxfs", "squashfs", "sysfs", "tmpfs",
+    "tracefs", "zram",
+}
+TRIM_FS = {"ext4", "btrfs", "xfs", "f2fs", "vfat", "ext3"}
+KNOWN_FS = TRIM_FS | {
+    "swap", "ntfs", "ntfs3", "exfat", "iso9660", "udf", "nfs", "nfs4", "cifs",
+    "fuse", "none", "zfs", "reiserfs", "jfs",
+}
+HEX_UUID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def human_bytes(value: float) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    size = float(value)
+    for unit in units:
+        if abs(size) < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value:.0f} B"
+
+
+def unescape(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+
+
+def require_root(action: str) -> bool:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        if not os.environ.get("GRINTION_ROOT"):
+            print(f"grintion-disk: {action} requires root; rerun with sudo", file=sys.stderr)
+            return False
+    return True
+
+
+def mountinfo() -> list[dict]:
+    entries: list[dict] = []
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return entries
+    for line in lines:
+        left, sep, right = line.partition(" - ")
+        fields = left.split()
+        if not sep or len(fields) < 6:
+            continue
+        tail = right.split()
+        entries.append({
+            "mountpoint": unescape(fields[4]),
+            "options": fields[5],
+            "fstype": tail[0] if tail else "",
+            "source": tail[1] if len(tail) > 1 else "",
+        })
+    return entries
+
+
+def real_mounts() -> list[dict]:
+    seen: set[str] = set()
+    result = []
+    for entry in mountinfo():
+        mountpoint = entry["mountpoint"]
+        if mountpoint in seen or entry["fstype"] in PSEUDO_FS:
+            continue
+        seen.add(mountpoint)
+        result.append(entry)
+    return result
+
+
+def flatten_devices(devices: list[dict], depth: int = 0) -> list[dict]:
+    flat = []
+    for device in devices:
+        row = {key: device.get(key) for key in (
+            "name", "type", "size", "fstype", "mountpoints", "model",
+            "serial", "rota", "tran", "uuid", "partuuid",
+        )}
+        row["depth"] = depth
+        if isinstance(row["size"], int):
+            row["size_human"] = human_bytes(row["size"])
+        row["mountpoints"] = [m for m in (row["mountpoints"] or []) if m]
+        flat.append(row)
+        children = device.get("children") or []
+        if children:
+            flat.extend(flatten_devices(children, depth + 1))
+    return flat
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    result = run([
+        "lsblk", "-J", "-b", "-o",
+        "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,ROTA,TRAN,UUID,PARTUUID",
+    ])
+    if result.returncode != 0:
+        print(f"grintion-disk: lsblk failed: {result.stderr.strip() or result.stdout.strip()}",
+              file=sys.stderr)
+        return 2
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"grintion-disk: could not parse lsblk output: {exc}", file=sys.stderr)
+        return 2
+    devices = payload.get("blockdevices", [])
+    if not args.all:
+        devices = [d for d in devices if d.get("type") != "loop" or d.get("mountpoints")]
+    flat = flatten_devices(devices)
+
+    if args.json:
+        print(json.dumps({"schema": 1, "devices": flat}, indent=2, sort_keys=True))
+        return 0
+
+    print(f"{'DEVICE':<16} {'TYPE':<8} {'SIZE':>10}  {'FSTYPE':<8} MOUNTPOINT")
+    for row in flat:
+        name = "  " * row["depth"] + str(row.get("name"))
+        mounts = ", ".join(row["mountpoints"]) or "-"
+        print(f"{name:<16} {str(row.get('type')):<8} {row.get('size_human', '-'):>10}  "
+              f"{str(row.get('fstype') or '-'):<8} {mounts}")
+        if args.long and row.get("model"):
+            serial = row.get("serial") if args.include_identifiers else "<redacted>"
+            print(f"{'':16} model={row['model']} serial={serial} tran={row.get('tran') or '-'}")
+    return 0
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    rows = []
+    for entry in real_mounts():
+        mountpoint = entry["mountpoint"]
+        try:
+            stats = os.statvfs(mountpoint)
+        except OSError as exc:
+            rows.append({"mountpoint": mountpoint, "fstype": entry["fstype"],
+                         "error": str(exc)})
+            continue
+        total = stats.f_blocks * stats.f_frsize
+        free = stats.f_bavail * stats.f_frsize
+        used = total - stats.f_bfree * stats.f_frsize
+        percent = (used / total * 100) if total else 0.0
+        inode_total = stats.f_files
+        inode_free = stats.f_ffree
+        rows.append({
+            "mountpoint": mountpoint,
+            "source": entry["source"],
+            "fstype": entry["fstype"],
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
+            "percent_used": round(percent, 1),
+            "inode_total": inode_total,
+            "inode_used": (inode_total - inode_free) if inode_total else 0,
+            "inode_percent": round((inode_total - inode_free) / inode_total * 100, 1)
+            if inode_total else 0.0,
+        })
+
+    over = [row for row in rows if row.get("percent_used", 0) >= args.threshold]
+    if args.json:
+        print(json.dumps({"schema": 1, "threshold": args.threshold,
+                          "filesystems": rows, "over_threshold": len(over)}, indent=2))
+    else:
+        print(f"{'MOUNT':<24} {'FSTYPE':<8} {'SIZE':>10} {'USED':>10} {'AVAIL':>10} {'USE%':>6}")
+        for row in rows:
+            if "error" in row:
+                print(f"{row['mountpoint']:<24} {row['fstype']:<8} {'-':>10} "
+                      f"{'-':>10} {'-':>10} {'err':>6}")
+                continue
+            flag = "!" if row["percent_used"] >= args.threshold else " "
+            print(f"{row['mountpoint']:<24} {row['fstype']:<8} "
+                  f"{human_bytes(row['total_bytes']):>10} {human_bytes(row['used_bytes']):>10} "
+                  f"{human_bytes(row['free_bytes']):>10} {row['percent_used']:>5.1f}%{flag}")
+        if over:
+            print(f"\n{len(over)} filesystem(s) at or above {args.threshold}% used.",
+                  file=sys.stderr)
+    return 1 if over and args.fail_on_threshold else 0
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    smartctl = shutil.which("smartctl")
+    result = run(["lsblk", "-J", "-b", "-o", "NAME,TYPE,ROTA,MODEL,SERIAL"])
+    disks: list[dict] = []
+    if result.returncode == 0:
+        try:
+            payload = json.loads(result.stdout)
+            disks = flatten_devices(
+                [d for d in payload.get("blockdevices", [])
+                 if d.get("type") == "disk" and not str(d.get("name", "")).startswith(("loop", "zram", "dm-", "sr"))]
+            )
+        except json.JSONDecodeError:
+            disks = []
+    if args.device:
+        disks = [{"name": os.path.basename(args.device), "depth": 0}]
+
+    findings = 0
+    reports = []
+    for disk in disks:
+        device = args.device or f"/dev/{disk.get('name')}"
+        report = {
+            "device": device,
+            "model": disk.get("model") or "",
+            "rotational": str(disk.get("rota")) == "1",
+            "status": "unavailable",
+            "passed": None,
+            "temperature_c": None,
+            "power_on_hours": None,
+            "message": "",
+        }
+        if not os.path.exists(device):
+            report["message"] = "device node not present"
+        elif not smartctl:
+            report["message"] = "smartmontools is not installed (garb install smartmontools)"
+        else:
+            probe = run([smartctl, "--json", "--health", "--attributes", device], timeout=20)
+            if probe.returncode not in (0, 4):  # 4 is "some attributes failed"
+                detail = (probe.stderr or probe.stdout).strip().splitlines()
+                report["message"] = detail[-1] if detail else f"smartctl exited {probe.returncode}"
+                if "permission" in report["message"].lower():
+                    report["status"] = "permission-denied"
+            else:
+                try:
+                    data = json.loads(probe.stdout)
+                    report["passed"] = bool(data.get("smart_status", {}).get("passed"))
+                    report["status"] = "passed" if report["passed"] else "failing"
+                    temp = data.get("temperature", {}).get("current")
+                    if isinstance(temp, int):
+                        report["temperature_c"] = temp
+                    for attr in data.get("ata_smart_attributes", {}).get("table", []) or []:
+                        if attr.get("name") == "Power_On_Hours":
+                            report["power_on_hours"] = attr.get("raw", {}).get("value")
+                except json.JSONDecodeError:
+                    report["message"] = "smartctl did not return JSON"
+        if report["status"] == "failing" or report["status"] == "permission-denied":
+            findings += 1
+        reports.append(report)
+
+    if args.json:
+        print(json.dumps({"schema": 1, "disks": reports, "failing": findings}, indent=2))
+    else:
+        for report in reports:
+            detail = f" {report['message']}" if report["message"] else ""
+            temp = f" {report['temperature_c']}C" if report["temperature_c"] is not None else ""
+            hours = (f" {report['power_on_hours']}h"
+                     if report["power_on_hours"] is not None else "")
+            print(f"{report['device']:<16} {report['status']:<18}{temp}{hours}{detail}")
+        if not reports:
+            print("no whole disks detected")
+    return 0 if findings == 0 else 1
+
+
+def cmd_trim(args: argparse.Namespace) -> int:
+    candidates = [
+        entry for entry in real_mounts()
+        if entry["fstype"] in TRIM_FS and entry["source"].startswith("/dev/")
+    ]
+    if not candidates:
+        message = "no discard-capable block-device mounts found"
+        print(json.dumps({"schema": 1, "candidates": [], "message": message}, indent=2)
+              if args.json else message)
+        return 0
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "candidates": candidates},
+                             indent=2))
+        else:
+            for entry in candidates:
+                print(f"would trim {entry['mountpoint']} ({entry['source']}, {entry['fstype']})")
+        return 0
+    if not require_root("trim"):
+        return 2
+    fstrim = shutil.which("fstrim")
+    if not fstrim:
+        print("grintion-disk: fstrim is not available in this image", file=sys.stderr)
+        return 2
+    result = run([fstrim, "--all", "--verbose"], timeout=600)
+    if args.json:
+        print(json.dumps({"schema": 1, "returncode": result.returncode,
+                          "stdout": result.stdout, "stderr": result.stderr}, indent=2))
+    else:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+    return 0 if result.returncode == 0 else 1
+
+
+def resolve_device(device: str) -> tuple[bool, str]:
+    if device in ("none", "-"):
+        return True, ""
+    for prefix, directory in (
+        ("UUID=", "/dev/disk/by-uuid/"),
+        ("PARTUUID=", "/dev/disk/by-partuuid/"),
+        ("LABEL=", "/dev/disk/by-label/"),
+        ("PARTLABEL=", "/dev/disk/by-partlabel/"),
+    ):
+        if device.startswith(prefix):
+            value = device[len(prefix):]
+            if not value:
+                return False, f"empty {prefix[:-1]} value"
+            candidate = root_path(directory + value)
+            if candidate.exists() or Path(directory + value).exists():
+                return True, ""
+            return False, f"{prefix[:-1]} {value} does not resolve under {directory}"
+    if device.startswith("/dev/"):
+        if Path(device).exists():
+            return True, ""
+        return False, f"{device} does not exist"
+    if HEX_UUID.match(device):
+        return True, ""
+    return False, f"unrecognised device specifier {device!r}"
+
+
+def parse_fstab(path: Path) -> list[dict]:
+    entries = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [{"error": str(exc), "line": 0}]
+    for number, raw in enumerate(lines, 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        entry = {
+            "line": number,
+            "device": unescape(fields[0]) if fields else "",
+            "mountpoint": unescape(fields[1]) if len(fields) > 1 else "",
+            "fstype": fields[2] if len(fields) > 2 else "",
+            "options": fields[3] if len(fields) > 3 else "",
+            "dump": fields[4] if len(fields) > 4 else "",
+            "pass": fields[5] if len(fields) > 5 else "",
+            "fields": len(fields),
+        }
+        entries.append(entry)
+    return entries
+
+
+def cmd_fstab(args: argparse.Namespace) -> int:
+    path = Path(args.path) if args.path else root_path("/etc/fstab")
+    entries = parse_fstab(path)
+    problems: list[dict] = []
+    warnings: list[dict] = []
+    mountpoints: dict[str, int] = {}
+
+    if entries and "error" in entries[0]:
+        print(f"grintion-disk: cannot read {path}: {entries[0]['error']}", file=sys.stderr)
+        return 2
+
+    for entry in entries:
+        line = entry["line"]
+        if entry["fields"] < 6:
+            problems.append({"line": line, "problem": f"expected 6 fields, found {entry['fields']}"})
+            continue
+        device, mountpoint, fstype = entry["device"], entry["mountpoint"], entry["fstype"]
+        if fstype == "swap":
+            if mountpoint != "none":
+                warnings.append({"line": line, "problem": "swap entry should use 'none' as mountpoint"})
+            if entry["options"] and "sw" not in entry["options"].split(","):
+                warnings.append({"line": line, "problem": "swap options should include 'sw'"})
+        else:
+            if not mountpoint.startswith("/"):
+                problems.append({"line": line, "problem": f"mountpoint {mountpoint!r} is not absolute"})
+            elif mountpoint in mountpoints:
+                problems.append({
+                    "line": line,
+                    "problem": f"duplicate mountpoint {mountpoint} (also line {mountpoints[mountpoint]})",
+                })
+            else:
+                mountpoints[mountpoint] = line
+                if not root_path(mountpoint).is_dir():
+                    warnings.append({
+                        "line": line,
+                        "problem": f"mountpoint {mountpoint} does not exist yet",
+                    })
+        if fstype not in KNOWN_FS:
+            warnings.append({"line": line, "problem": f"unusual filesystem type {fstype!r}"})
+        ok, why = resolve_device(device)
+        if not ok:
+            problems.append({"line": line, "problem": why})
+        if entry["dump"] not in ("0", "1"):
+            problems.append({"line": line, "problem": f"dump field must be 0 or 1, found {entry['dump']!r}"})
+        if entry["pass"] not in ("0", "1", "2"):
+            problems.append({"line": line, "problem": f"pass field must be 0, 1 or 2, found {entry['pass']!r}"})
+        if entry["options"] and entry["options"] not in ("defaults", "sw"):
+            for option in entry["options"].split(","):
+                if option.startswith("x-"):
+                    continue
+                if not re.match(r"^[A-Za-z0-9_.=:+-]+$", option):
+                    warnings.append({"line": line, "problem": f"suspicious mount option {option!r}"})
+
+    payload = {
+        "schema": 1,
+        "path": str(path),
+        "entries": len(entries),
+        "problems": problems,
+        "warnings": warnings,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"{path}: {len(entries)} entries, {len(problems)} problems, "
+              f"{len(warnings)} warnings")
+        for item in problems:
+            print(f"  line {item['line']}: ERROR {item['problem']}")
+        for item in warnings:
+            print(f"  line {item['line']}: warn  {item['problem']}")
+        if not problems and not warnings:
+            print("  fstab looks consistent")
+    return 0 if not problems else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-disk",
+        description="Inspect storage, filesystem usage, SMART health and /etc/fstab.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+
+    p_list = sub.add_parser("list", parents=[common], help="list block devices")
+    p_list.add_argument("--all", action="store_true", help="include unmounted loop devices")
+    p_list.add_argument("--long", action="store_true", help="show model and transport")
+    p_list.add_argument("--include-identifiers", action="store_true",
+                        help="show disk serial numbers")
+    p_list.set_defaults(func=cmd_list)
+
+    p_usage = sub.add_parser("usage", parents=[common], help="filesystem usage")
+    p_usage.add_argument("--threshold", type=float, default=90.0,
+                         help="percent that counts as full (default 90)")
+    p_usage.add_argument("--fail-on-threshold", action="store_true",
+                         help="exit 1 when a filesystem is at or above the threshold")
+    p_usage.set_defaults(func=cmd_usage)
+
+    p_health = sub.add_parser("health", parents=[common], help="SMART health per disk")
+    p_health.add_argument("--device", help="check one device instead of all disks")
+    p_health.set_defaults(func=cmd_health)
+
+    p_trim = sub.add_parser("trim", parents=[common], help="run fstrim on real mounts")
+    p_trim.add_argument("--dry-run", action="store_true", help="list candidates only")
+    p_trim.set_defaults(func=cmd_trim)
+
+    p_fstab = sub.add_parser("fstab", parents=[common], help="validate /etc/fstab")
+    p_fstab.add_argument("--path", help="alternate fstab file")
+    p_fstab.set_defaults(func=cmd_fstab)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

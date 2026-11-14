@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""grintion-bench - small, repeatable CPU, memory and disk benchmarks.
+
+Subcommands:
+  cpu        single-thread SHA-256 throughput for a fixed duration
+  memory     buffer write and read bandwidth
+  disk       sequential write/read plus random 4 KiB reads in a temp file
+  all        run all three with the same options
+  compare    compare a saved result set with a new quick run
+
+Benchmarks are deliberately small and honest: they measure one thread, one
+buffer and one file. They are useful for spotting a degraded VM or driver, not
+for comparing unrelated machines.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import random
+import tempfile
+import time
+from pathlib import Path
+
+BLOCK = 1024 * 1024
+
+
+def human(value: float, unit: str) -> str:
+    return f"{value:,.1f} {unit}"
+
+
+def bench_cpu(duration: float) -> dict:
+    payload = os.urandom(BLOCK)
+    digest = hashlib.sha256()
+    started = time.perf_counter()
+    iterations = 0
+    while time.perf_counter() - started < duration:
+        digest.update(payload)
+        iterations += 1
+    elapsed = max(time.perf_counter() - started, 1e-9)
+    digest.hexdigest()
+    return {
+        "seconds": round(elapsed, 3),
+        "blocks": iterations,
+        "mb_per_second": round(iterations * BLOCK / elapsed / 1_000_000, 1),
+        "hashes_per_second": round(iterations / elapsed, 1),
+        "digest": digest.hexdigest()[:16],
+    }
+
+
+def bench_memory(size_mib: int) -> dict:
+    size = max(size_mib, 1) * BLOCK
+    buffer = bytearray(size)
+    pattern = b"\xa5" * BLOCK
+    started = time.perf_counter()
+    for offset in range(0, size, BLOCK):
+        buffer[offset:offset + BLOCK] = pattern
+    write_seconds = max(time.perf_counter() - started, 1e-9)
+    started = time.perf_counter()
+    digest = hashlib.sha256(buffer).hexdigest()
+    read_seconds = max(time.perf_counter() - started, 1e-9)
+    return {
+        "size_mib": size // BLOCK,
+        "write_mb_per_second": round(size / write_seconds / 1_000_000, 1),
+        "read_mb_per_second": round(size / read_seconds / 1_000_000, 1),
+        "digest": digest[:16],
+    }
+
+
+def bench_disk(size_mib: int, directory: str | None, random_reads: int) -> dict:
+    target_dir = Path(directory) if directory else Path(tempfile.gettempdir())
+    target_dir.mkdir(parents=True, exist_ok=True)
+    size = max(size_mib, 1) * BLOCK
+    handle = tempfile.NamedTemporaryFile(prefix="grintion-bench-", dir=target_dir,
+                                         delete=False)
+    path = Path(handle.name)
+    chunk = os.urandom(BLOCK)
+    try:
+        started = time.perf_counter()
+        for _ in range(size // BLOCK):
+            handle.write(chunk)
+        handle.flush()
+        os.fsync(handle.fileno())
+        write_seconds = max(time.perf_counter() - started, 1e-9)
+        handle.seek(0)
+        digest = hashlib.sha256()
+        started = time.perf_counter()
+        remaining = size
+        while remaining > 0:
+            data = handle.read(min(BLOCK, remaining))
+            if not data:
+                break
+            digest.update(data)
+            remaining -= len(data)
+        read_seconds = max(time.perf_counter() - started, 1e-9)
+        handle.close()
+        random_started = time.perf_counter()
+        random_digest = hashlib.sha256()
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            for _ in range(random_reads):
+                offset = random.randrange(0, max(size - 4096, 1))
+                random_digest.update(os.pread(fd, 4096, offset))
+        finally:
+            os.close(fd)
+        random_seconds = max(time.perf_counter() - random_started, 1e-9)
+        return {
+            "size_mib": size // BLOCK,
+            "path": str(path),
+            "write_mb_per_second": round(size / write_seconds / 1_000_000, 1),
+            "read_mb_per_second": round(size / read_seconds / 1_000_000, 1),
+            "random_4k_reads": random_reads,
+            "random_4k_iops": round(random_reads / random_seconds, 1),
+            "digest": digest.hexdigest()[:16],
+        }
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
+
+
+def run_all(args: argparse.Namespace) -> dict:
+    result: dict = {"schema": 1, "generated": int(time.time()),
+                    "host": os.uname().nodename,
+                    "kernel": os.uname().release,
+                    "quick": args.quick}
+    if args.command in ("cpu", "all"):
+        result["cpu"] = bench_cpu(args.duration)
+    if args.command in ("memory", "all"):
+        result["memory"] = bench_memory(args.memory)
+    if args.command in ("disk", "all"):
+        result["disk"] = bench_disk(args.size, args.path, args.random_reads)
+    return result
+
+
+def print_result(result: dict) -> None:
+    if "cpu" in result:
+        cpu = result["cpu"]
+        print(f"cpu     {human(cpu['mb_per_second'], 'MB/s')} SHA-256, "
+              f"{cpu['seconds']}s, {cpu['blocks']} blocks")
+    if "memory" in result:
+        memory = result["memory"]
+        print(f"memory  {human(memory['write_mb_per_second'], 'MB/s')} write, "
+              f"{human(memory['read_mb_per_second'], 'MB/s')} read "
+              f"({memory['size_mib']} MiB)")
+    if "disk" in result:
+        disk = result["disk"]
+        print(f"disk    {human(disk['write_mb_per_second'], 'MB/s')} write, "
+              f"{human(disk['read_mb_per_second'], 'MB/s')} read, "
+              f"{human(disk['random_4k_iops'], 'IOPS')} random 4K "
+              f"({disk['size_mib']} MiB)")
+
+
+def compare(baseline: dict, current: dict) -> list[dict]:
+    rows = []
+    metrics = (
+        ("cpu", "mb_per_second", "MB/s"),
+        ("memory", "write_mb_per_second", "MB/s"),
+        ("memory", "read_mb_per_second", "MB/s"),
+        ("disk", "write_mb_per_second", "MB/s"),
+        ("disk", "read_mb_per_second", "MB/s"),
+        ("disk", "random_4k_iops", "IOPS"),
+    )
+    for section, key, unit in metrics:
+        before = baseline.get(section, {}).get(key)
+        after = current.get(section, {}).get(key)
+        if not isinstance(before, (int, float)) or not isinstance(after, (int, float)) \
+                or before == 0:
+            continue
+        change = (after - before) / before * 100
+        rows.append({
+            "metric": f"{section}.{key}",
+            "baseline": before,
+            "current": after,
+            "unit": unit,
+            "change_percent": round(change, 1),
+            "verdict": "faster" if change > 5 else "slower" if change < -5 else "same",
+        })
+    return rows
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    try:
+        baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"grintion-bench: cannot read baseline: {exc}", file=sys.stderr)
+        return 2
+    quick = argparse.Namespace(
+        command="all", quick=True, duration=0.5, memory=16, size=16,
+        path=None, random_reads=100,
+    )
+    try:
+        current = run_all(quick)
+    except OSError as exc:
+        print(f"grintion-bench: benchmark failed: {exc}", file=sys.stderr)
+        return 2
+    rows = compare(baseline, current)
+    if args.json:
+        print(json.dumps({"schema": 1, "baseline": args.baseline,
+                          "comparison": rows, "current": current}, indent=2))
+        return 0
+    if args.save:
+        Path(args.save).write_text(json.dumps(current, indent=2) + "\n",
+                                   encoding="utf-8")
+        print(f"saved current run to {args.save}")
+    print(f"{'METRIC':<28} {'BASELINE':>12} {'CURRENT':>12} {'CHANGE':>9} VERDICT")
+    for row in rows:
+        print(f"{row['metric']:<28} {row['baseline']:>12.1f} "
+              f"{row['current']:>12.1f} {row['change_percent']:>8.1f}% "
+              f"{row['verdict']}")
+    if not rows:
+        print("no comparable metrics in the baseline")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-bench",
+        description="Small CPU, memory and disk benchmarks.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--quick", action="store_true", help="shorter defaults")
+    common.add_argument("--out", help="save the JSON result to this file")
+    common.add_argument("--duration", type=float, default=1.0,
+                        help="CPU benchmark seconds")
+    common.add_argument("--memory", type=int, default=32, help="memory MiB")
+    common.add_argument("--size", type=int, default=32, help="disk MiB")
+    common.add_argument("--path", help="directory for the disk benchmark")
+    common.add_argument("--random-reads", type=int, default=200)
+    sub = parser.add_subparsers(dest="command")
+
+    for name, help_text in (
+        ("cpu", "CPU throughput"),
+        ("memory", "memory bandwidth"),
+        ("disk", "disk throughput and IOPS"),
+        ("all", "all benchmarks"),
+    ):
+        sub.add_parser(name, parents=[common], help=help_text
+                       ).set_defaults(func=lambda a, kind=name: run_command(a, kind))
+
+    p_compare = sub.add_parser("compare", parents=[common],
+                               help="compare against a saved result")
+    p_compare.add_argument("baseline")
+    p_compare.add_argument("--save", help="write the new run to this file")
+    p_compare.set_defaults(func=cmd_compare)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+def run_command(args: argparse.Namespace, kind: str) -> int:
+    if args.quick:
+        args.duration = min(args.duration, 0.5)
+        args.memory = min(args.memory, 16)
+        args.size = min(args.size, 16)
+        args.random_reads = min(args.random_reads, 100)
+    if args.duration <= 0:
+        print("grintion-bench: --duration must be positive", file=sys.stderr)
+        return 2
+    try:
+        result = run_all(args)
+    except OSError as exc:
+        print(f"grintion-bench: benchmark failed: {exc}", file=sys.stderr)
+        return 2
+    result["command"] = kind
+    if args.out:
+        Path(args.out).write_text(json.dumps(result, indent=2) + "\n",
+                                  encoding="utf-8")
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print_result(result)
+        if args.out:
+            print(f"saved to {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

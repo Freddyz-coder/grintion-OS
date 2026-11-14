@@ -2,6 +2,9 @@
 
 Welcome to the comprehensive handbook for **Grintion-OS**, an independent, security-hardened Linux distribution engineered for predictability, transparency, and high performance without systemd.
 
+For the complete list of advanced administration tools and their subcommands,
+see the [Command Reference](COMMANDS.md).
+
 ---
 
 ## Table of Contents

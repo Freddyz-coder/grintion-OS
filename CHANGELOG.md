@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.0] - 2026-11-14
+
+### Added
+
+- **Sixteen advanced administration commands**, all shell/Python from the base
+  image with no new dependencies, documented in
+  [docs/COMMANDS.md](docs/COMMANDS.md):
+  - Storage: `grintion-disk` (inventory, SMART health, fstrim, fstab validation),
+    `grintion-mount` (fstab-backed mounts with rollback), `grintion-swap`
+    (swap files, partitions, zram and swappiness), `grintion-space`
+    (disk and inode usage).
+  - Services: `grintion-service` (runit list/status/enable/logs/health) and
+    `grintion-timer` (cron expressions, intervals, daily/weekly/monthly/boot
+    schedules, each as a supervised runit service).
+  - Network: `grintion-netdiag` (interfaces, routes, latency, DNS, path MTU,
+    TCP checks, sockets) and `grintion-dns` (managed resolvers with timing and
+    structural checks).
+  - Security: `grintion-firewall` (additive deny overlay loaded after the
+    profile ruleset by the `firewall` service), `grintion-ssh` (keys, agent,
+    client audit) and `grintion-cert` (inspect, verify, generate and expiry).
+  - Operations: `grintion-logs` (search, severity scan, copytruncate rotation),
+    `grintion-load` (CPU/memory/PSI and top), `grintion-bench` (CPU, memory,
+    disk and baseline comparison), `grintion-modules` (module inventory,
+    parameters, blacklist, taint) and `grintion-time` (clock, RTC, NTP peers,
+    timezone).
+- The `firewall` runit service applies the blocklist overlay after the security
+  profile succeeds; overlay failures are logged and never replace the profile.
+- `grintion-welcome`, `grintion-help` and `grintion-tour` discovery paths now
+  mention the new tooling.
+
+### Changed
+
+- Version bumped to 0.15.0 across `VERSION`, `/etc/grintion/version`,
+  `/etc/issue`, `/etc/motd`, the SPDX SBOM generator, the UKI fallback
+  identity and the release documentation.
+
+### Tests
+
+- `tests/test_advanced_commands.py` covers help output, every tool's JSON
+  surface, sandboxed mutations, fstab rollback, timer scheduling and execution,
+  SSH audit findings, certificate generation/verification, firewall rendering,
+  log rotation planning, benchmarks and threshold exits. It runs as part of
+  `make check`.
+
+---
+
 ## [0.14.3] - 2026-11-14
 
 ### Fixed
@@ -40,6 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make check` passes with 203 tests, and `make iso` completed from commit
   `3ed5b11`. Live BIOS/UEFI boot, the installer and an installed reboot were
   not rerun for 0.14.3.
+
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.15.0:
+  `output/grintion-os-x86_64.iso`, 132,220,928 bytes (126 MiB), SHA-256
+  `3933ea1d765e74038de69b7cf62ba160bdc51d6b5e5fbc33ad4096ea86eee1df`.
+- `make check` passes with 236 tests. The ISO was rebuilt from commit
+  `0000000` (pending release commit) with a staged AppArmor package because the
+  host has no system `apparmor_parser`. Live BIOS/UEFI boot, the installer and an
+  installed reboot were not rerun for 0.15.0.
 
 ---
 

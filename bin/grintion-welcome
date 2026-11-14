@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 export LC_ALL=C
 
-VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.14.3')"
+VERSION="$(cat /etc/grintion/version 2>/dev/null || echo '0.15.0')"
 HOSTNAME="$(hostname 2>/dev/null || echo 'grintion')"
 KERNEL="$(uname -r)"
 
@@ -33,6 +33,17 @@ print(json.dumps({
         {"name": "grintion-doctor", "description": "Run system health and security diagnostics"},
         {"name": "grintion-snapshot", "description": "Manage Btrfs snapshots and boot entries"},
         {"name": "grintion-backup", "description": "Create and schedule system/home backups"},
+        {"name": "grintion-service", "description": "List, inspect and control runit services"},
+        {"name": "grintion-timer", "description": "Schedule jobs as supervised runit timers"},
+        {"name": "grintion-disk", "description": "Storage inventory, SMART health, TRIM and fstab checks"},
+        {"name": "grintion-mount", "description": "Mount, unmount and persist filesystems"},
+        {"name": "grintion-space", "description": "Find what is using disk space or inodes"},
+        {"name": "grintion-logs", "description": "Inspect, search and rotate logs"},
+        {"name": "grintion-netdiag", "description": "Latency, DNS, MTU and TCP diagnostics"},
+        {"name": "grintion-firewall", "description": "Additive deny rules on top of the profile ruleset"},
+        {"name": "grintion-bench", "description": "CPU, memory and disk benchmarks"},
+        {"name": "grintion-ssh", "description": "SSH keys, agent state and client audit"},
+        {"name": "grintion-cert", "description": "Inspect, verify and generate TLS certificates"},
         {"name": "garb", "description": "Native transaction-safe package manager"},
     ],
 }, indent=2))
@@ -59,6 +70,14 @@ Quick Configuration Guide:
   7. Health Check: 'grintion-doctor --security' for system posture
   8. Backups:      'grintion-backup create' for home and configuration safety
   9. Snapshots:    'grintion-snapshot create <label>' before making changes
+ 10. Services:     'grintion-service list' or 'grintion-service logs <name>'
+ 11. Scheduling:   'grintion-timer add backup --schedule "daily 03:30" --command ...'
+ 12. Storage:      'grintion-disk health' and 'grintion-space /var'
+ 13. Logs:         'grintion-logs errors --strict' or 'grintion-logs grep <text>'
+ 14. Network:      'grintion-netdiag summary' and 'grintion-netdiag latency <host>'
+ 15. Firewall:     'grintion-firewall block 23/tcp' to drop a port
+ 16. Benchmarks:   'grintion-bench all --quick' for a fast baseline
+ 17. SSH & TLS:    'grintion-ssh audit' and 'grintion-cert expiry'
 
 Documentation is available under /usr/share/doc/grintion or online at:
   https://github.com/Freddyz-coder/grintion-OS

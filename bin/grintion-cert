@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""grintion-cert - inspect, generate and audit TLS certificates.
+
+Subcommands:
+  list         managed certificates plus the system trust anchor count
+  info         subject, issuer, validity, SANs and SHA-256 of one certificate
+  verify       verify a chain against a CA bundle and optionally a hostname
+  expiry       report certificates that are expired or about to expire
+  generate     self-signed certificate and key for a local service
+  csr          private key plus certificate signing request
+  fingerprint  SHA-256 fingerprint of a file or a live TLS endpoint
+
+`generate` writes unencrypted server keys with mode 0600, which is what every
+daemon in this image expects; protect the directory instead of the key.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import ipaddress
+import json
+import os
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+from pathlib import Path
+
+SYSTEM_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
+CERT_SUFFIXES = (".pem", ".crt", ".cer")
+DATE_FORMAT = "%b %d %H:%M:%S %Y"
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def tls_dir() -> Path:
+    override = os.environ.get("GRINTION_TLS_DIR")
+    return Path(override) if override else root_path("/etc/grintion/tls")
+
+
+def run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def openssl() -> str | None:
+    return shutil.which("openssl")
+
+
+def parse_date(value: str) -> dt.datetime | None:
+    text = value.strip().replace(" GMT", "").replace("GMT", "").strip()
+    for fmt in (DATE_FORMAT, "%b %d %H:%M:%S %Y"):
+        try:
+            return dt.datetime.strptime(text, fmt).replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+    try:
+        return dt.datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def cert_text(path: Path, extra: list[str] | None = None) -> str:
+    tool = openssl()
+    if not tool:
+        return ""
+    base = [tool, "x509", "-in", str(path), "-noout"]
+    result = run(base + (extra or ["-subject", "-issuer", "-dates", "-serial",
+                                   "-fingerprint", "-sha256"]))
+    if result.returncode != 0:
+        result = run([tool, "x509", "-inform", "DER", "-in", str(path), "-noout"]
+                     + (extra or ["-subject", "-issuer", "-dates", "-serial",
+                                  "-fingerprint", "-sha256"]))
+    return result.stdout
+
+
+def parse_cert(path: Path) -> dict:
+    text = cert_text(path)
+    info = {
+        "path": str(path),
+        "subject": "",
+        "issuer": "",
+        "not_before": None,
+        "not_after": None,
+        "days_remaining": None,
+        "expired": None,
+        "serial": "",
+        "sha256": "",
+        "sans": [],
+        "error": None,
+    }
+    if not text:
+        info["error"] = "openssl could not read the certificate"
+        return info
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "subject":
+            info["subject"] = value
+        elif key == "issuer":
+            info["issuer"] = value
+        elif key == "notBefore":
+            moment = parse_date(value)
+            info["not_before"] = moment.isoformat() if moment else value
+        elif key == "notAfter":
+            moment = parse_date(value)
+            info["not_after"] = moment.isoformat() if moment else value
+            if moment:
+                now = dt.datetime.now(dt.timezone.utc)
+                info["days_remaining"] = (moment - now).days
+                info["expired"] = moment <= now
+        elif key == "serial":
+            info["serial"] = value
+        elif "Fingerprint" in key:
+            info["sha256"] = value
+    san_text = cert_text(path, ["-ext", "subjectAltName"])
+    for line in san_text.splitlines():
+        if "DNS:" in line or "IP Address:" in line:
+            for item in line.strip().split(","):
+                item = item.strip()
+                if item.startswith(("DNS:", "IP Address:", "email:", "URI:")):
+                    info["sans"].append(item)
+    return info
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"grintion-cert: {path} does not exist", file=sys.stderr)
+        return 2
+    info = parse_cert(path)
+    if info["error"]:
+        print(f"grintion-cert: {info['error']}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"schema": 1, **info}, indent=2))
+        return 0
+    print(f"file:       {info['path']}")
+    print(f"subject:    {info['subject']}")
+    print(f"issuer:     {info['issuer']}")
+    print(f"valid from: {info['not_before']}")
+    print(f"valid to:   {info['not_after']} "
+          f"({info['days_remaining']} days)")
+    print(f"serial:     {info['serial']}")
+    print(f"sha256:     {info['sha256']}")
+    for san in info["sans"]:
+        print(f"san:        {san}")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    tool = openssl()
+    if not tool:
+        print("grintion-cert: openssl is not installed", file=sys.stderr)
+        return 2
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"grintion-cert: {path} does not exist", file=sys.stderr)
+        return 2
+    ca = Path(args.ca) if args.ca else SYSTEM_BUNDLE
+    payload = {"schema": 1, "path": str(path), "ca": str(ca),
+               "chain_ok": False, "hostname_ok": None, "detail": ""}
+    if not ca.is_file():
+        payload["detail"] = f"CA bundle {ca} is missing"
+        print(f"grintion-cert: {payload['detail']}", file=sys.stderr)
+        return 2
+    result = run([tool, "verify", "-CAfile", str(ca), str(path)])
+    payload["chain_ok"] = result.returncode == 0
+    payload["detail"] = (result.stdout + result.stderr).strip()
+    if args.hostname:
+        probe = run([tool, "x509", "-in", str(path), "-noout",
+                     "-checkhost", args.hostname])
+        payload["hostname_ok"] = probe.returncode == 0
+        payload["hostname"] = args.hostname
+        payload["hostname_detail"] = (probe.stdout + probe.stderr).strip()
+    ok = payload["chain_ok"] and payload["hostname_ok"] is not False
+    if args.json:
+        print(json.dumps({**payload, "ok": ok}, indent=2))
+    else:
+        print(f"chain: {payload['detail'] or ('ok' if payload['chain_ok'] else 'failed')}")
+        if args.hostname:
+            print(f"hostname {args.hostname}: "
+                  f"{'ok' if payload['hostname_ok'] else 'MISMATCH'}")
+    return 0 if ok else 1
+
+
+def expiry_candidates(args: argparse.Namespace) -> list[Path]:
+    directories = [Path(path) for path in args.path] if args.path else [tls_dir()]
+    candidates: list[Path] = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and path.suffix in CERT_SUFFIXES:
+                candidates.append(path)
+    if args.system and SYSTEM_BUNDLE.is_file():
+        certs = Path("/etc/ssl/certs")
+        if certs.is_dir():
+            candidates.extend(sorted(certs.glob("*.pem")))
+    unique: list[Path] = []
+    for path in candidates:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def cmd_expiry(args: argparse.Namespace) -> int:
+    results = []
+    for path in expiry_candidates(args):
+        info = parse_cert(path)
+        if info["error"] or info["days_remaining"] is None:
+            continue
+        if info["expired"] or info["days_remaining"] <= args.days:
+            results.append(info)
+    results.sort(key=lambda item: item["days_remaining"])
+    expired = [item for item in results if item["expired"]]
+    if args.json:
+        print(json.dumps({"schema": 1, "threshold_days": args.days,
+                          "expired": len(expired),
+                          "candidates": results}, indent=2))
+    else:
+        if not results:
+            print(f"no certificates expire within {args.days} days")
+        for item in results:
+            state = "EXPIRED" if item["expired"] else f"{item['days_remaining']} days"
+            print(f"{state:<10} {item['path']}")
+            print(f"           {item['subject']}")
+    if expired:
+        return 1
+    if results and args.strict:
+        return 1
+    return 0
+
+
+def valid_artifact_name(name: str) -> bool:
+    return bool(name) and name not in (".", "..") and "/" not in name \
+        and "\\" not in name
+
+
+def generated_paths(name: str, directory: Path, kind: str) -> tuple[Path, Path]:
+    base = directory / name
+    if kind == "csr":
+        return base / "key.pem", base / "request.csr"
+    return base / "key.pem", base / "cert.pem"
+
+
+def key_arguments(args: argparse.Namespace) -> list[str]:
+    if args.key_type == "ecdsa":
+        return ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1"]
+    bits = args.bits or 2048
+    return ["-newkey", f"rsa:{bits}"]
+
+
+def san_list(args: argparse.Namespace, cn: str) -> list[str]:
+    tokens = []
+    for value in args.san or []:
+        tokens.extend(part.strip() for part in value.split(",") if part.strip())
+    if cn and not any(token.startswith(("DNS:", "IP:")) for token in tokens):
+        try:
+            ipaddress.ip_address(cn)
+            tokens.append(f"IP:{cn}")
+        except ValueError:
+            tokens.append(f"DNS:{cn}")
+    rendered: list[str] = []
+    for token in tokens:
+        if token.startswith(("DNS:", "IP:")):
+            entry = token
+        else:
+            try:
+                ipaddress.ip_address(token)
+                entry = f"IP:{token}"
+            except ValueError:
+                entry = f"DNS:{token}"
+        if entry not in rendered:
+            rendered.append(entry)
+    return rendered
+
+
+def require_writable(directory: Path, force: bool, dry_run: bool) -> bool:
+    if dry_run or not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return True
+    if os.environ.get("GRINTION_TLS_DIR") or os.environ.get("GRINTION_ROOT"):
+        return True
+    print(f"grintion-cert: writing to {directory} requires root; rerun with sudo",
+          file=sys.stderr)
+    return False
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    tool = openssl()
+    if not tool:
+        print("grintion-cert: openssl is not installed", file=sys.stderr)
+        return 2
+    if not valid_artifact_name(args.name):
+        print("grintion-cert: name must be a plain directory name", file=sys.stderr)
+        return 2
+    directory = tls_dir()
+    key, cert = generated_paths(args.name, directory, "cert")
+    if (key.exists() or cert.exists()) and not args.force:
+        print(f"grintion-cert: {cert} exists; use --force to replace it", file=sys.stderr)
+        return 1
+    if not require_writable(directory, args.force, args.dry_run):
+        return 2
+    cn = args.cn or socket.gethostname()
+    weeks = ["-days", str(args.days)]
+    command = [tool, "req", "-x509", "-sha256", "-nodes", *key_arguments(args), *weeks,
+               "-keyout", str(key), "-out", str(cert), "-subj", f"/CN={cn}"]
+    sans = san_list(args, cn)
+    if sans:
+        command.extend(["-addext", "subjectAltName=" + ",".join(sans)])
+    if args.dry_run:
+        print("would run: " + " ".join(command))
+        return 0
+    cert.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(cert.parent, 0o755)
+    result = run(command, timeout=120)
+    if result.returncode != 0:
+        print(f"grintion-cert: generation failed: "
+              f"{(result.stderr or result.stdout).strip()}", file=sys.stderr)
+        return 1
+    os.chmod(key, 0o600)
+    os.chmod(cert, 0o644)
+    if args.json:
+        print(json.dumps({"schema": 1, "certificate": str(cert), "key": str(key),
+                          "cn": cn, "sans": sans, "days": args.days}, indent=2))
+    else:
+        print(f"certificate: {cert}")
+        print(f"private key: {key} (mode 600)")
+        print(f"valid for:   {args.days} days, CN={cn}")
+    return 0
+
+
+def cmd_csr(args: argparse.Namespace) -> int:
+    tool = openssl()
+    if not tool:
+        print("grintion-cert: openssl is not installed", file=sys.stderr)
+        return 2
+    if not valid_artifact_name(args.name):
+        print("grintion-cert: name must be a plain directory name", file=sys.stderr)
+        return 2
+    directory = tls_dir()
+    key, csr = generated_paths(args.name, directory, "csr")
+    if (key.exists() or csr.exists()) and not args.force:
+        print(f"grintion-cert: {csr} exists; use --force to replace it", file=sys.stderr)
+        return 1
+    if not require_writable(directory, args.force, args.dry_run):
+        return 2
+    cn = args.cn or socket.gethostname()
+    command = [tool, "req", "-new", "-sha256", "-nodes", *key_arguments(args),
+               "-keyout", str(key), "-out", str(csr), "-subj", f"/CN={cn}"]
+    sans = san_list(args, cn)
+    if sans:
+        command.extend(["-addext", "subjectAltName=" + ",".join(sans)])
+    if args.dry_run:
+        print("would run: " + " ".join(command))
+        return 0
+    csr.parent.mkdir(parents=True, exist_ok=True)
+    result = run(command, timeout=120)
+    if result.returncode != 0:
+        print(f"grintion-cert: CSR creation failed: "
+              f"{(result.stderr or result.stdout).strip()}", file=sys.stderr)
+        return 1
+    os.chmod(key, 0o600)
+    os.chmod(csr, 0o644)
+    if args.json:
+        print(json.dumps({"schema": 1, "csr": str(csr), "key": str(key),
+                          "cn": cn, "sans": sans}, indent=2))
+    else:
+        print(f"csr:         {csr}")
+        print(f"private key: {key} (mode 600)")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    bundle_count = 0
+    if SYSTEM_BUNDLE.is_file():
+        try:
+            bundle_count = SYSTEM_BUNDLE.read_text(encoding="utf-8",
+                                                   errors="replace").count(
+                "BEGIN CERTIFICATE")
+        except OSError:
+            bundle_count = 0
+    managed = []
+    if tls_dir().is_dir():
+        for path in sorted(tls_dir().rglob("*")):
+            if path.is_file() and path.suffix in CERT_SUFFIXES:
+                info = parse_cert(path)
+                if not info["error"]:
+                    managed.append(info)
+    payload = {"schema": 1, "system_bundle": str(SYSTEM_BUNDLE),
+               "system_trust_anchors": bundle_count,
+               "tls_dir": str(tls_dir()), "managed": managed}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"system trust anchors: {bundle_count} ({SYSTEM_BUNDLE})")
+    if not managed:
+        print(f"no managed certificates under {tls_dir()}")
+        return 0
+    print(f"managed certificates ({tls_dir()}):")
+    for info in managed:
+        print(f"  {info['path']}")
+        print(f"    {info['subject']} ({info['days_remaining']} days)")
+    return 0
+
+
+def fingerprint_endpoint(host: str, port: int, timeout: float) -> dict:
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((host, port), timeout=timeout) as raw:
+        with context.wrap_socket(raw, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+            cipher = tls.cipher()
+            version = tls.version()
+    if not der:
+        return {"error": "no certificate presented"}
+    digest = hashlib.sha256(der).hexdigest().upper()
+    formatted = ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+    return {"sha256": formatted, "tls_version": version,
+            "cipher": cipher[0] if cipher else None}
+
+
+def cmd_fingerprint(args: argparse.Namespace) -> int:
+    path = Path(args.target)
+    payload: dict = {"schema": 1, "target": args.target}
+    if path.is_file():
+        info = parse_cert(path)
+        if info["error"]:
+            print(f"grintion-cert: {info['error']}", file=sys.stderr)
+            return 2
+        payload.update({"kind": "file", "sha256": info["sha256"],
+                        "subject": info["subject"], "not_after": info["not_after"]})
+    else:
+        if ":" not in args.target:
+            print("grintion-cert: target must be a file or host:port", file=sys.stderr)
+            return 2
+        host, _, port_text = args.target.rpartition(":")
+        if not port_text.isdigit():
+            print("grintion-cert: host:port needs a numeric port", file=sys.stderr)
+            return 2
+        payload["kind"] = "endpoint"
+        try:
+            payload.update(fingerprint_endpoint(host, int(port_text), args.timeout))
+        except (OSError, ssl.SSLError) as exc:
+            print(f"grintion-cert: {args.target}: {exc}", file=sys.stderr)
+            return 1
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"{args.target}: {payload.get('sha256', 'unknown')}")
+        if payload.get("subject"):
+            print(f"  subject: {payload['subject']}")
+        if payload.get("not_after"):
+            print(f"  expires: {payload['not_after']}")
+        if payload.get("tls_version"):
+            print(f"  {payload['tls_version']} {payload.get('cipher')}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-cert",
+        description="Inspect, verify, generate and audit TLS certificates.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+
+    p_info = sub.add_parser("info", parents=[common], help="inspect a certificate")
+    p_info.add_argument("path")
+    p_info.set_defaults(func=cmd_info)
+
+    p_verify = sub.add_parser("verify", parents=[common], help="verify a chain")
+    p_verify.add_argument("path")
+    p_verify.add_argument("--ca", help="CA bundle (default: system bundle)")
+    p_verify.add_argument("--hostname", help="also check this hostname")
+    p_verify.set_defaults(func=cmd_verify)
+
+    p_expiry = sub.add_parser("expiry", parents=[common], help="expiring certificates")
+    p_expiry.add_argument("--days", type=int, default=30)
+    p_expiry.add_argument("--path", action="append", help="directory to scan (repeatable)")
+    p_expiry.add_argument("--system", action="store_true",
+                          help="also scan /etc/ssl/certs")
+    p_expiry.add_argument("--strict", action="store_true",
+                          help="exit 1 when anything is inside the window")
+    p_expiry.set_defaults(func=cmd_expiry)
+
+    p_generate = sub.add_parser("generate", parents=[common], help="self-signed cert")
+    p_generate.add_argument("name")
+    p_generate.add_argument("--cn", help="common name (default: hostname)")
+    p_generate.add_argument("--days", type=int, default=365)
+    p_generate.add_argument("--key-type", choices=("rsa", "ecdsa"), default="rsa")
+    p_generate.add_argument("--bits", type=int, help="RSA bits (default 2048)")
+    p_generate.add_argument("--san", action="append", help="SAN entries (repeatable)")
+    p_generate.add_argument("--force", action="store_true")
+    p_generate.add_argument("--dry-run", action="store_true")
+    p_generate.set_defaults(func=cmd_generate)
+
+    p_csr = sub.add_parser("csr", parents=[common], help="key and CSR")
+    p_csr.add_argument("name")
+    p_csr.add_argument("--cn")
+    p_csr.add_argument("--key-type", choices=("rsa", "ecdsa"), default="rsa")
+    p_csr.add_argument("--bits", type=int)
+    p_csr.add_argument("--san", action="append")
+    p_csr.add_argument("--force", action="store_true")
+    p_csr.add_argument("--dry-run", action="store_true")
+    p_csr.set_defaults(func=cmd_csr)
+
+    p_fp = sub.add_parser("fingerprint", parents=[common], help="SHA-256 fingerprint")
+    p_fp.add_argument("target", help="certificate file or host:port")
+    p_fp.add_argument("--timeout", type=float, default=5.0)
+    p_fp.set_defaults(func=cmd_fingerprint)
+
+    sub.add_parser("list", parents=[common], help="managed certificates"
+                   ).set_defaults(func=cmd_list)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

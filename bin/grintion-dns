@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""grintion-dns - resolver configuration, testing and leak-free fallbacks.
+
+Subcommands:
+  status    resolv.conf, fallback head file, managed config and network service
+  test      query timing per nameserver (dig if present, getent otherwise)
+  show      print the managed configuration
+  set       replace the resolver list (writes /etc/resolv.conf.head and live file)
+  add       add one resolver
+  remove    drop one resolver
+  restore   return to the tracked privacy-respecting fallbacks
+  check     structural validation of the current resolver setup
+  flush     report or clear local resolver caches
+
+dhcpcd prepends /etc/resolv.conf.head to the DHCP-provided servers, so the
+managed list survives lease renewals without fighting the network service.
+"""
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DEFAULT_SERVERS = ["1.1.1.1", "8.8.8.8"]
+HEADER = "# Managed by grintion-dns. dhcpcd prepends this file to /etc/resolv.conf.\n"
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def resolv_conf() -> Path:
+    override = os.environ.get("GRINTION_RESOLV_CONF")
+    return Path(override) if override else root_path("/etc/resolv.conf")
+
+
+def resolv_head() -> Path:
+    override = os.environ.get("GRINTION_RESOLV_HEAD")
+    return Path(override) if override else root_path("/etc/resolv.conf.head")
+
+
+def dns_conf() -> Path:
+    override = os.environ.get("GRINTION_DNS_CONF")
+    return Path(override) if override else root_path("/etc/grintion/dns.conf")
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT") or os.environ.get("GRINTION_DNS_CONF"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-dns: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def read_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def parse_resolv(path: Path) -> dict:
+    nameservers, search, options = [], [], []
+    for raw in read_lines(path):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        fields = stripped.split()
+        key = fields[0].lower()
+        if key == "nameserver" and len(fields) > 1:
+            nameservers.append(fields[1])
+        elif key == "search":
+            search.extend(fields[1:])
+        elif key == "domain" and len(fields) > 1:
+            search.append(fields[1])
+        elif key == "options":
+            options.extend(fields[1:])
+    return {"nameservers": nameservers, "search": search, "options": options}
+
+
+def parse_managed(path: Path) -> dict:
+    servers, search = [], []
+    for raw in read_lines(path):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "nameserver" and value:
+            servers.append(value)
+        elif key == "search" and value:
+            search.extend(value.split())
+    return {"nameservers": servers, "search": search}
+
+
+def valid_address(value: str) -> bool:
+    value = value.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def service_state() -> dict:
+    state = {"network_service": None, "networkmanager": False, "head_present": False}
+    network = root_path("/var/service/network")
+    nm = root_path("/var/service/NetworkManager")
+    state["network_service"] = network.exists() or network.is_symlink()
+    state["networkmanager"] = nm.exists() or nm.is_symlink()
+    state["head_present"] = resolv_head().is_file()
+    return state
+
+
+def cache_daemons() -> list[str]:
+    found = []
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return found
+    for name in ("dnsmasq", "nscd", "unbound", "systemd-resolved"):
+        try:
+            probe = subprocess.run([pgrep, "-x", name], capture_output=True, text=True,
+                                   timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0 and probe.stdout.strip():
+            found.append(name)
+    return found
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    live = parse_resolv(resolv_conf())
+    head = parse_resolv(resolv_head())
+    managed = parse_managed(dns_conf())
+    symlink = resolv_conf().is_symlink()
+    payload = {
+        "schema": 1,
+        "resolv_conf": str(resolv_conf()),
+        "resolv_conf_symlink": str(resolv_conf().resolve()) if symlink else None,
+        "nameservers": live["nameservers"],
+        "search": live["search"],
+        "options": live["options"],
+        "head": head["nameservers"],
+        "managed": managed["nameservers"],
+        "managed_search": managed["search"],
+        "service": service_state(),
+        "cache_daemons": cache_daemons(),
+        "localhost_in_hosts": any(
+            re.match(r"^127\.0\.0\.1\s+.*\blocalhost\b", line)
+            for line in read_lines(root_path("/etc/hosts"))
+        ),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"resolv.conf: {resolv_conf()}"
+          + (f" -> {payload['resolv_conf_symlink']}" if symlink else ""))
+    print(f"nameservers: {', '.join(payload['nameservers']) or 'none'}")
+    print(f"search:      {', '.join(payload['search']) or 'none'}")
+    print(f"options:     {', '.join(payload['options']) or 'none'}")
+    print(f"head file:   {', '.join(payload['head']) or 'none'}")
+    print(f"managed:     {', '.join(payload['managed']) or 'none'}")
+    print(f"network:     "
+          + ("NetworkManager" if payload["service"]["networkmanager"] else
+             "runit network service" if payload["service"]["network_service"] else "unknown"))
+    print(f"cache:       {', '.join(payload['cache_daemons']) or 'no local cache daemon'}")
+    return 0
+
+
+def query_with_dig(server: str, name: str, record: str) -> dict:
+    dig = shutil.which("dig")
+    if not dig:
+        return {"error": "dig not installed"}
+    started = time.perf_counter()
+    result = subprocess.run(
+        [dig, "+time=2", "+tries=1", "+noall", "+comments", "+answer",
+         f"@{server}", name, record],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    elapsed = time.perf_counter() - started
+    status = "unknown"
+    for line in result.stdout.splitlines():
+        if "status:" in line:
+            status = line.split("status:", 1)[1].split(",", 1)[0].strip()
+            break
+    answers = [line for line in result.stdout.splitlines()
+               if line and not line.startswith(";")]
+    return {
+        "server": server,
+        "status": status,
+        "elapsed_seconds": round(elapsed, 3),
+        "answers": answers[:5],
+        "ok": status in ("NOERROR", "NXDOMAIN") and result.returncode == 0,
+    }
+
+
+def query_with_getent(name: str) -> dict:
+    getent = shutil.which("getent")
+    if not getent:
+        return {"error": "getent not installed"}
+    started = time.perf_counter()
+    result = subprocess.run([getent, "hosts", name], capture_output=True,
+                            text=True, timeout=10, check=False)
+    elapsed = time.perf_counter() - started
+    return {
+        "server": "system",
+        "status": "ok" if result.returncode == 0 else "not found",
+        "elapsed_seconds": round(elapsed, 3),
+        "answers": result.stdout.strip().splitlines()[:5],
+        "ok": result.returncode == 0,
+    }
+
+
+def cmd_test(args: argparse.Namespace) -> int:
+    servers = args.server or parse_resolv(resolv_conf())["nameservers"]
+    names = args.names or ["localhost"]
+    results = []
+    for name in names:
+        if servers:
+            for server in servers:
+                result = query_with_dig(server, name, args.record)
+                result["query"] = name
+                results.append(result)
+        else:
+            result = query_with_getent(name)
+            result["query"] = name
+            results.append(result)
+    failures = [result for result in results if not result.get("ok")]
+    if args.json:
+        print(json.dumps({"schema": 1, "results": results,
+                          "failures": len(failures)}, indent=2))
+        return 0 if not failures else 1
+    print(f"{'QUERY':<24} {'SERVER':<20} {'STATUS':<12} {'SECONDS':>8}")
+    for result in results:
+        server = result.get("server", "-")
+        elapsed = result.get("elapsed_seconds")
+        print(f"{result['query']:<24} {server:<20} {result.get('status', '-'):<12} "
+              f"{(f'{elapsed:.3f}' if elapsed is not None else '-'):>8}")
+        if args.verbose and result.get("answers"):
+            for answer in result["answers"]:
+                print(f"    {answer}")
+    return 0 if not failures else 1
+
+
+def render_head(servers: list[str], search: list[str]) -> str:
+    parts = [HEADER]
+    for server in servers:
+        parts.append(f"nameserver {server}\n")
+    if search:
+        parts.append(f"search {' '.join(search)}\n")
+    return "".join(parts)
+
+
+def write_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".grintion-tmp")
+    temporary.write_text(text, encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def rewrite_live(servers: list[str], search: list[str]) -> None:
+    """Replace only the resolver directives, preserving other tool-written lines."""
+    path = resolv_conf()
+    lines = read_lines(path)
+    kept = [
+        line for line in lines
+        if line.strip().split()[:1] not in (["nameserver"], ["search"], ["domain"])
+    ]
+    body = [f"nameserver {server}\n" for server in servers]
+    if search:
+        body.append(f"search {' '.join(search)}\n")
+    body.extend(line + "\n" for line in kept)
+    write_file(path, "".join(body))
+
+
+def save_servers(servers: list[str], search: list[str], apply: bool,
+                 dry_run: bool) -> None:
+    config = dns_conf()
+    head = resolv_head()
+    body = ["# Managed by grintion-dns\n"]
+    body.extend(f"nameserver = {server}\n" for server in servers)
+    if search:
+        body.append(f"search = {' '.join(search)}\n")
+    if dry_run:
+        print(f"would write {config} and {head} with: {', '.join(servers)}")
+        if apply:
+            print(f"would rewrite the resolver lines in {resolv_conf()}")
+        return
+    write_file(config, "".join(body))
+    write_file(head, render_head(servers, search))
+    if apply:
+        rewrite_live(servers, search)
+
+
+def cmd_set(args: argparse.Namespace) -> int:
+    servers = args.servers
+    if not servers:
+        print("grintion-dns: at least one nameserver is required", file=sys.stderr)
+        return 2
+    for server in servers:
+        if not valid_address(server):
+            print(f"grintion-dns: {server!r} is not an IP address; "
+                  "resolv.conf accepts addresses only", file=sys.stderr)
+            return 2
+    if resolv_conf().is_symlink() and not args.force:
+        print(f"grintion-dns: {resolv_conf()} is a symlink (NetworkManager may own it); "
+              "use --force to write through it", file=sys.stderr)
+        return 1
+    if not require_root("changing resolvers", args.dry_run):
+        return 2
+    search = args.search.split() if args.search else parse_managed(dns_conf())["search"]
+    save_servers(servers, search, not args.no_apply, args.dry_run)
+    if args.json:
+        print(json.dumps({"schema": 1, "nameservers": servers, "search": search},
+                         indent=2))
+    else:
+        print(f"resolvers set to: {', '.join(servers)}")
+        print("dhcpcd keeps them across renewals via /etc/resolv.conf.head")
+    return 0
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    if not valid_address(args.server):
+        print(f"grintion-dns: {args.server!r} is not an IP address", file=sys.stderr)
+        return 2
+    if not require_root("changing resolvers", args.dry_run):
+        return 2
+    managed = parse_managed(dns_conf())
+    servers = managed["nameservers"] or list(DEFAULT_SERVERS)
+    if args.server in servers:
+        print(f"grintion-dns: {args.server} is already configured")
+        return 0
+    servers.append(args.server)
+    save_servers(servers, managed["search"], True, args.dry_run)
+    if args.json:
+        print(json.dumps({"schema": 1, "added": args.server,
+                          "nameservers": servers}, indent=2))
+    else:
+        print(f"added resolver {args.server}")
+    return 0
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    if not require_root("changing resolvers", args.dry_run):
+        return 2
+    managed = parse_managed(dns_conf())
+    servers = managed["nameservers"]
+    if args.server not in servers:
+        print(f"grintion-dns: {args.server} is not in the managed list", file=sys.stderr)
+        return 1
+    if len(servers) == 1:
+        print("grintion-dns: refusing to remove the last resolver", file=sys.stderr)
+        return 1
+    servers.remove(args.server)
+    save_servers(servers, managed["search"], True, args.dry_run)
+    if args.json:
+        print(json.dumps({"schema": 1, "removed": args.server,
+                          "nameservers": servers}, indent=2))
+    else:
+        print(f"removed resolver {args.server}")
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    if not require_root("restoring resolvers", args.dry_run):
+        return 2
+    save_servers(list(DEFAULT_SERVERS), [], True, args.dry_run)
+    if args.json:
+        print(json.dumps({"schema": 1, "restored": DEFAULT_SERVERS}, indent=2))
+    else:
+        print("restored the tracked resolver fallbacks: " + ", ".join(DEFAULT_SERVERS))
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    managed = parse_managed(dns_conf())
+    if args.json:
+        print(json.dumps({"schema": 1, "config": str(dns_conf()), **managed}, indent=2))
+        return 0
+    print(f"# {dns_conf()}")
+    for server in managed["nameservers"]:
+        print(f"nameserver = {server}")
+    if managed["search"]:
+        print(f"search = {' '.join(managed['search'])}")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    problems = []
+    live = parse_resolv(resolv_conf())
+    if not resolv_conf().is_file():
+        problems.append(f"{resolv_conf()} is missing")
+    if not live["nameservers"]:
+        problems.append("no nameserver lines in resolv.conf")
+    duplicates = {server for server in live["nameservers"]
+                  if live["nameservers"].count(server) > 1}
+    if duplicates:
+        problems.append(f"duplicate nameservers: {', '.join(sorted(duplicates))}")
+    for server in live["nameservers"]:
+        if not valid_address(server):
+            problems.append(f"invalid nameserver address: {server}")
+    if not any(re.match(r"^127\.0\.0\.1\s+.*\blocalhost\b", line)
+               for line in read_lines(root_path("/etc/hosts"))):
+        problems.append("/etc/hosts has no 127.0.0.1 localhost entry")
+    for domain in live["search"]:
+        if not re.match(r"^[A-Za-z0-9.-]+$", domain):
+            problems.append(f"suspicious search domain: {domain}")
+    if args.json:
+        print(json.dumps({"schema": 1, "problems": problems,
+                          "nameservers": live["nameservers"]}, indent=2))
+    else:
+        print(f"resolvers: {', '.join(live['nameservers']) or 'none'}")
+        for problem in problems:
+            print(f"  PROBLEM {problem}")
+        if not problems:
+            print("resolver configuration looks consistent")
+    return 0 if not problems else 1
+
+
+def cmd_flush(args: argparse.Namespace) -> int:
+    daemons = cache_daemons()
+    if not daemons:
+        message = "no local resolver cache is running; nothing to flush"
+        print(json.dumps({"schema": 1, "flushed": [], "message": message}, indent=2)
+              if args.json else message)
+        return 0
+    if not require_root("flushing resolver caches", args.dry_run):
+        return 2
+    flushed = []
+    for daemon in daemons:
+        if daemon == "dnsmasq":
+            result = subprocess.run(["kill", "-HUP", "-x", "dnsmasq"],
+                                    capture_output=True, text=True, check=False)
+        elif daemon == "nscd":
+            result = subprocess.run(["nscd", "-i", "hosts"], capture_output=True,
+                                    text=True, check=False)
+        else:
+            result = subprocess.CompletedProcess([], 0, "", "no reload command known")
+        if result.returncode == 0:
+            flushed.append(daemon)
+    if args.json:
+        print(json.dumps({"schema": 1, "flushed": flushed}, indent=2))
+    else:
+        print(f"flushed: {', '.join(flushed) or 'none'}")
+    return 0 if flushed else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-dns",
+        description="Configure, test and validate DNS resolvers.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="resolver state"
+                   ).set_defaults(func=cmd_status)
+    sub.add_parser("show", parents=[common], help="print the managed config"
+                   ).set_defaults(func=cmd_show)
+
+    p_test = sub.add_parser("test", parents=[common], help="time queries per server")
+    p_test.add_argument("names", nargs="*", help="names to resolve (default localhost)")
+    p_test.add_argument("--server", action="append", help="nameserver to query (repeatable)")
+    p_test.add_argument("--record", default="A", help="record type (default A)")
+    p_test.add_argument("--verbose", action="store_true", help="print answers")
+    p_test.set_defaults(func=cmd_test)
+
+    p_set = sub.add_parser("set", parents=[common], help="replace the resolver list")
+    p_set.add_argument("servers", nargs="+")
+    p_set.add_argument("--search", help="search domain list")
+    p_set.add_argument("--no-apply", action="store_true",
+                       help="write the config without touching the live resolver")
+    p_set.add_argument("--force", action="store_true", help="write through a symlink")
+    p_set.set_defaults(func=cmd_set)
+
+    p_add = sub.add_parser("add", parents=[common], help="add a resolver")
+    p_add.add_argument("server")
+    p_add.set_defaults(func=cmd_add)
+
+    p_remove = sub.add_parser("remove", parents=[common], help="remove a resolver")
+    p_remove.add_argument("server")
+    p_remove.set_defaults(func=cmd_remove)
+
+    sub.add_parser("restore", parents=[common], help="restore tracked fallbacks"
+                   ).set_defaults(func=cmd_restore)
+    sub.add_parser("check", parents=[common], help="validate the resolver setup"
+                   ).set_defaults(func=cmd_check)
+    sub.add_parser("flush", parents=[common], help="flush local resolver caches"
+                   ).set_defaults(func=cmd_flush)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

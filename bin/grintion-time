@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""grintion-time - clock, timezone and NTP peer management without systemd.
+
+Subcommands:
+  status         system clock, RTC offset, timezone and timesync service state
+  sync           copy the RTC to the system clock (--to-hw for the reverse)
+  set            set the system clock from an ISO-8601 timestamp
+  servers        list configured NTP peers
+  add-server     add a peer to /etc/ntp.conf
+  remove-server  remove a peer from /etc/ntp.conf
+  tz             point /etc/localtime at a zoneinfo zone
+
+The busybox ntpd client is watched by the runit timesync service; this tool
+edits its peer list and reports whether that service is enabled.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def ntp_conf() -> Path:
+    override = os.environ.get("GRINTION_NTP_CONF")
+    return Path(override) if override else root_path("/etc/ntp.conf")
+
+
+def log_path() -> Path:
+    override = os.environ.get("GRINTION_TIMESYNC_LOG")
+    return Path(override) if override else root_path("/var/log/timesync.log")
+
+
+def zoneinfo_dir() -> Path:
+    override = os.environ.get("GRINTION_ZONEINFO_DIR")
+    return Path(override) if override else root_path("/usr/share/zoneinfo")
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT") or os.environ.get("GRINTION_NTP_CONF"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-time: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def timezone_name() -> str | None:
+    localtime = root_path("/etc/localtime")
+    try:
+        if localtime.is_symlink():
+            target = str(localtime.resolve())
+            marker = "/zoneinfo/"
+            if marker in target:
+                return target.split(marker, 1)[1]
+    except OSError:
+        pass
+    zone_file = root_path("/etc/timezone")
+    if zone_file.is_file():
+        try:
+            value = zone_file.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    return os.environ.get("TZ") or None
+
+
+def rtc_info() -> dict:
+    info = {"device": None, "utc_time": None, "offset_seconds": None}
+    rtc = Path("/sys/class/rtc/rtc0")
+    if not rtc.is_dir():
+        return info
+    info["device"] = "/dev/rtc0"
+    try:
+        date = (rtc / "date").read_text(encoding="utf-8").strip()
+        clock = (rtc / "time").read_text(encoding="utf-8").strip()
+        info["utc_time"] = f"{date}T{clock}Z"
+        stamp = dt.datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S")
+        stamp = stamp.replace(tzinfo=dt.timezone.utc).timestamp()
+        info["offset_seconds"] = round(stamp - time.time(), 1)
+    except (OSError, ValueError):
+        pass
+    return info
+
+
+def ntp_servers() -> list[str]:
+    servers = []
+    try:
+        lines = ntp_conf().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return servers
+    for line in lines:
+        fields = line.strip().split()
+        if len(fields) >= 2 and fields[0] == "server" and not line.strip().startswith("#"):
+            servers.append(fields[1])
+    return servers
+
+
+def timesync_state() -> dict:
+    service = root_path("/var/service/timesync")
+    enabled = service.exists() or service.is_symlink()
+    state = {"enabled": enabled, "last_log": []}
+    if log_path().is_file():
+        try:
+            lines = log_path().read_text(encoding="utf-8", errors="replace").splitlines()
+            state["last_log"] = lines[-3:]
+        except OSError:
+            pass
+    if shutil.which("sv"):
+        result = run(["sv", "status", "timesync"])
+        state["sv_status"] = (result.stdout or result.stderr).strip()
+    return state
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    now = time.time()
+    payload = {
+        "schema": 1,
+        "epoch": int(now),
+        "local_time": dt.datetime.fromtimestamp(now).astimezone().isoformat(
+            timespec="seconds"),
+        "utc_time": dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(
+            timespec="seconds"),
+        "timezone": timezone_name(),
+        "tz_env": os.environ.get("TZ"),
+        "rtc": rtc_info(),
+        "ntp_servers": ntp_servers(),
+        "timesync": timesync_state(),
+        "ntp_conf": str(ntp_conf()),
+        "timesync_binary": shutil.which("ntpd") is not None,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"local time: {payload['local_time']}")
+    print(f"utc time:   {payload['utc_time']}")
+    print(f"timezone:   {payload['timezone'] or 'unknown'}")
+    rtc = payload["rtc"]
+    if rtc["utc_time"]:
+        print(f"rtc:        {rtc['utc_time']} (offset {rtc['offset_seconds']}s)")
+    else:
+        print("rtc:        not readable")
+    print(f"ntp peers:  {', '.join(payload['ntp_servers']) or 'none configured'}")
+    print(f"timesync:   {'enabled' if payload['timesync']['enabled'] else 'disabled'}")
+    for line in payload["timesync"]["last_log"]:
+        print(f"  {line}")
+    return 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    if args.to_hw:
+        command = ["hwclock", "--systohc", "--utc"]
+    else:
+        command = ["hwclock", "--hctosys", "--utc"]
+    if args.dry_run:
+        print("would run: " + " ".join(command))
+        return 0
+    if not require_root("changing the clock", args.dry_run):
+        return 2
+    if not shutil.which("hwclock"):
+        print("grintion-time: hwclock is not installed", file=sys.stderr)
+        return 2
+    result = run(command)
+    if result.returncode != 0:
+        print(f"grintion-time: hwclock failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    direction = "system clock -> RTC" if args.to_hw else "RTC -> system clock"
+    if args.json:
+        print(json.dumps({"schema": 1, "direction": direction}, indent=2))
+    else:
+        print(f"synced {direction}")
+    return 0
+
+
+def cmd_set(args: argparse.Namespace) -> int:
+    try:
+        moment = dt.datetime.fromisoformat(args.timestamp)
+    except ValueError:
+        print(f"grintion-time: {args.timestamp!r} is not an ISO-8601 timestamp",
+              file=sys.stderr)
+        return 2
+    formatted = moment.strftime("%Y-%m-%d %H:%M:%S")
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "time": formatted,
+                              "rtc": args.to_hw}, indent=2))
+        else:
+            print(f"would set the system clock to {formatted} "
+                  f"({moment.astimezone().isoformat() if moment.tzinfo else 'local time'})")
+        return 0
+    if not require_root("setting the clock", args.dry_run):
+        return 2
+    result = run(["date", "-s", formatted])
+    if result.returncode != 0:
+        print(f"grintion-time: date failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    if args.to_hw:
+        follow = run(["hwclock", "--systohc", "--utc"])
+        if follow.returncode != 0:
+            print("grintion-time: system clock set but hwclock write failed",
+                  file=sys.stderr)
+            return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "time": formatted, "rtc": args.to_hw},
+                         indent=2))
+    else:
+        print(f"system clock set to {formatted}")
+        if args.to_hw:
+            print("RTC updated")
+    return 0
+
+
+def write_ntp_conf(lines: list[str]) -> None:
+    path = ntp_conf()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".ntp.", delete=False) as handle:
+        handle.write("\n".join(lines) + "\n")
+        temporary = handle.name
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def cmd_servers(args: argparse.Namespace) -> int:
+    servers = ntp_servers()
+    if args.json:
+        print(json.dumps({"schema": 1, "path": str(ntp_conf()),
+                          "servers": servers}, indent=2))
+        return 0
+    print(f"{ntp_conf()}: {len(servers)} peer(s)")
+    for server in servers:
+        print(f"  server {server}")
+    return 0
+
+
+def validate_host(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        pass
+    return bool(HOST_RE.match(host)) and ".." not in host
+
+
+def cmd_add_server(args: argparse.Namespace) -> int:
+    if not validate_host(args.server):
+        print(f"grintion-time: {args.server!r} is not a valid host name or address",
+              file=sys.stderr)
+        return 2
+    if not require_root("editing NTP peers", args.dry_run):
+        return 2
+    servers = ntp_servers()
+    if args.server in servers:
+        print(f"grintion-time: {args.server} is already configured")
+        return 0
+    if args.dry_run:
+        print(f"would add 'server {args.server}' to {ntp_conf()}")
+        return 0
+    path = ntp_conf()
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else [
+        "# NTP peers used by the runit timesync service"]
+    lines.append(f"server {args.server}")
+    write_ntp_conf(lines)
+    if args.json:
+        print(json.dumps({"schema": 1, "server": args.server, "added": True},
+                         indent=2))
+    else:
+        print(f"added NTP peer {args.server}")
+        print("restart the service to pick it up: grintion-service restart timesync")
+    return 0
+
+
+def cmd_remove_server(args: argparse.Namespace) -> int:
+    if not require_root("editing NTP peers", args.dry_run):
+        return 2
+    path = ntp_conf()
+    if not path.is_file():
+        print(f"grintion-time: {path} does not exist", file=sys.stderr)
+        return 1
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines
+            if not (line.strip().split()[:2] == ["server", args.server])]
+    if len(kept) == len(lines):
+        print(f"grintion-time: {args.server} is not configured", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print(f"would remove 'server {args.server}' from {path}")
+        return 0
+    write_ntp_conf(kept)
+    if args.json:
+        print(json.dumps({"schema": 1, "server": args.server, "removed": True},
+                         indent=2))
+    else:
+        print(f"removed NTP peer {args.server}")
+    return 0
+
+
+def cmd_tz(args: argparse.Namespace) -> int:
+    zone = args.zone
+    if not zone or zone.startswith("/") or ".." in Path(zone).parts:
+        print(f"grintion-time: {zone!r} is not a zone name relative to zoneinfo",
+              file=sys.stderr)
+        return 2
+    candidate = zoneinfo_dir() / zone
+    if not candidate.is_file():
+        print(f"grintion-time: unknown timezone {zone!r} "
+              f"(no {candidate})", file=sys.stderr)
+        return 2
+    if not require_root("changing the timezone", args.dry_run):
+        return 2
+    localtime = root_path("/etc/localtime")
+    if args.dry_run:
+        print(f"would link {localtime} -> {zone}")
+        return 0
+    try:
+        if localtime.is_symlink() or localtime.exists():
+            localtime.unlink()
+        localtime.parent.mkdir(parents=True, exist_ok=True)
+        localtime.symlink_to(candidate)
+    except OSError as exc:
+        print(f"grintion-time: cannot update {localtime}: {exc}", file=sys.stderr)
+        return 1
+    zone_file = root_path("/etc/timezone")
+    try:
+        zone_file.parent.mkdir(parents=True, exist_ok=True)
+        zone_file.write_text(zone + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"grintion-time: cannot write {zone_file}: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "timezone": zone}, indent=2))
+    else:
+        print(f"timezone set to {zone}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-time",
+        description="Manage the clock, timezone and NTP peers.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="clock and NTP state"
+                   ).set_defaults(func=cmd_status)
+
+    p_sync = sub.add_parser("sync", parents=[common], help="sync clock and RTC")
+    p_sync.add_argument("--to-hw", action="store_true",
+                        help="write the system clock into the RTC")
+    p_sync.set_defaults(func=cmd_sync)
+
+    p_set = sub.add_parser("set", parents=[common], help="set the system clock")
+    p_set.add_argument("timestamp", help="ISO-8601, e.g. 2026-11-14T12:00:00")
+    p_set.add_argument("--to-hw", action="store_true", help="also update the RTC")
+    p_set.set_defaults(func=cmd_set)
+
+    sub.add_parser("servers", parents=[common], help="list NTP peers"
+                   ).set_defaults(func=cmd_servers)
+
+    p_add = sub.add_parser("add-server", parents=[common], help="add an NTP peer")
+    p_add.add_argument("server")
+    p_add.set_defaults(func=cmd_add_server)
+
+    p_remove = sub.add_parser("remove-server", parents=[common],
+                              help="remove an NTP peer")
+    p_remove.add_argument("server")
+    p_remove.set_defaults(func=cmd_remove_server)
+
+    p_tz = sub.add_parser("tz", parents=[common], help="set the timezone")
+    p_tz.add_argument("zone")
+    p_tz.set_defaults(func=cmd_tz)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

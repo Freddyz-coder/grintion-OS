@@ -44,11 +44,24 @@ STATION_STOPS = [
         "description": "Integrated self-healing checks, atomic snapshots, and emergency hardware inspection.",
         "commands": ["grintion-doctor --fix", "grintion-snapshot list", "grintion-hcl"],
     },
+    {
+        "step": 7,
+        "title": "Advanced Operations",
+        "description": "Storage health, supervised timers, log triage, networking and firewall overlays with JSON output for automation.",
+        "commands": [
+            "grintion-disk health",
+            "grintion-service list",
+            "grintion-timer list",
+            "grintion-logs errors --strict",
+            "grintion-netdiag summary",
+            "grintion-firewall list",
+        ],
+    },
 ]
 
 
 def print_stop(stop: dict) -> None:
-    print(f"\n[{stop['step']}/6] {stop['title'].upper()}")
+    print(f"\n[{stop['step']}/{len(STATION_STOPS)}] {stop['title'].upper()}")
     print("-" * 50)
     print(stop["description"])
     print("\nKey Tools to Try:")
@@ -62,7 +75,8 @@ def main() -> int:
         prog="grintion-tour",
         description="Interactive onboarding tour for Grintion-OS.",
     )
-    parser.add_argument("--step", type=int, choices=range(1, 7), help="View specific tour step")
+    parser.add_argument("--step", type=int, choices=range(1, len(STATION_STOPS) + 1),
+                        help="View specific tour step")
     parser.add_argument("--json", action="store_true", help="Output all stops in JSON")
     args = parser.parse_args()
 

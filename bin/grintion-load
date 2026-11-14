@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""grintion-load - load average, CPU, memory, pressure and process snapshots.
+
+Subcommands:
+  show       load average, live CPU/memory percentages and pressure stall data
+  top        processes ranked by CPU or resident memory over a short sample
+  psi        Linux pressure stall information for cpu, memory and io
+  threshold  exit nonzero when load, CPU or memory crosses a limit
+
+CPU figures come from two /proc/stat samples, so `show` and `top` take
+--interval seconds (default 0.25). Process CPU is a share of one core while the
+sample ran, which is what top reports.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from pathlib import Path
+
+HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+
+
+def read_text(path: str, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def load_average() -> dict:
+    fields = read_text("/proc/loadavg", "0 0 0 0/0 0").split()
+    try:
+        return {
+            "load1": float(fields[0]),
+            "load5": float(fields[1]),
+            "load15": float(fields[2]),
+            "runnable": fields[3],
+        }
+    except (IndexError, ValueError):
+        return {"load1": 0.0, "load5": 0.0, "load15": 0.0, "runnable": "?"}
+
+
+def cpu_times() -> dict[str, int]:
+    values = {"user": 0, "nice": 0, "system": 0, "idle": 0, "iowait": 0,
+              "irq": 0, "softirq": 0, "steal": 0}
+    fields = read_text("/proc/stat").splitlines()
+    if not fields or not fields[0].startswith("cpu "):
+        return values
+    parts = fields[0].split()[1:]
+    for index, key in enumerate(values):
+        try:
+            values[key] = int(parts[index])
+        except (IndexError, ValueError):
+            pass
+    return values
+
+
+def cpu_percent(interval: float) -> dict:
+    first = cpu_times()
+    time.sleep(max(interval, 0.0))
+    second = cpu_times()
+    deltas = {key: second[key] - first[key] for key in first}
+    total = sum(deltas.values())
+    if total <= 0:
+        return {"percent": 0.0, "busy": 0, "total": 0,
+                "iowait_percent": 0.0, "steal_percent": 0.0}
+    idle = deltas["idle"] + deltas["iowait"]
+    busy = total - idle
+    return {
+        "percent": round(busy / total * 100, 1),
+        "busy": busy,
+        "total": total,
+        "iowait_percent": round(deltas["iowait"] / total * 100, 1),
+        "steal_percent": round(deltas["steal"] / total * 100, 1),
+    }
+
+
+def memory() -> dict:
+    values = {}
+    for line in read_text("/proc/meminfo").splitlines():
+        key, _, rest = line.partition(":")
+        digits = rest.strip().split()[0] if rest.strip() else "0"
+        if digits.isdigit():
+            values[key] = int(digits) * 1024
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    used = max(total - available, 0)
+    swap_total = values.get("SwapTotal", 0)
+    swap_free = values.get("SwapFree", 0)
+    return {
+        "total_bytes": total,
+        "available_bytes": available,
+        "used_bytes": used,
+        "used_percent": round(used / total * 100, 1) if total else 0.0,
+        "swap_total_bytes": swap_total,
+        "swap_used_bytes": max(swap_total - swap_free, 0),
+        "cache_bytes": values.get("Cached", 0),
+        "dirty_bytes": values.get("Dirty", 0),
+    }
+
+
+def pressure() -> dict:
+    resources = {}
+    for name in ("cpu", "memory", "io"):
+        path = Path("/proc/pressure") / name
+        entry = {}
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            kind = fields[0]
+            values = {}
+            for field in fields[1:]:
+                key, _, value = field.partition("=")
+                try:
+                    values[key] = float(value)
+                except ValueError:
+                    values[key] = value
+            entry[kind] = values
+        if entry:
+            resources[name] = entry
+    return resources
+
+
+def process_count() -> int:
+    return sum(1 for entry in Path("/proc").iterdir()
+               if entry.name.isdigit())
+
+
+def context_switches() -> dict:
+    values = {}
+    for line in read_text("/proc/stat").splitlines():
+        if line.startswith(("ctxt ", "processes ", "procs_running ", "procs_blocked ")):
+            key, _, value = line.partition(" ")
+            values[key.strip()] = int(value) if value.strip().isdigit() else 0
+    return values
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    payload = {
+        "schema": 1,
+        "uptime_seconds": float(read_text("/proc/uptime", "0").split()[0] or 0),
+        "load": load_average(),
+        "cpu": cpu_percent(args.interval),
+        "memory": memory(),
+        "pressure": pressure(),
+        "processes": process_count(),
+        "context": context_switches(),
+        "kernel_tainted": int(read_text("/proc/sys/kernel/tainted", "0") or 0),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    load = payload["load"]
+    cpu = payload["cpu"]
+    mem = payload["memory"]
+    hours = int(payload["uptime_seconds"] // 3600)
+    print(f"uptime {hours}h  load {load['load1']:.2f} {load['load5']:.2f} "
+          f"{load['load15']:.2f}  ({load['runnable']} runnable)")
+    print(f"cpu {cpu['percent']:.1f}%  iowait {cpu['iowait_percent']:.1f}%  "
+          f"steal {cpu['steal_percent']:.1f}%")
+    print(f"memory {mem['used_percent']:.1f}% of {mem['total_bytes'] // (1024 ** 2)} MiB  "
+          f"swap {mem['swap_used_bytes'] // (1024 ** 2)} MiB")
+    for resource, entry in payload["pressure"].items():
+        some = entry.get("some") or entry.get("full") or {}
+        print(f"pressure {resource:<7} avg10 {some.get('avg10', '-')}%  "
+              f"avg60 {some.get('avg60', '-')}%  total {some.get('total', '-')}us")
+    print(f"processes {payload['processes']}  "
+          f"ctx switches {payload['context'].get('ctxt', 0)}")
+    if payload["kernel_tainted"]:
+        print(f"kernel tainted: {payload['kernel_tainted']}")
+    return 0
+
+
+def snapshot_processes() -> dict[int, dict]:
+    result = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat_fields = (entry / "stat").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        closing = stat_fields.rfind(")")
+        if closing < 0:
+            continue
+        name = stat_fields[stat_fields.find("(") + 1:closing]
+        parts = stat_fields[closing + 2:].split()
+        try:
+            utime, stime = int(parts[11]), int(parts[12])
+        except (IndexError, ValueError):
+            continue
+        rss = 0
+        try:
+            rss = int((entry / "statm").read_text(encoding="utf-8").split()[1]) * PAGE
+        except (OSError, IndexError, ValueError):
+            pass
+        user = ""
+        try:
+            user = entry.owner()
+        except (KeyError, OSError):
+            pass
+        result[int(entry.name)] = {"pid": int(entry.name), "name": name,
+                                   "ticks": utime + stime, "rss_bytes": rss,
+                                   "user": user}
+    return result
+
+
+def cmd_top(args: argparse.Namespace) -> int:
+    first = snapshot_processes()
+    time.sleep(max(args.interval, 0.05))
+    second = snapshot_processes()
+    processes = []
+    for pid, now in second.items():
+        before = first.get(pid)
+        if not before:
+            continue
+        delta = max(now["ticks"] - before["ticks"], 0)
+        processes.append({
+            "pid": pid,
+            "name": now["name"],
+            "user": now["user"],
+            "cpu_percent": round(delta / HZ / args.interval * 100, 1),
+            "rss_bytes": now["rss_bytes"],
+            "rss_mib": round(now["rss_bytes"] / (1024 ** 2), 1),
+        })
+    key = "rss_bytes" if args.by == "mem" else "cpu_percent"
+    processes.sort(key=lambda item: item[key], reverse=True)
+    processes = processes[:args.count]
+    if args.json:
+        print(json.dumps({"schema": 1, "interval_seconds": args.interval,
+                          "sorted_by": args.by, "processes": processes}, indent=2))
+        return 0
+    print(f"{'PID':>7} {'CPU%':>6} {'RSS MiB':>8} {'USER':<12} COMMAND")
+    for process in processes:
+        print(f"{process['pid']:>7} {process['cpu_percent']:>6.1f} "
+              f"{process['rss_mib']:>8.1f} {process['user']:<12} {process['name']}")
+    return 0
+
+
+def cmd_psi(args: argparse.Namespace) -> int:
+    resources = pressure()
+    if args.json:
+        print(json.dumps({"schema": 1, "pressure": resources}, indent=2))
+        return 0
+    if not resources:
+        print("pressure stall information is not available in this kernel")
+        return 1
+    for resource, entry in resources.items():
+        for kind, values in entry.items():
+            print(f"{resource:<7} {kind:<5} avg10 {values.get('avg10', '-'):>6}%  "
+                  f"avg60 {values.get('avg60', '-'):>6}%  "
+                  f"avg300 {values.get('avg300', '-'):>6}%  "
+                  f"total {values.get('total', '-')}us")
+    return 0
+
+
+def cmd_threshold(args: argparse.Namespace) -> int:
+    load = load_average()
+    cpu = cpu_percent(args.interval)
+    mem = memory()
+    checks = {
+        "load1": (load["load1"], args.load, load["load1"] > args.load),
+        "cpu_percent": (cpu["percent"], args.cpu, cpu["percent"] > args.cpu),
+        "memory_percent": (mem["used_percent"], args.mem,
+                           mem["used_percent"] > args.mem),
+    }
+    exceeded = {name: values for name, values in checks.items() if values[2]}
+    payload = {"schema": 1, "checks": {
+        name: {"value": round(value, 1), "limit": limit, "exceeded": over}
+        for name, (value, limit, over) in checks.items()
+    }, "exceeded": list(exceeded)}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        for name, (value, limit, over) in checks.items():
+            print(f"{name:<15} {value:>8.1f} / {limit:<8} "
+                  f"{'EXCEEDED' if over else 'ok'}")
+    if exceeded and args.exit_code:
+        return 1
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-load",
+        description="Inspect system load, CPU, memory, pressure and processes.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--interval", type=float, default=0.25,
+                        help="sampling window in seconds (default 0.25)")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("show", parents=[common], help="load snapshot"
+                   ).set_defaults(func=cmd_show)
+    sub.add_parser("psi", parents=[common], help="pressure stall information"
+                   ).set_defaults(func=cmd_psi)
+
+    p_top = sub.add_parser("top", parents=[common], help="busiest processes")
+    p_top.add_argument("--by", choices=("cpu", "mem"), default="cpu")
+    p_top.add_argument("-n", "--count", type=int, default=10)
+    p_top.set_defaults(func=cmd_top)
+
+    p_threshold = sub.add_parser("threshold", parents=[common],
+                                 help="check limits and optionally fail")
+    p_threshold.add_argument("--load", type=float, default=8.0)
+    p_threshold.add_argument("--cpu", type=float, default=90.0)
+    p_threshold.add_argument("--mem", type=float, default=90.0)
+    p_threshold.add_argument("--exit-code", action="store_true",
+                             help="exit 1 when a limit is exceeded")
+    p_threshold.set_defaults(func=cmd_threshold)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    if args.interval < 0:
+        parser.error("--interval must not be negative")
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

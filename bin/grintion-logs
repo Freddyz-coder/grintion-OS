@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""grintion-logs - inspect, search and rotate the logs under /var/log.
+
+Subcommands:
+  list      files with size, age and rotation state
+  stats     totals, largest files and the busiest journal
+  tail      last lines of one log (--follow to keep reading)
+  grep      regex search across logs with file:line output
+  errors    severity scan with per-file counts and samples
+  rotate    size-based copytruncate rotation that keeps writers working
+  clear     truncate one log in place
+
+Rotation is copytruncate because runit services open their log with
+`exec >>file`: renaming the file would leave them writing to the old inode and
+the new log would stay empty until the service restarts.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+SEVERITY = re.compile(
+    r"(?i)\b(error|errors|failed|failure|fatal|panic|critical|denied|refused|"
+    r"out of memory|oom-kill|segfault|traceback)\b"
+)
+ROTATED = re.compile(r"\.\d+$|\.(gz|xz|zst|bz2)$")
+MAX_SCAN_BYTES = 8 * 1024 * 1024
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def log_dir() -> Path:
+    override = os.environ.get("GRINTION_LOG_DIR")
+    return Path(override) if override else root_path("/var/log")
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT") or os.environ.get("GRINTION_LOG_DIR"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-logs: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def human_bytes(value: float) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if abs(size) < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value:.0f} B"
+
+
+def log_files() -> list[Path]:
+    directory = log_dir()
+    files: list[Path] = []
+    if not directory.is_dir():
+        return files
+    for entry in directory.rglob("*"):
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                files.append(entry)
+        except OSError:
+            continue
+    return sorted(files)
+
+
+def describe(path: Path) -> dict:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        return {"path": str(path), "error": str(exc)}
+    return {
+        "path": str(path),
+        "name": path.name,
+        "size_bytes": stat.st_size,
+        "modified_epoch": int(stat.st_mtime),
+        "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+        "age_hours": round((time.time() - stat.st_mtime) / 3600, 1),
+        "rotated": bool(ROTATED.search(path.name)),
+        "readable": os.access(path, os.R_OK),
+    }
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    entries = [describe(path) for path in log_files()]
+    if args.name:
+        entries = [entry for entry in entries
+                   if fnmatch.fnmatch(entry["name"], args.name)]
+    entries.sort(key=lambda entry: entry.get("modified_epoch", 0), reverse=True)
+    entries = entries[:args.top]
+    if args.json:
+        print(json.dumps({"schema": 1, "log_dir": str(log_dir()),
+                          "count": len(entries), "files": entries}, indent=2))
+        return 0
+    print(f"{'SIZE':>10} {'MODIFIED':<20} {'AGE':>7}  FILE")
+    for entry in entries:
+        print(f"{human_bytes(entry['size_bytes']):>10} {entry['modified']:<20} "
+              f"{entry['age_hours']:>6.1f}h  {entry['path']}")
+    if not entries:
+        print(f"no files under {log_dir()}")
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    entries = [describe(path) for path in log_files()]
+    total = sum(entry.get("size_bytes", 0) for entry in entries)
+    largest = sorted(entries, key=lambda entry: entry.get("size_bytes", 0), reverse=True)
+    payload = {
+        "schema": 1,
+        "log_dir": str(log_dir()),
+        "files": len(entries),
+        "total_bytes": total,
+        "largest": largest[:args.top],
+        "oldest": min(entries, key=lambda entry: entry.get("modified_epoch", 0),
+                      default=None),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"{len(entries)} files, {human_bytes(total)} under {log_dir()}")
+    for entry in largest[:args.top]:
+        print(f"  {human_bytes(entry.get('size_bytes', 0)):>10}  {entry['path']}")
+    return 0
+
+
+def within_log_dir(path: Path) -> bool:
+    try:
+        root = str(log_dir().resolve()) + os.sep
+        return str(path.resolve()).startswith(root)
+    except OSError:
+        return False
+
+
+def resolve_log(name: str) -> Path | None:
+    candidate = Path(name)
+    if candidate.is_absolute() or "/" in name:
+        for option in (candidate, root_path(name)):
+            if option.is_file() and within_log_dir(option):
+                return option
+        if candidate.is_file() or root_path(name).is_file():
+            print(f"grintion-logs: refusing to touch {name}; it is outside {log_dir()}",
+                  file=sys.stderr)
+        return None
+    options = [
+        log_dir() / name,
+        log_dir() / f"{name}.log",
+        log_dir() / name / "current",
+    ]
+    matches = [path for path in options if path.is_file()]
+    if len(matches) > 1:
+        # A service log directory and a .log file both exist; prefer the
+        # explicit .log file, which is what these tools write.
+        preferred = log_dir() / f"{name}.log"
+        if preferred in matches:
+            return preferred
+    return matches[0] if matches else None
+
+
+def cmd_tail(args: argparse.Namespace) -> int:
+    path = resolve_log(args.name)
+    if path is None:
+        print(f"grintion-logs: no log named {args.name!r} under {log_dir()}",
+              file=sys.stderr)
+        return 1
+    if args.follow:
+        os.execvp("tail", ["tail", "-n", str(args.lines), "-f", str(path)])
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError as exc:
+        print(f"grintion-logs: cannot read {path}: {exc}", file=sys.stderr)
+        return 2
+    tail = [line.rstrip("\n") for line in lines[-args.lines:]]
+    if args.json:
+        print(json.dumps({"schema": 1, "path": str(path), "lines": tail}, indent=2))
+    else:
+        for line in tail:
+            print(line)
+    return 0
+
+
+def iter_text(path: Path):
+    try:
+        if path.stat().st_size > MAX_SCAN_BYTES:
+            with path.open("rb") as handle:
+                handle.seek(-MAX_SCAN_BYTES, os.SEEK_END)
+                text = handle.read().decode("utf-8", errors="replace")
+        else:
+            text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    for number, line in enumerate(text.splitlines(), 1):
+        yield number, line
+
+
+def cmd_grep(args: argparse.Namespace) -> int:
+    try:
+        pattern = re.compile(args.pattern, re.IGNORECASE if args.ignore_case else 0)
+    except re.error as exc:
+        print(f"grintion-logs: invalid pattern: {exc}", file=sys.stderr)
+        return 2
+    matches = []
+    total = 0
+    for path in log_files():
+        if args.name and not fnmatch.fnmatch(path.name, args.name):
+            continue
+        if not os.access(path, os.R_OK):
+            continue
+        found = 0
+        for number, line in iter_text(path):
+            if pattern.search(line):
+                matches.append({"path": str(path), "line": number,
+                                "text": line[:500]})
+                found += 1
+                total += 1
+                if found >= args.max_per_file or total >= args.max_total:
+                    break
+        if total >= args.max_total:
+            break
+    if args.json:
+        print(json.dumps({"schema": 1, "pattern": args.pattern,
+                          "matches": matches}, indent=2))
+        return 0 if matches else 1
+    for match in matches:
+        print(f"{match['path']}:{match['line']}: {match['text']}")
+    if not matches:
+        print(f"no matches for {args.pattern!r}", file=sys.stderr)
+    return 0 if matches else 1
+
+
+def cmd_errors(args: argparse.Namespace) -> int:
+    reports = []
+    for path in log_files():
+        if ROTATED.search(path.name) and path.suffix in (".gz", ".xz", ".zst", ".bz2"):
+            continue
+        if not os.access(path, os.R_OK):
+            continue
+        count = 0
+        samples = []
+        for number, line in iter_text(path):
+            if SEVERITY.search(line):
+                count += 1
+                if len(samples) < args.samples:
+                    samples.append({"line": number, "text": line[:300]})
+        if count:
+            reports.append({"path": str(path), "count": count, "samples": samples})
+    reports.sort(key=lambda report: report["count"], reverse=True)
+    total = sum(report["count"] for report in reports)
+    if args.json:
+        print(json.dumps({"schema": 1, "total": total, "files": reports}, indent=2))
+        return 1 if total and args.strict else 0
+    if not reports:
+        print("no error-like lines found")
+        return 0
+    print(f"{total} error-like line(s) in {len(reports)} file(s)")
+    for report in reports:
+        print(f"\n{report['path']} ({report['count']})")
+        for sample in report["samples"]:
+            print(f"  {sample['line']}: {sample['text']}")
+    return 1 if args.strict else 0
+
+
+def cmd_rotate(args: argparse.Namespace) -> int:
+    if not require_root("rotating logs", args.dry_run):
+        return 2
+    candidates = [path for path in log_files()
+                  if not ROTATED.search(path.name)]
+    actions = []
+    for path in candidates:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size < args.max_size:
+            continue
+        actions.append({"path": str(path), "size_bytes": size})
+        if args.dry_run:
+            continue
+        if not os.access(path, os.W_OK):
+            print(f"grintion-logs: {path} is not writable; skipping", file=sys.stderr)
+            continue
+        for index in range(args.keep, 0, -1):
+            source = path.with_name(f"{path.name}.{index}")
+            destination = path.with_name(f"{path.name}.{index + 1}")
+            if index == args.keep and source.exists():
+                source.unlink()
+            elif source.exists():
+                os.replace(source, destination)
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".1"))
+            with path.open("r+", encoding="utf-8") as handle:
+                handle.truncate(0)
+        except OSError as exc:
+            print(f"grintion-logs: rotation failed for {path}: {exc}", file=sys.stderr)
+    if args.json:
+        print(json.dumps({"schema": 1, "dry_run": args.dry_run,
+                          "max_size": args.max_size, "rotated": actions}, indent=2))
+    elif not actions:
+        print(f"no log is at or above {human_bytes(args.max_size)}")
+    else:
+        verb = "would rotate" if args.dry_run else "rotated"
+        for action in actions:
+            print(f"{verb} {action['path']} ({human_bytes(action['size_bytes'])})")
+    return 0
+
+
+def cmd_clear(args: argparse.Namespace) -> int:
+    path = resolve_log(args.name)
+    if path is None:
+        print(f"grintion-logs: no log named {args.name!r}", file=sys.stderr)
+        return 1
+    if not require_root("clearing a log", args.dry_run):
+        return 2
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "path": str(path)},
+                             indent=2))
+        else:
+            print(f"would truncate {path}")
+        return 0
+    try:
+        with path.open("r+", encoding="utf-8") as handle:
+            handle.truncate(0)
+    except OSError as exc:
+        print(f"grintion-logs: cannot clear {path}: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "path": str(path), "cleared": True}, indent=2))
+    else:
+        print(f"cleared {path}")
+    return 0
+
+
+def parse_size(text: str) -> int:
+    text = text.strip().upper()
+    factors = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+    if text and text[-1] in factors and text[:-1].isdigit():
+        return int(text[:-1]) * factors[text[-1]]
+    if text.isdigit():
+        return int(text)
+    raise argparse.ArgumentTypeError(f"invalid size: {text}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-logs",
+        description="Inspect, search and rotate /var/log.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+
+    p_list = sub.add_parser("list", parents=[common], help="list log files")
+    p_list.add_argument("--name", help="glob on the file name")
+    p_list.add_argument("--top", type=int, default=30)
+    p_list.set_defaults(func=cmd_list)
+
+    p_stats = sub.add_parser("stats", parents=[common], help="log volume summary")
+    p_stats.add_argument("--top", type=int, default=10)
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_tail = sub.add_parser("tail", parents=[common], help="tail one log")
+    p_tail.add_argument("name")
+    p_tail.add_argument("-n", "--lines", type=int, default=40)
+    p_tail.add_argument("--follow", action="store_true")
+    p_tail.set_defaults(func=cmd_tail)
+
+    p_grep = sub.add_parser("grep", parents=[common], help="search logs")
+    p_grep.add_argument("pattern")
+    p_grep.add_argument("--name", help="glob on the file name")
+    p_grep.add_argument("-i", "--ignore-case", action="store_true")
+    p_grep.add_argument("--max-per-file", type=int, default=20)
+    p_grep.add_argument("--max-total", type=int, default=200)
+    p_grep.set_defaults(func=cmd_grep)
+
+    p_errors = sub.add_parser("errors", parents=[common], help="severity scan")
+    p_errors.add_argument("--samples", type=int, default=3)
+    p_errors.add_argument("--strict", action="store_true",
+                          help="exit 1 when error-like lines exist")
+    p_errors.set_defaults(func=cmd_errors)
+
+    p_rotate = sub.add_parser("rotate", parents=[common], help="rotate large logs")
+    p_rotate.add_argument("--max-size", type=parse_size, default=10 * 1024 * 1024)
+    p_rotate.add_argument("--keep", type=int, default=5)
+    p_rotate.add_argument("--dry-run", action="store_true")
+    p_rotate.set_defaults(func=cmd_rotate)
+
+    p_clear = sub.add_parser("clear", parents=[common], help="truncate one log")
+    p_clear.add_argument("name")
+    p_clear.add_argument("--dry-run", action="store_true")
+    p_clear.set_defaults(func=cmd_clear)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""grintion-mount - mount, unmount and persist filesystems safely.
+
+Subcommands:
+  list      active mounts from /proc/self/mountinfo (filters included)
+  add       create a mountpoint, add an /etc/fstab entry and mount it
+  remove    drop an /etc/fstab entry (refuses live or critical mounts)
+  mount     mount a target that is already described in /etc/fstab
+  umount    unmount a target (--lazy / --force available)
+  remount   switch a mount between read-only and read-write
+
+Mutating commands require root; with GRINTION_ROOT set they operate inside
+that tree, which is how the test suite exercises them without a VM.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CRITICAL = {
+    "/", "/boot", "/boot/efi", "/usr", "/var", "/home", "/proc", "/sys",
+    "/dev", "/run", "/tmp", "/etc", "/var/log",
+}
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def fstab_path(args: argparse.Namespace) -> Path:
+    if getattr(args, "fstab", None):
+        return Path(args.fstab)
+    override = os.environ.get("GRINTION_FSTAB")
+    if override:
+        return Path(override)
+    return root_path("/etc/fstab")
+
+
+def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def unescape(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+
+
+def escape_field(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(" ", "\\040").replace("\t", "\\011")
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-mount: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def mounts() -> list[dict]:
+    entries: list[dict] = []
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return entries
+    for line in lines:
+        left, sep, right = line.partition(" - ")
+        fields = left.split()
+        if not sep or len(fields) < 6:
+            continue
+        tail = right.split()
+        entries.append({
+            "mountpoint": unescape(fields[4]),
+            "options": fields[5],
+            "optional": fields[6:] if len(fields) > 6 else [],
+            "source": tail[1] if len(tail) > 1 else "",
+            "fstype": tail[0] if tail else "",
+            "super_options": tail[2] if len(tail) > 2 else "",
+        })
+    return entries
+
+
+def is_mounted(target: str) -> bool:
+    return any(entry["mountpoint"] == target for entry in mounts())
+
+
+def read_fstab(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise SystemExit(f"grintion-mount: cannot read {path}: {exc}")
+
+
+def write_fstab(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".fstab.", delete=False) as handle:
+        handle.write("\n".join(lines) + "\n")
+        temporary = handle.name
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def fstab_targets(lines: list[str]) -> dict[str, int]:
+    targets: dict[str, int] = {}
+    for number, raw in enumerate(lines, 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) > 1:
+            targets.setdefault(unescape(fields[1]), number)
+    return targets
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    entries = mounts()
+    if args.fstype:
+        entries = [e for e in entries if e["fstype"] == args.fstype]
+    if args.source:
+        entries = [e for e in entries if args.source in e["source"]]
+    if args.mounted:
+        entries = [e for e in entries if e["mountpoint"] == args.mounted]
+
+    if args.json:
+        print(json.dumps({"schema": 1, "mounts": entries}, indent=2))
+        return 0
+    print(f"{'TARGET':<30} {'FSTYPE':<10} {'SOURCE':<28} OPTIONS")
+    for entry in entries:
+        print(f"{entry['mountpoint']:<30} {entry['fstype']:<10} {entry['source']:<28} "
+              f"{entry['options']}")
+    return 0
+
+
+def detect_fstype(source: str) -> str:
+    blkid = shutil.which("blkid")
+    if blkid:
+        result = run([blkid, "-o", "value", "-s", "TYPE", source], timeout=10)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()[0]
+    return "auto"
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    source = args.source
+    target = args.target
+    if not target.startswith("/"):
+        print("grintion-mount: target must be an absolute path", file=sys.stderr)
+        return 2
+    if target in CRITICAL and not args.force:
+        print(f"grintion-mount: refusing to manage {target}; override with --force",
+              file=sys.stderr)
+        return 2
+    if not require_root("adding a mount", args.dry_run):
+        return 2
+
+    path = fstab_path(args)
+    lines = read_fstab(path)
+    known = fstab_targets(lines)
+    if target in known and not args.force:
+        print(f"grintion-mount: {target} already has an fstab entry on line {known[target]}",
+              file=sys.stderr)
+        return 1
+    if is_mounted(target) and not args.force:
+        print(f"grintion-mount: {target} is already mounted", file=sys.stderr)
+        return 1
+
+    fstype = args.fstype or detect_fstype(source)
+    options = args.options or "defaults"
+    entry = "\t".join([
+        escape_field(source), escape_field(target), fstype, options,
+        str(args.dump), str(args.passno),
+    ])
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "fstab": str(path),
+                              "entry": entry, "mount": not args.no_mount}, indent=2))
+        else:
+            print(f"would append to {path}: {entry}")
+            if not args.no_mount:
+                print(f"would mount {target}")
+        return 0
+
+    if not args.no_mkdir:
+        try:
+            root_path(target).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"grintion-mount: cannot create {target}: {exc}", file=sys.stderr)
+            return 2
+
+    if target in known and args.force:
+        lines = [
+            line for number, line in enumerate(lines, 1)
+            if number != known[target]
+        ]
+    lines.append(entry)
+    write_fstab(path, lines)
+    mounted = False
+    if not args.no_mount:
+        result = run(["mount", target], timeout=60)
+        if result.returncode != 0:
+            lines = [line for line in lines if line != entry]
+            write_fstab(path, lines)
+            print(f"grintion-mount: mount failed, entry rolled back: "
+                  f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+            return 1
+        mounted = True
+    if args.json:
+        print(json.dumps({"schema": 1, "fstab": str(path), "entry": entry,
+                          "mounted": mounted}, indent=2))
+    else:
+        print(f"added {target} ({fstype}) to {path}")
+        if mounted:
+            print(f"mounted {target}")
+    return 0
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    target = args.target
+    if target in CRITICAL and not args.force:
+        print(f"grintion-mount: refusing to remove the fstab entry for {target}; "
+              "override with --force", file=sys.stderr)
+        return 2
+    if is_mounted(target) and not args.force:
+        print(f"grintion-mount: {target} is mounted; unmount it first or use --force",
+              file=sys.stderr)
+        return 1
+    if not require_root("removing a mount", args.dry_run):
+        return 2
+
+    path = fstab_path(args)
+    lines = read_fstab(path)
+    kept = []
+    removed = 0
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            fields = stripped.split()
+            if len(fields) > 1 and unescape(fields[1]) == target:
+                removed += 1
+                continue
+        kept.append(raw)
+    if removed == 0:
+        print(f"grintion-mount: no fstab entry for {target}", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "target": target,
+                              "removed": removed}, indent=2))
+        else:
+            print(f"would remove {removed} entr{'y' if removed == 1 else 'ies'} for {target}")
+        return 0
+    write_fstab(path, kept)
+    if args.json:
+        print(json.dumps({"schema": 1, "target": target, "removed": removed}, indent=2))
+    else:
+        print(f"removed {removed} fstab entr{'y' if removed == 1 else 'ies'} for {target}")
+    return 0
+
+
+def cmd_mount(args: argparse.Namespace) -> int:
+    target = args.target
+    if not is_mounted(target):
+        known = fstab_targets(read_fstab(fstab_path(args)))
+        if target not in known:
+            print(f"grintion-mount: {target} has no fstab entry; add one with "
+                  "'grintion-mount add'", file=sys.stderr)
+            return 1
+    if not require_root("mounting", args.dry_run):
+        return 2
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "target": target}, indent=2))
+        else:
+            print(f"would mount {target}")
+        return 0
+    result = run(["mount", target], timeout=60)
+    if result.returncode != 0:
+        print(f"grintion-mount: mount failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "target": target, "mounted": True}, indent=2))
+    else:
+        print(f"mounted {target}")
+    return 0
+
+
+def cmd_umount(args: argparse.Namespace) -> int:
+    target = args.target
+    if target in CRITICAL and not args.force:
+        print(f"grintion-mount: refusing to unmount {target}", file=sys.stderr)
+        return 2
+    if not is_mounted(target):
+        print(f"grintion-mount: {target} is not mounted", file=sys.stderr)
+        return 1
+    if not require_root("unmounting", args.dry_run):
+        return 2
+    command = ["umount"]
+    if args.lazy:
+        command.append("-l")
+    if args.force:
+        command.append("-f")
+    command.append(target)
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "target": target,
+                              "command": command}, indent=2))
+        else:
+            print(f"would run: {' '.join(command)}")
+        return 0
+    result = run(command, timeout=60)
+    if result.returncode != 0:
+        busy = run(["lsof", "+f", "--", target], timeout=15)
+        holders = busy.stdout.strip().splitlines()[:5] if busy.returncode == 0 else []
+        print(f"grintion-mount: unmount failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        if holders:
+            print("processes holding files there:", file=sys.stderr)
+            for holder in holders:
+                print(f"  {holder}", file=sys.stderr)
+        print("try --force or --lazy, or stop the service using the mount", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "target": target, "mounted": False}, indent=2))
+    else:
+        print(f"unmounted {target}")
+    return 0
+
+
+def cmd_remount(args: argparse.Namespace) -> int:
+    target = args.target
+    if not is_mounted(target):
+        print(f"grintion-mount: {target} is not mounted", file=sys.stderr)
+        return 1
+    if not require_root("remounting", args.dry_run):
+        return 2
+    mode = "ro" if args.read_only else "rw"
+    options = args.options or f"remount,{mode}"
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "target": target,
+                              "options": options}, indent=2))
+        else:
+            print(f"would remount {target} with {options}")
+        return 0
+    result = run(["mount", "-o", options, target], timeout=60)
+    if result.returncode != 0:
+        print(f"grintion-mount: remount failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "target": target, "options": options}, indent=2))
+    else:
+        print(f"remounted {target} ({mode})")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-mount",
+        description="Mount, unmount and persist filesystems with /etc/fstab.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--fstab", help="alternate fstab file")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    common.add_argument("--force", action="store_true", help="override safety refusals")
+    sub = parser.add_subparsers(dest="command")
+
+    p_list = sub.add_parser("list", parents=[common], help="show active mounts")
+    p_list.add_argument("--fstype", help="only this filesystem type")
+    p_list.add_argument("--source", help="only sources containing this text")
+    p_list.add_argument("--mounted", help="only this mountpoint")
+    p_list.set_defaults(func=cmd_list)
+
+    p_add = sub.add_parser("add", parents=[common], help="add and mount an fstab entry")
+    p_add.add_argument("source", help="device, UUID=, LABEL= or server path")
+    p_add.add_argument("target", help="absolute mountpoint")
+    p_add.add_argument("--fstype", help="filesystem type (default: probe with blkid)")
+    p_add.add_argument("--options", help="mount options (default: defaults)")
+    p_add.add_argument("--dump", type=int, default=0, choices=(0, 1))
+    p_add.add_argument("--passno", type=int, default=2, choices=(0, 1, 2))
+    p_add.add_argument("--no-mount", action="store_true", help="write fstab only")
+    p_add.add_argument("--no-mkdir", action="store_true", help="do not create the target")
+    p_add.set_defaults(func=cmd_add)
+
+    p_remove = sub.add_parser("remove", parents=[common], help="drop an fstab entry")
+    p_remove.add_argument("target")
+    p_remove.set_defaults(func=cmd_remove)
+
+    p_mount = sub.add_parser("mount", parents=[common], help="mount an fstab target")
+    p_mount.add_argument("target")
+    p_mount.set_defaults(func=cmd_mount)
+
+    p_umount = sub.add_parser("umount", parents=[common], help="unmount a target")
+    p_umount.add_argument("target")
+    p_umount.add_argument("--lazy", action="store_true", help="detach now, clean up later")
+    p_umount.set_defaults(func=cmd_umount)
+
+    p_remount = sub.add_parser("remount", parents=[common], help="switch ro/rw")
+    p_remount.add_argument("target")
+    mode = p_remount.add_mutually_exclusive_group()
+    mode.add_argument("--ro", "--read-only", dest="read_only", action="store_true")
+    mode.add_argument("--rw", "--read-write", dest="read_only", action="store_false")
+    p_remount.set_defaults(read_only=True)
+    p_remount.add_argument("--options", help="explicit remount options")
+    p_remount.set_defaults(func=cmd_remount)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

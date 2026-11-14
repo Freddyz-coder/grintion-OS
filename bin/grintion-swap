@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+"""grintion-swap - swap and zram management without systemd.
+
+Subcommands:
+  status       swap devices, zram devices, swappiness and persistence state
+  add-file     create a swap file, mkswap it, enable and persist it
+  add-partition enable a swap partition and persist it by UUID
+  remove       disable a swap target and drop its fstab entry
+  swappiness   show or set vm.swappiness (runtime and persistent)
+
+Destructive steps are opt-in (`--delete-file`, `--force`) and every mutating
+command supports --dry-run.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SWAP_SYSCTL = "/etc/sysctl.d/90-grintion-swap.conf"
+MEBIBYTE = 1024 * 1024
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def human_bytes(value: float) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if abs(size) < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value:.0f} B"
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-swap: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def meminfo() -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            key, _, rest = line.partition(":")
+            digits = rest.strip().split()[0] if rest.strip() else "0"
+            if digits.isdigit():
+                values[key] = int(digits) * 1024
+    except OSError:
+        pass
+    return values
+
+
+def active_swaps() -> list[dict]:
+    swaps: list[dict] = []
+    try:
+        lines = Path("/proc/swaps").read_text(encoding="utf-8").splitlines()[1:]
+    except OSError:
+        return swaps
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        swaps.append({
+            "filename": fields[0],
+            "type": fields[1],
+            "size_bytes": int(fields[2]) * 1024,
+            "used_bytes": int(fields[3]) * 1024,
+            "priority": int(fields[4]) if fields[4].lstrip("-").isdigit() else 0,
+        })
+    return swaps
+
+
+def read_text(path: object, default: str = "") -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def zram_devices() -> list[dict]:
+    devices = []
+    for directory in sorted(Path("/sys/block").glob("zram*")):
+        disksize = read_text(directory / "disksize", "0")
+        used = read_text(directory / "mem_used_total", "0")
+        devices.append({
+            "device": f"/dev/{directory.name}",
+            "disksize_bytes": int(disksize) if disksize.isdigit() else 0,
+            "mem_used_bytes": int(used) if used.isdigit() else 0,
+            "algorithm": read_text(directory / "comp_algorithm"),
+            "active": any(
+                swap["filename"] == f"/dev/{directory.name}" for swap in active_swaps()
+            ),
+        })
+    return devices
+
+
+def swappiness() -> int:
+    value = read_text("/proc/sys/vm/swappiness", "60")
+    return int(value) if value.isdigit() else 60
+
+
+def fstab_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def write_fstab(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".fstab.", delete=False) as handle:
+        handle.write("\n".join(lines) + "\n")
+        temporary = handle.name
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def fstab_swap_targets(lines: list[str]) -> list[int]:
+    numbers = []
+    for number, raw in enumerate(lines, 1):
+        fields = raw.strip().split()
+        if len(fields) >= 3 and not raw.strip().startswith("#") and fields[2] == "swap":
+            numbers.append(number)
+    return numbers
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    memory = meminfo()
+    payload = {
+        "schema": 1,
+        "swaps": active_swaps(),
+        "zram": zram_devices(),
+        "swappiness": swappiness(),
+        "total_bytes": memory.get("SwapTotal", 0),
+        "free_bytes": memory.get("SwapFree", 0),
+        "cached_bytes": memory.get("SwapCached", 0),
+        "zram_service_enabled": root_path("/var/service/zram").is_symlink()
+        or root_path("/var/service/zram").exists(),
+        "fstab_entries": fstab_swap_targets(fstab_lines(root_path("/etc/fstab"))),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    total = payload["total_bytes"]
+    print(f"swap total: {human_bytes(total)}  free: {human_bytes(payload['free_bytes'])}  "
+          f"swappiness: {payload['swappiness']}")
+    if payload["swaps"]:
+        print(f"\n{'TARGET':<30} {'TYPE':<8} {'SIZE':>10} {'USED':>10} PRIO")
+        for swap in payload["swaps"]:
+            print(f"{swap['filename']:<30} {swap['type']:<8} "
+                  f"{human_bytes(swap['size_bytes']):>10} "
+                  f"{human_bytes(swap['used_bytes']):>10} {swap['priority']}")
+    else:
+        print("\nno active swap devices")
+    if payload["zram"]:
+        print("\nzram:")
+        for device in payload["zram"]:
+            state = "active" if device["active"] else "inactive"
+            print(f"  {device['device']} {human_bytes(device['disksize_bytes'])} "
+                  f"used {human_bytes(device['mem_used_bytes'])} "
+                  f"algo={device['algorithm'] or '-'} ({state})")
+    if not payload["zram_service_enabled"]:
+        print("\nzram service: disabled (enable with 'grintion-service enable zram')")
+    return 0
+
+
+def create_swapfile(path: Path, size_mib: int) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    size = size_mib * MEBIBYTE
+    try:
+        with open(path, "wb") as handle:
+            handle.truncate(size)
+            if hasattr(os, "posix_fallocate"):
+                os.posix_fallocate(handle.fileno(), 0, size)
+    except OSError as exc:
+        return str(exc)
+    os.chmod(path, 0o600)
+    return ""
+
+
+def append_swap_entry(path: Path, source: str, priority: int | None) -> None:
+    options = "sw" if priority is None else f"sw,pri={priority}"
+    lines = fstab_lines(path)
+    lines.append(f"{source}\tnone\tswap\t{options}\t0\t0")
+    write_fstab(path, lines)
+
+
+def cmd_add_file(args: argparse.Namespace) -> int:
+    target = Path(args.path)
+    if not target.is_absolute():
+        print("grintion-swap: swap file path must be absolute", file=sys.stderr)
+        return 2
+    if args.size < 1:
+        print("grintion-swap: --size must be at least 1 MiB", file=sys.stderr)
+        return 2
+    if target.exists() and not args.force:
+        print(f"grintion-swap: {target} exists; use --force to overwrite", file=sys.stderr)
+        return 1
+    if not require_root("creating a swap file", args.dry_run):
+        return 2
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "path": str(target),
+                              "size_mib": args.size,
+                              "persist": not args.no_persist}, indent=2))
+        else:
+            print(f"would create {args.size} MiB swap file at {target}")
+            print(f"would run: mkswap {target}")
+            print(f"would run: swapon {target}")
+            if not args.no_persist:
+                print("would persist the entry in /etc/fstab")
+        return 0
+
+    error = create_swapfile(target, args.size)
+    if error:
+        print(f"grintion-swap: cannot create {target}: {error}", file=sys.stderr)
+        return 2
+    mkswap = run(["mkswap", str(target)], timeout=180)
+    if mkswap.returncode != 0:
+        print(f"grintion-swap: mkswap failed: "
+              f"{mkswap.stderr.strip() or mkswap.stdout.strip()}", file=sys.stderr)
+        return 1
+    command = ["swapon"]
+    if args.priority is not None:
+        command.extend(["-p", str(args.priority)])
+    command.append(str(target))
+    swapon = run(command, timeout=180)
+    if swapon.returncode != 0:
+        print(f"grintion-swap: swapon failed: "
+              f"{swapon.stderr.strip() or swapon.stdout.strip()}", file=sys.stderr)
+        return 1
+    if not args.no_persist:
+        append_swap_entry(root_path("/etc/fstab"), str(target), args.priority)
+    if args.json:
+        print(json.dumps({"schema": 1, "path": str(target), "size_mib": args.size,
+                          "persisted": not args.no_persist}, indent=2))
+    else:
+        print(f"enabled swap file {target}")
+        if not args.no_persist:
+            print("persisted in /etc/fstab")
+    return 0
+
+
+def cmd_add_partition(args: argparse.Namespace) -> int:
+    device = args.device
+    if not device.startswith("/dev/"):
+        print("grintion-swap: device must be a /dev path", file=sys.stderr)
+        return 2
+    if not root_path(device).exists() and not Path(device).exists() and not args.dry_run:
+        print(f"grintion-swap: {device} does not exist", file=sys.stderr)
+        return 2
+    if not require_root("enabling a swap partition", args.dry_run):
+        return 2
+
+    source = device
+    blkid = shutil.which("blkid")
+    if blkid:
+        probe = run([blkid, "-o", "value", "-s", "UUID", device], timeout=10)
+        if probe.returncode == 0 and probe.stdout.strip():
+            source = f"UUID={probe.stdout.strip().splitlines()[0]}"
+
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "device": device,
+                              "source": source,
+                              "persist": not args.no_persist}, indent=2))
+        else:
+            print(f"would run: mkswap {device}")
+            print(f"would run: swapon {device}")
+            if not args.no_persist:
+                print(f"would persist {source} in /etc/fstab")
+        return 0
+
+    mkswap = run(["mkswap", device], timeout=300)
+    if mkswap.returncode != 0:
+        print(f"grintion-swap: mkswap failed: "
+              f"{mkswap.stderr.strip() or mkswap.stdout.strip()}", file=sys.stderr)
+        return 1
+    swapon = run(["swapon", device], timeout=120)
+    if swapon.returncode != 0:
+        print(f"grintion-swap: swapon failed: "
+              f"{swapon.stderr.strip() or swapon.stdout.strip()}", file=sys.stderr)
+        return 1
+    if not args.no_persist:
+        append_swap_entry(root_path("/etc/fstab"), source, args.priority)
+    if args.json:
+        print(json.dumps({"schema": 1, "device": device, "source": source,
+                          "persisted": not args.no_persist}, indent=2))
+    else:
+        print(f"enabled swap partition {device}")
+        if not args.no_persist:
+            print(f"persisted {source} in /etc/fstab")
+    return 0
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    target = args.target
+    matches = [swap for swap in active_swaps()
+               if swap["filename"] == target
+               or (os.path.islink(swap["filename"])
+                   and os.path.realpath(swap["filename"]) == os.path.realpath(target))]
+    path = root_path("/etc/fstab")
+    real_target = os.path.realpath(target)
+    kept, removed = [], 0
+    for raw in fstab_lines(path):
+        fields = raw.strip().split()
+        if (len(fields) >= 3 and not raw.strip().startswith("#")
+                and fields[2] == "swap"
+                and (fields[0] == target
+                     or os.path.realpath(fields[0]) == real_target)):
+            removed += 1
+            continue
+        kept.append(raw)
+    if not matches and removed == 0:
+        print(f"grintion-swap: no active swap or fstab entry for {target}", file=sys.stderr)
+        return 1
+    if not require_root("disabling swap", args.dry_run):
+        return 2
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "target": target,
+                              "active": len(matches), "fstab_entries": removed},
+                             indent=2))
+        else:
+            if matches:
+                print(f"would run: swapoff {target}")
+            print(f"would remove {removed} fstab swap entr"
+                  f"{'y' if removed == 1 else 'ies'} for {target}")
+        return 0
+    for swap in matches:
+        swapoff = run(["swapoff", swap["filename"]], timeout=300)
+        if swapoff.returncode != 0:
+            print(f"grintion-swap: swapoff failed: "
+                  f"{swapoff.stderr.strip() or swapoff.stdout.strip()}", file=sys.stderr)
+            return 1
+    if removed:
+        write_fstab(path, kept)
+
+    deleted = False
+    if args.delete_file:
+        candidate = Path(target)
+        if candidate.is_file() and target.startswith(("/var/", "/swap", "/tmp/")):
+            candidate.unlink()
+            deleted = True
+        elif candidate.is_file():
+            print(f"grintion-swap: refusing to delete {target}; remove it manually",
+                  file=sys.stderr)
+    if args.json:
+        print(json.dumps({"schema": 1, "target": target,
+                          "disabled": len(matches), "fstab_entries": removed,
+                          "deleted": deleted}, indent=2))
+    else:
+        if matches:
+            print(f"disabled swap for {target}")
+        if removed:
+            print(f"removed {removed} fstab swap entr{'y' if removed == 1 else 'ies'}")
+        if deleted:
+            print(f"deleted {target}")
+    return 0
+
+
+def cmd_swappiness(args: argparse.Namespace) -> int:
+    if args.value is None:
+        if args.json:
+            print(json.dumps({"schema": 1, "swappiness": swappiness()}, indent=2))
+        else:
+            print(swappiness())
+        return 0
+    if not 0 <= args.value <= 200:
+        print("grintion-swap: swappiness must be between 0 and 200", file=sys.stderr)
+        return 2
+    if not require_root("changing swappiness", args.dry_run):
+        return 2
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True,
+                              "swappiness": args.value,
+                              "persist": not args.no_persist}, indent=2))
+        else:
+            print(f"would set vm.swappiness to {args.value} "
+                  f"and persist it in {SWAP_SYSCTL}")
+        return 0
+    try:
+        Path("/proc/sys/vm/swappiness").write_text(f"{args.value}\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"grintion-swap: cannot set runtime swappiness: {exc}", file=sys.stderr)
+        return 1
+    if not args.no_persist:
+        config = root_path(SWAP_SYSCTL)
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            "# Managed by grintion-swap\n"
+            f"vm.swappiness = {args.value}\n",
+            encoding="utf-8",
+        )
+    if args.json:
+        print(json.dumps({"schema": 1, "swappiness": args.value,
+                          "persisted": not args.no_persist}, indent=2))
+    elif args.no_persist:
+        print(f"swappiness set to {args.value} (not persisted)")
+    else:
+        print(f"swappiness set to {args.value} and persisted in {SWAP_SYSCTL}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-swap",
+        description="Manage swap files, swap partitions, zram and swappiness.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="show swap and zram state"
+                   ).set_defaults(func=cmd_status)
+
+    p_file = sub.add_parser("add-file", parents=[common], help="create and enable a swap file")
+    p_file.add_argument("path")
+    p_file.add_argument("--size", type=int, default=512, help="size in MiB (default 512)")
+    p_file.add_argument("--priority", type=int, help="swap priority")
+    p_file.add_argument("--no-persist", action="store_true", help="do not touch /etc/fstab")
+    p_file.set_defaults(func=cmd_add_file)
+
+    p_part = sub.add_parser("add-partition", parents=[common],
+                            help="enable a swap partition")
+    p_part.add_argument("device")
+    p_part.add_argument("--priority", type=int, help="swap priority")
+    p_part.add_argument("--no-persist", action="store_true", help="do not touch /etc/fstab")
+    p_part.set_defaults(func=cmd_add_partition)
+
+    p_remove = sub.add_parser("remove", parents=[common], help="disable a swap target")
+    p_remove.add_argument("target")
+    p_remove.add_argument("--delete-file", action="store_true",
+                          help="delete the swap file after disabling it")
+    p_remove.set_defaults(func=cmd_remove)
+
+    p_swap = sub.add_parser("swappiness", parents=[common], help="show or set vm.swappiness")
+    p_swap.add_argument("value", nargs="?", type=int)
+    p_swap.add_argument("--no-persist", action="store_true")
+    p_swap.set_defaults(func=cmd_swappiness)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

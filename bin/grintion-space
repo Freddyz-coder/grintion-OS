@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""grintion-space - find what is using disk space or inodes.
+
+A du-compatible tree walker that reports the largest directories and files
+without shelling out per entry. Sparse files are measured by allocated blocks
+(like du) unless --apparent-size is given. Symbolic links are never followed,
+and --one-file-system keeps the walk on the starting filesystem.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def human_bytes(value: float) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    size = float(value)
+    for unit in units:
+        if abs(size) < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value:.0f} B"
+
+
+def parse_size(text: str) -> int:
+    text = text.strip().upper()
+    factors = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}
+    if text and text[-1] in factors:
+        number = text[:-1]
+        if not number.replace(".", "", 1).isdigit():
+            raise argparse.ArgumentTypeError(f"invalid size: {text}")
+        return int(float(number) * factors[text[-1]])
+    if text.isdigit():
+        return int(text)
+    raise argparse.ArgumentTypeError(f"invalid size: {text}")
+
+
+class Walker:
+    def __init__(self, root: str, apparent: bool, one_fs: bool,
+                 excludes: list[str], max_depth: int) -> None:
+        self.root = Path(root)
+        self.apparent = apparent
+        self.excludes = excludes
+        self.one_fs = one_fs
+        self.max_depth = max_depth
+        self.root_device = 0
+        self.files = 0
+        self.directories = 0
+        self.errors = 0
+        self.entries: list[dict] = []
+        self.largest_files: list[tuple[int, str]] = []
+
+    def excluded(self, path: Path) -> bool:
+        relative = str(path.relative_to(self.root)) if path != self.root else path.name
+        return any(
+            fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern)
+            for pattern in self.excludes
+        )
+
+    def measure(self, stat: os.stat_result) -> int:
+        if self.apparent:
+            return stat.st_size
+        return getattr(stat, "st_blocks", 0) * 512
+
+    def walk(self, directory: Path, depth: int) -> int:
+        total = 0
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            self.errors += 1
+            return 0
+        for entry in entries:
+            path = Path(entry.path)
+            if self.excluded(path):
+                continue
+            try:
+                stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                self.errors += 1
+                continue
+            if self.one_fs and stat.st_dev != self.root_device:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                size = self.measure(stat) + self.walk(path, depth + 1)
+                self.directories += 1
+                if depth + 1 <= self.max_depth:
+                    self.entries.append({
+                        "path": str(path),
+                        "type": "directory",
+                        "bytes": size,
+                        "depth": depth + 1,
+                    })
+            elif entry.is_file(follow_symlinks=False):
+                size = self.measure(stat)
+                self.files += 1
+                self.largest_files.append((size, str(path)))
+            else:
+                continue
+            total += size
+        return total
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    root = Path(args.path)
+    if not root.exists():
+        print(f"grintion-space: {root} does not exist", file=sys.stderr)
+        return 2
+    if not root.is_dir():
+        print(f"grintion-space: {root} is not a directory", file=sys.stderr)
+        return 2
+
+    walker = Walker(str(root), args.apparent_size, args.one_file_system,
+                    args.exclude or [], args.depth)
+    try:
+        walker.root_device = root.stat().st_dev
+    except OSError as exc:
+        print(f"grintion-space: cannot stat {root}: {exc}", file=sys.stderr)
+        return 2
+
+    total = walker.walk(root, 0)
+    entries = [e for e in walker.entries if e["bytes"] >= args.min_size]
+    entries.sort(key=lambda e: e["bytes"], reverse=True)
+    entries = entries[:args.top]
+    largest = sorted(walker.largest_files, key=lambda item: item[0], reverse=True)
+    largest = [{"path": path, "bytes": size} for size, path in largest[:args.top]
+               if size >= args.min_size]
+
+    payload = {
+        "schema": 1,
+        "root": str(root),
+        "total_bytes": total,
+        "files": walker.files,
+        "directories": walker.directories,
+        "errors": walker.errors,
+        "apparent_size": args.apparent_size,
+        "entries": entries,
+        "largest_files": largest,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"{root}: {human_bytes(total)} in {walker.files} files, "
+          f"{walker.directories} directories")
+    if walker.errors:
+        print(f"warning: {walker.errors} unreadable path(s)", file=sys.stderr)
+    if args.inodes:
+        counts: dict[str, int] = {}
+        for entry in walker.largest_files:
+            top = Path(entry[1]).relative_to(root).parts
+            if top:
+                counts[top[0]] = counts.get(top[0], 0) + 1
+        print("\nTop first-level entries by file count:")
+        for name, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:args.top]:
+            print(f"{count:>10,} files  {name}")
+        return 0
+
+    if entries:
+        print(f"\n{'SIZE':>10}  {'%':>5}  DIRECTORY")
+        for entry in entries:
+            percent = (entry["bytes"] / total * 100) if total else 0.0
+            print(f"{human_bytes(entry['bytes']):>10}  {percent:>4.1f}%  {entry['path']}")
+    if largest:
+        print(f"\n{'SIZE':>10}  FILE")
+        for entry in largest:
+            print(f"{human_bytes(entry['bytes']):>10}  {entry['path']}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-space",
+        description="Report disk space or inode usage under a path.",
+    )
+    parser.add_argument("path", nargs="?", default=".", help="directory to scan")
+    parser.add_argument("--depth", type=int, default=1,
+                        help="report directories down to this depth (default 1)")
+    parser.add_argument("--top", type=int, default=15, help="number of rows (default 15)")
+    parser.add_argument("--min-size", type=parse_size, default=0,
+                        help="hide entries smaller than this (e.g. 100M)")
+    parser.add_argument("--exclude", action="append", metavar="GLOB",
+                        help="skip matching names (repeatable)")
+    parser.add_argument("--one-file-system", action="store_true",
+                        help="do not cross filesystem boundaries")
+    parser.add_argument("--apparent-size", action="store_true",
+                        help="count file length instead of allocated blocks")
+    parser.add_argument("--inodes", action="store_true",
+                        help="summarise file counts instead of bytes")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    args = parser.parse_args()
+    if args.depth < 1:
+        parser.error("--depth must be at least 1")
+    if args.top < 1:
+        parser.error("--top must be at least 1")
+    return cmd_scan(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

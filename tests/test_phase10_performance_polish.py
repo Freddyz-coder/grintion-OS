@@ -30,9 +30,11 @@ def test_grintion_tour_steps():
     res = run_bin("grintion-tour", "--json")
     assert res.returncode == 0
     stops = json.loads(res.stdout)
-    assert len(stops) == 6
+    assert len(stops) == 7
     assert stops[0]["step"] == 1
     assert "Garb" in stops[1]["title"]
+    assert stops[6]["title"] == "Advanced Operations"
+    assert any("grintion-disk" in command for command in stops[6]["commands"])
 
 
 def test_grintion_help_lookup_and_search():

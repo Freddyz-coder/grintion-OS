@@ -1,8 +1,45 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.14.3,
-0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.15.0,
+0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.15.0 advanced administration commands (2026-11-14)
+
+This release adds sixteen new `grintion-*` administration commands covering
+storage, services, networking, security and operations, wires the firewall
+blocklist overlay through the `firewall` runit service, and refreshes the
+discovery paths in `grintion-welcome`, `grintion-help` and `grintion-tour`.
+The ISO was rebuilt with a staged AppArmor parser because the host has no system
+`apparmor_parser` (`GRINTION_APPARMOR_ROOT`). Live BIOS/UEFI boot, the
+installer and an installed reboot were not rerun for 0.15.0, so the new tooling
+is covered by the static gate and the new unit tests rather than a booted guest.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 132,220,928 bytes (126 MiB) |
+| SHA-256 | `3933ea1d765e74038de69b7cf62ba160bdc51d6b5e5fbc33ad4096ea86eee1df` |
+| `BUILD-INFO` source commit | pending release commit |
+| Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
+| Live initramfs identity | `Grintion-OS 0.15.0` in `/etc/os-release`, `/etc/issue` and `/etc/grintion/version` |
+| Installed initramfs identity | `Grintion-OS 0.15.0` in `/etc/os-release`, `/etc/issue` and `/etc/grintion/version` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | 236 passed |
+| `make iso` | Passed; live rootfs and installed initramfs assembled with the staged Arch AppArmor parser (`GRINTION_APPARMOR_ROOT`) |
+| ISO checksum | `sha256sum -c` passed |
+| Extracted identity | `output/initramfs.img` contains `/etc/grintion/version` = `0.15.0` and `/etc/issue` = `Grintion-OS 0.15.0 (x86_64)` |
+| Limine entries | Not extracted; `build-iso.sh` reported `x86_64 BIOS and UEFI (Limine 8.7.0)` |
+| Installed console boot | Not rerun for 0.15.0 |
+| BIOS/UEFI live boot | Not rerun for 0.15.0 |
+| Installer / installed reboot | Not rerun for 0.15.0 |
+| New command surface | `tests/test_advanced_commands.py` passes for help, JSON surfaces, sandboxed actions and the path-refusal cases |
+| Bare-metal hardware | Not tested |
 
 ## 0.14.3 installation speed and console cleanup (2026-11-14)
 

@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.14.3
+- **Version:** 0.15.0
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,15 +17,15 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.14.3 is a patch release on top of 0.14.2. Package installs now probe the
-official Arch Linux Archive endpoints and use the faster reachable host, with
-the primary kept as a fallback, and pacman's parallel download count is 10.
-`seatd`, the firewall and zram write to log files instead of tty1, and the live
-banner reports the real tty rather than the outer runtime name. The `(MISS)`
-placeholder is gone from the OS identity, and GNOME is consistently refused
-because `gnome-session` requires systemd. See [CHANGELOG.md](CHANGELOG.md).
+0.15.0 adds sixteen advanced administration tools on top of the 0.14 series:
+storage inspection and fstab-backed mounts, runit service control and supervised
+timers, DNS and network diagnostics, an additive firewall deny overlay, SSH and
+TLS tooling, log search and rotation, load and benchmark probes, kernel module
+management, and clock/NTP control. Every tool supports `--json`, and mutations
+support `--dry-run`. See [docs/COMMANDS.md](docs/COMMANDS.md) and
+[CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.14.3 is built from this tree. Release ISO images are published on
+Grintion-OS 0.15.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -51,6 +51,7 @@ with `make sign-release` and verified with `bin/grintion-release-verify` (see
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
 Documentation:
+- [Command Reference](docs/COMMANDS.md) (Every advanced `grintion-*` tool and subcommand)
 - [Handbook](docs/HANDBOOK.md) (Full 10-chapter manual)
 - [Guía Rápida en Español](docs/HANDBOOK-ES.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -227,7 +228,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.14.3 |
+| Feature | 0.15.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -258,7 +259,10 @@ bin/            grintion-install, grintion-config, grintion-desktop, grintion-pe
                 grintion-tpm-luks, grintion-snapshot, grintion-boot-health, grintion-backup,
                 grintion-reset, grintion-network, grintion-session, grintion-audit,
                 grintion-integrity, grintion-audit-log, grintion-sandbox, grintion-shield,
-                grintion-vault, grintion-usb, grintion-watchdog, grintion-tour, grintion-help, grintion-report
+                grintion-vault, grintion-usb, grintion-watchdog, grintion-tour, grintion-help, grintion-report,
+                grintion-disk, grintion-mount, grintion-swap, grintion-space, grintion-service, grintion-timer,
+                grintion-dns, grintion-netdiag, grintion-firewall, grintion-ssh, grintion-cert, grintion-logs,
+                grintion-load, grintion-bench, grintion-modules, grintion-time
 build/          kernel, rootfs, initramfs, ISO build scripts, and test/validation suites
 config/         kernel fragment, required binaries, PAM modules, setuid list
 etc/            live and installed system configuration, runit services, profiles
@@ -276,7 +280,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.14.3 has not undergone an independent third-party
+and atomic rollback, but 0.15.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

@@ -12,10 +12,15 @@ ERRORS_FILE = Path(os.environ.get("GRINTION_ERRORS_JSON", "/etc/grintion/errors.
 
 TOPICS = {
     "packages": "Manage software via 'garb': garb search, install, upgrade, generations, and rollback-generation.",
-    "services": "Manage background daemons with runit: sv status /var/service/*, sv up/down <svc>, or grintion-watchdog.",
+    "services": "runit services via 'grintion-service': list, status, start, stop, enable, disable, logs, health.",
+    "scheduling": "Scheduled jobs without cron via 'grintion-timer': add, list, run-now, enable, disable.",
     "network": "Wi-Fi, roaming, and privacy via 'grintion-network': scan, connect, saved-networks, roam, dns-leak-test.",
+    "diagnostics": "Diagnostics via 'grintion-doctor', 'grintion-netdiag', 'grintion-load', 'grintion-logs', and 'grintion-report'.",
+    "storage": "Disks and filesystems via 'grintion-disk', 'grintion-mount', 'grintion-swap', and 'grintion-space'.",
+    "firewall": "Additive deny rules via 'grintion-firewall' on top of the 'grintion-security' profile ruleset.",
     "security": "System hardening profiles via 'grintion-security': workstation, server, kiosk, air-gapped.",
-    "diagnostics": "Health checks via 'grintion-doctor --fix', 'grintion-hcl', and 'grintion-report'.",
+    "ssh": "Keys, agent and client audit via 'grintion-ssh'; TLS certificates via 'grintion-cert'.",
+    "benchmarks": "CPU, memory and disk measurements via 'grintion-bench'; compare against a saved run.",
 }
 
 

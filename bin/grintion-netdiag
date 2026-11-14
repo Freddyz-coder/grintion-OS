@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""grintion-netdiag - layer-by-layer network diagnostics.
+
+Subcommands:
+  summary     one-screen snapshot: interfaces, default route, resolvers, sockets
+  interfaces  interface state, addresses, MTU and driver
+  route       IPv4 and IPv6 routing tables
+  latency     ping statistics for a host
+  dns         resolve a name and report timing
+  mtu         discover the path MTU with a binary search of DF pings
+  tcp         measure TCP connect time to host:port pairs
+  sockets     listening TCP/UDP sockets from ss
+
+Only the latency, dns, mtu and tcp subcommands touch the network, and only the
+hosts you name on the command line.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PING_STATS = re.compile(r"(\d+) packets transmitted, (\d+) (?:packets )?received")
+PING_RTT = re.compile(r"rtt [^=]*= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)")
+
+
+def run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def sysfs_interfaces() -> list[dict]:
+    interfaces = []
+    base = Path("/sys/class/net")
+    if not base.is_dir():
+        return interfaces
+    for entry in sorted(base.iterdir()):
+        driver = ""
+        try:
+            if (entry / "device" / "driver").is_symlink():
+                driver = (entry / "device" / "driver").resolve().name
+        except OSError:
+            pass
+        interfaces.append({
+            "name": entry.name,
+            "state": (entry / "operstate").read_text(encoding="utf-8").strip()
+            if (entry / "operstate").is_file() else "unknown",
+            "mtu": (entry / "mtu").read_text(encoding="utf-8").strip()
+            if (entry / "mtu").is_file() else "",
+            "mac": (entry / "address").read_text(encoding="utf-8").strip()
+            if (entry / "address").is_file() else "",
+            "driver": driver,
+            "addresses": [],
+        })
+    return interfaces
+
+
+def ip_json(*arguments: str) -> list | None:
+    ip = shutil.which("ip")
+    if not ip:
+        return None
+    result = run([ip, "-j", *arguments], timeout=10)
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+
+
+def cmd_interfaces(args: argparse.Namespace) -> int:
+    interfaces = sysfs_interfaces()
+    addresses = {}
+    for record in ip_json("addr") or []:
+        entries = []
+        for info in record.get("addr_info", []):
+            local = info.get("local")
+            if local:
+                entries.append(f"{local}/{info.get('prefixlen', '')}".rstrip("/"))
+        addresses[record.get("ifname")] = entries
+    for interface in interfaces:
+        interface["addresses"] = addresses.get(interface["name"], [])
+        if not args.include_identifiers:
+            interface["mac"] = "<redacted>" if interface["mac"] else ""
+    if args.json:
+        print(json.dumps({"schema": 1, "interfaces": interfaces}, indent=2))
+        return 0
+    for interface in interfaces:
+        print(f"{interface['name']}: {interface['state']} mtu {interface['mtu']} "
+              f"mac {interface['mac'] or '-'}")
+        if interface["driver"]:
+            print(f"  driver: {interface['driver']}")
+        for address in interface["addresses"]:
+            print(f"  inet:   {address}")
+    return 0
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    routes = {"ipv4": ip_json("route"), "ipv6": ip_json("-6", "route")}
+    if routes["ipv4"] is None and routes["ipv6"] is None:
+        print("grintion-netdiag: 'ip' is not available", file=sys.stderr)
+        return 2
+    default_v4 = [r for r in routes["ipv4"] or [] if r.get("dst") == "default"]
+    default_v6 = [r for r in routes["ipv6"] or [] if r.get("dst") == "default"]
+    if args.json:
+        print(json.dumps({"schema": 1, "routes": routes, "default_ipv4": default_v4,
+                          "default_ipv6": default_v6}, indent=2))
+        return 0
+    for family, key in (("IPv4", "ipv4"), ("IPv6", "ipv6")):
+        print(f"{family} routes:")
+        for route in routes[key] or []:
+            destination = route.get("dst", "?")
+            gateway = route.get("gateway", "-")
+            device = route.get("dev", "-")
+            print(f"  {destination:<24} via {gateway:<20} dev {device}")
+        if not routes[key]:
+            print("  none")
+    return 0
+
+
+def ping_host(host: str, count: int, timeout: int) -> dict:
+    ping = shutil.which("ping")
+    if not ping:
+        return {"host": host, "error": "ping is not installed", "ok": False}
+    result = run([ping, "-n", "-q", "-c", str(count), "-W", str(timeout), host],
+                 timeout=count * (timeout + 1) + 5)
+    output = result.stdout + result.stderr
+    stats = PING_STATS.search(output)
+    rtt = PING_RTT.search(output)
+    payload = {
+        "host": host,
+        "transmitted": int(stats.group(1)) if stats else 0,
+        "received": int(stats.group(2)) if stats else 0,
+        "loss_percent": round((1 - int(stats.group(2)) / int(stats.group(1))) * 100, 1)
+        if stats and int(stats.group(1)) else 100.0,
+        "min_ms": float(rtt.group(1)) if rtt else None,
+        "avg_ms": float(rtt.group(2)) if rtt else None,
+        "max_ms": float(rtt.group(3)) if rtt else None,
+        "jitter_ms": float(rtt.group(4)) if rtt else None,
+        "ok": bool(stats and int(stats.group(2)) > 0),
+    }
+    if not stats:
+        payload["error"] = output.strip().splitlines()[-1] if output.strip() else "ping failed"
+    return payload
+
+
+def cmd_latency(args: argparse.Namespace) -> int:
+    payload = ping_host(args.host, args.count, args.timeout)
+    if args.json:
+        print(json.dumps({"schema": 1, **payload}, indent=2))
+        return 0 if payload["ok"] else 1
+    if "error" in payload:
+        print(f"{args.host}: {payload['error']}", file=sys.stderr)
+        return 1
+    print(f"{args.host}: {payload['received']}/{payload['transmitted']} replies, "
+          f"{payload['loss_percent']}% loss")
+    if payload["avg_ms"] is not None:
+        print(f"  min/avg/max/jitter: {payload['min_ms']:.2f}/"
+              f"{payload['avg_ms']:.2f}/{payload['max_ms']:.2f}/"
+              f"{payload['jitter_ms']:.2f} ms")
+    return 0 if payload["ok"] else 1
+
+
+def resolve_name(name: str) -> dict:
+    started = time.perf_counter()
+    try:
+        infos = socket.getaddrinfo(name, None)
+    except socket.gaierror as exc:
+        return {"name": name, "ok": False, "error": str(exc),
+                "elapsed_seconds": round(time.perf_counter() - started, 4)}
+    elapsed = time.perf_counter() - started
+    addresses = []
+    for info in infos:
+        address = info[4][0]
+        if address not in addresses:
+            addresses.append(address)
+    return {"name": name, "ok": True, "addresses": addresses,
+            "elapsed_seconds": round(elapsed, 4)}
+
+
+def cmd_dns(args: argparse.Namespace) -> int:
+    names = args.names or ["localhost"]
+    results = [resolve_name(name) for name in names]
+    failures = [result for result in results if not result["ok"]]
+    if args.json:
+        print(json.dumps({"schema": 1, "results": results}, indent=2))
+        return 0 if not failures else 1
+    for result in results:
+        if result["ok"]:
+            print(f"{result['name']}: {', '.join(result['addresses'])} "
+                  f"({result['elapsed_seconds'] * 1000:.1f} ms)")
+        else:
+            print(f"{result['name']}: FAILED {result['error']}")
+    return 0 if not failures else 1
+
+
+def ping_payload(host: str, payload: int, timeout: int) -> bool:
+    ping = shutil.which("ping")
+    if not ping:
+        return False
+    result = run([ping, "-n", "-q", "-c", "1", "-W", str(timeout),
+                  "-M", "do", "-s", str(payload), host], timeout=timeout + 5)
+    return result.returncode == 0
+
+
+def cmd_mtu(args: argparse.Namespace) -> int:
+    if not shutil.which("ping"):
+        print("grintion-netdiag: ping is not installed", file=sys.stderr)
+        return 2
+    low, high = 0, args.max
+    best = None
+    if not ping_payload(args.host, low, args.timeout):
+        payload = {"host": args.host, "ok": False, "mtu": None,
+                   "error": "no reply even with the smallest payload"}
+        if args.json:
+            print(json.dumps({"schema": 1, **payload}, indent=2))
+        else:
+            print(f"{args.host}: no ICMP reply (host down, ICMP blocked, or raw "
+                  "sockets unavailable)", file=sys.stderr)
+        return 1
+    while low <= high:
+        middle = (low + high) // 2
+        if ping_payload(args.host, middle, args.timeout):
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    mtu = (best or 0) + 28  # IPv4 header + ICMP echo header
+    payload = {"host": args.host, "ok": best is not None, "estimate": True,
+               "payload_bytes": best, "mtu": mtu, "max_probed_payload": args.max}
+    if args.json:
+        print(json.dumps({"schema": 1, **payload}, indent=2))
+    else:
+        print(f"{args.host}: largest unfragmented payload {best} bytes, "
+              f"estimated path MTU {mtu}")
+        print("note: this measures the IPv4 ICMP path, not every TCP flow")
+    return 0 if best is not None else 1
+
+
+def cmd_tcp(args: argparse.Namespace) -> int:
+    results = []
+    for port in args.ports:
+        started = time.perf_counter()
+        try:
+            with socket.create_connection((args.host, port), timeout=args.timeout):
+                elapsed = time.perf_counter() - started
+                results.append({"host": args.host, "port": port, "ok": True,
+                                "connect_seconds": round(elapsed, 4)})
+        except OSError as exc:
+            results.append({"host": args.host, "port": port, "ok": False,
+                            "error": str(exc)})
+    failures = [result for result in results if not result["ok"]]
+    if args.json:
+        print(json.dumps({"schema": 1, "results": results}, indent=2))
+        return 0 if not failures else 1
+    for result in results:
+        if result["ok"]:
+            print(f"{result['host']}:{result['port']} open "
+                  f"({result['connect_seconds'] * 1000:.1f} ms)")
+        else:
+            print(f"{result['host']}:{result['port']} closed/unreachable: "
+                  f"{result['error']}")
+    return 0 if not failures else 1
+
+
+def listening_sockets() -> list[dict]:
+    ss = shutil.which("ss")
+    if not ss:
+        return []
+    result = run([ss, "-H", "-tulpn"], timeout=10)
+    sockets = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        protocol, state, local = fields[0], fields[1], fields[4]
+        process = " ".join(fields[6:]) if len(fields) > 6 else ""
+        sockets.append({"protocol": protocol, "state": state,
+                        "local": local, "process": process})
+    return sockets
+
+
+def cmd_sockets(args: argparse.Namespace) -> int:
+    sockets = listening_sockets()
+    if args.json:
+        print(json.dumps({"schema": 1, "count": len(sockets), "sockets": sockets},
+                         indent=2))
+        return 0
+    if not sockets:
+        print("no listening sockets (or ss is unavailable)")
+        return 0
+    for entry in sockets:
+        print(f"{entry['protocol']:<5} {entry['state']:<12} {entry['local']:<24} "
+              f"{entry['process']}")
+    return 0
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    interfaces = sysfs_interfaces()
+    up = [interface["name"] for interface in interfaces
+          if interface["state"] in ("up", "unknown")]
+    default_v4 = [r for r in ip_json("route") or [] if r.get("dst") == "default"]
+    resolvers = []
+    try:
+        for line in Path("/etc/resolv.conf").read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("nameserver"):
+                resolvers.append(line.split()[1])
+    except (OSError, IndexError):
+        pass
+    sockets = listening_sockets()
+    payload = {
+        "schema": 1,
+        "interfaces": len(interfaces),
+        "interfaces_up": up,
+        "default_routes": default_v4,
+        "resolvers": resolvers,
+        "listening_sockets": len(sockets),
+        "localhost_resolves": resolve_name("localhost")["ok"],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"interfaces:      {len(interfaces)} ({', '.join(up) or 'none up'})")
+    print(f"default route:   {default_v4[0].get('gateway', '-') if default_v4 else 'none'}"
+          f" via {default_v4[0].get('dev', '-') if default_v4 else '-'}")
+    print(f"resolvers:       {', '.join(resolvers) or 'none'}")
+    print(f"listening:       {len(sockets)} socket(s)")
+    print(f"localhost:       {'resolves' if payload['localhost_resolves'] else 'FAILS'}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-netdiag",
+        description="Layer-by-layer network diagnostics.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+
+    p_int = sub.add_parser("interfaces", parents=[common], help="interface inventory")
+    p_int.add_argument("--include-identifiers", action="store_true",
+                       help="show MAC addresses")
+    p_int.set_defaults(func=cmd_interfaces)
+
+    sub.add_parser("route", parents=[common], help="routing tables"
+                   ).set_defaults(func=cmd_route)
+    sub.add_parser("summary", parents=[common], help="network snapshot"
+                   ).set_defaults(func=cmd_summary)
+    sub.add_parser("sockets", parents=[common], help="listening sockets"
+                   ).set_defaults(func=cmd_sockets)
+
+    p_lat = sub.add_parser("latency", parents=[common], help="ping a host")
+    p_lat.add_argument("host")
+    p_lat.add_argument("--count", type=int, default=4)
+    p_lat.add_argument("--timeout", type=int, default=1, help="seconds per reply")
+    p_lat.set_defaults(func=cmd_latency)
+
+    p_dns = sub.add_parser("dns", parents=[common], help="resolve names")
+    p_dns.add_argument("names", nargs="*")
+    p_dns.set_defaults(func=cmd_dns)
+
+    p_mtu = sub.add_parser("mtu", parents=[common], help="discover the path MTU")
+    p_mtu.add_argument("host")
+    p_mtu.add_argument("--max", type=int, default=1472,
+                       help="largest payload to try (default 1472)")
+    p_mtu.add_argument("--timeout", type=int, default=1)
+    p_mtu.set_defaults(func=cmd_mtu)
+
+    p_tcp = sub.add_parser("tcp", parents=[common], help="check TCP ports")
+    p_tcp.add_argument("host")
+    p_tcp.add_argument("ports", nargs="+", type=int)
+    p_tcp.add_argument("--timeout", type=float, default=3.0)
+    p_tcp.set_defaults(func=cmd_tcp)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

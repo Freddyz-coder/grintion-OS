@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+"""grintion-timer - scheduled jobs for runit systems (no cron, no systemd).
+
+A timer is a small key/value file in /etc/grintion/timers.d. Each timer gets
+its own supervised runit service that computes the next run, sleeps until then
+and executes the command as the configured user.
+
+Schedules:
+  every 30m              interval, aligned to the epoch (s, m or h)
+  hourly                 every hour on the hour
+  daily 03:30            every day at local 03:30
+  weekly mon 03:30       Monday at 03:30
+  monthly 1 04:00        day 1 of each month at 04:00
+  boot                   once when the service starts
+  cron 0 3 * * mon-fri   classic five-field cron expression
+
+Examples:
+  grintion-timer add backup --schedule "daily 03:30" \\
+      --command "grintion-backup create --target /var/backups"
+  grintion-timer list
+  grintion-timer run-now backup
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+WEEKDAY_NAMES = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4,
+                 "fri": 5, "sat": 6, "7": 7}
+MONTH_NAMES = {name: number for number, name in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+INTERVAL_RE = re.compile(r"^every\s+(\d+)\s*([smh])$", re.IGNORECASE)
+DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+class ScheduleError(ValueError):
+    pass
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def timers_dir() -> Path:
+    override = os.environ.get("GRINTION_TIMERS_DIR")
+    return Path(override) if override else root_path("/etc/grintion/timers.d")
+
+
+def sv_dir() -> Path:
+    override = os.environ.get("GRINTION_SV_DIR")
+    return Path(override) if override else root_path("/etc/sv")
+
+
+def enabled_dir() -> Path:
+    override = os.environ.get("GRINTION_SERVICE_DIR")
+    return Path(override) if override else root_path("/var/service")
+
+
+def state_dir() -> Path:
+    override = os.environ.get("GRINTION_TIMER_STATE")
+    return Path(override) if override else root_path("/var/lib/grintion/timers")
+
+
+def log_dir() -> Path:
+    override = os.environ.get("GRINTION_TIMER_LOG_DIR")
+    return Path(override) if override else root_path("/var/log")
+
+
+def timer_bin() -> str:
+    return os.environ.get("GRINTION_TIMER_BIN", "/usr/bin/grintion-timer")
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT") or os.environ.get("GRINTION_TIMERS_DIR"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-timer: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def parse_time(text: str) -> tuple[int, int]:
+    match = TIME_RE.match(text.strip())
+    if not match:
+        raise ScheduleError(f"invalid time {text!r}; expected HH:MM")
+    return int(match.group(1)), int(match.group(2))
+
+
+class CronField:
+    def __init__(self, text: str, low: int, high: int, name: str,
+                 names: dict[str, int] | None = None) -> None:
+        self.text = text.strip()
+        self.values: set[int] = set()
+        self.names = names or {}
+        if self.text in ("", "*"):
+            self.wildcard = True
+            self.values = set(range(low, high + 1))
+            return
+        self.wildcard = False
+        for part in self.text.lower().split(","):
+            part = part.strip()
+            if not part:
+                raise ScheduleError(f"empty {name} list entry")
+            step = 1
+            if "/" in part:
+                part, _, step_text = part.partition("/")
+                if not step_text.isdigit() or int(step_text) < 1:
+                    raise ScheduleError(f"invalid step in {name} field: {part!r}")
+                step = int(step_text)
+            if part == "*":
+                start, end = low, high
+            elif "-" in part:
+                start_text, _, end_text = part.partition("-")
+                start = self._value(start_text, name)
+                end = self._value(end_text, name)
+            else:
+                start = end = self._value(part, name)
+            if start is None or end is None:
+                raise ScheduleError(f"invalid {name} field entry: {part!r}")
+            if start < low or end > high or start > end:
+                raise ScheduleError(f"{name} value out of range {low}-{high}: {part!r}")
+            self.values.update(range(start, end + 1, step))
+
+    def _value(self, text: str, name: str) -> int | None:
+        text = text.strip().lower()
+        if text in self.names:
+            return self.names[text]
+        if text.isdigit():
+            return int(text)
+        raise ScheduleError(f"invalid {name} field entry: {text!r}")
+
+    def match(self, value: int) -> bool:
+        return value in self.values
+
+
+class Schedule:
+    def __init__(self, text: str) -> None:
+        self.text = " ".join(text.strip().split())
+        lowered = self.text.lower()
+        self.kind = ""
+        self.interval = 0
+        self.hour = self.minute = 0
+        self.weekday = 0
+        self.month_day = 1
+        self.cron: list[CronField] = []
+
+        interval = INTERVAL_RE.match(self.text)
+        if interval:
+            amount = int(interval.group(1))
+            unit = interval.group(2).lower()
+            factor = {"s": 1, "m": 60, "h": 3600}[unit]
+            if amount < 1:
+                raise ScheduleError("interval must be at least 1")
+            self.kind = "every"
+            self.interval = amount * factor
+            return
+        if lowered in ("hourly", "boot"):
+            self.kind = lowered
+            return
+        if lowered.startswith("daily "):
+            self.kind = "daily"
+            self.hour, self.minute = parse_time(lowered[6:])
+            return
+        if lowered.startswith("weekly "):
+            rest = lowered[7:].split()
+            if len(rest) != 2 or rest[0] not in WEEKDAYS:
+                raise ScheduleError("weekly expects: weekly <mon..sun> HH:MM")
+            self.kind = "weekly"
+            self.weekday = WEEKDAYS[rest[0]]
+            self.hour, self.minute = parse_time(rest[1])
+            return
+        if lowered.startswith("monthly "):
+            rest = lowered[8:].split()
+            if len(rest) != 2 or not rest[0].isdigit() or not 1 <= int(rest[0]) <= 31:
+                raise ScheduleError("monthly expects: monthly <1..31> HH:MM")
+            self.kind = "monthly"
+            self.month_day = int(rest[0])
+            self.hour, self.minute = parse_time(rest[1])
+            return
+        if lowered.startswith("cron "):
+            fields = lowered[5:].split()
+            if len(fields) != 5:
+                raise ScheduleError("cron expects five fields: min hour dom month dow")
+            self.kind = "cron"
+            self.cron = [
+                CronField(fields[0], 0, 59, "minute"),
+                CronField(fields[1], 0, 23, "hour"),
+                CronField(fields[2], 1, 31, "day-of-month"),
+                CronField(fields[3], 1, 12, "month", MONTH_NAMES),
+                CronField(fields[4], 0, 7, "day-of-week", WEEKDAY_NAMES),
+            ]
+            return
+        raise ScheduleError(
+            f"unrecognised schedule {text!r}; see 'grintion-timer --help'"
+        )
+
+    def next_after(self, now: float | None = None) -> float:
+        now = time.time() if now is None else now
+        if self.kind == "every":
+            return (int(now) // self.interval + 1) * self.interval
+        if self.kind == "boot":
+            return now
+        current = dt.datetime.fromtimestamp(now)
+        if self.kind == "hourly":
+            candidate = current.replace(minute=0, second=0, microsecond=0)
+            candidate += dt.timedelta(hours=1)
+            return candidate.timestamp()
+        if self.kind == "daily":
+            candidate = current.replace(hour=self.hour, minute=self.minute,
+                                        second=0, microsecond=0)
+            if candidate <= current:
+                candidate += dt.timedelta(days=1)
+            return candidate.timestamp()
+        if self.kind == "weekly":
+            candidate = current.replace(hour=self.hour, minute=self.minute,
+                                        second=0, microsecond=0)
+            days = (self.weekday - candidate.weekday()) % 7
+            candidate += dt.timedelta(days=days)
+            if candidate <= current:
+                candidate += dt.timedelta(days=7)
+            return candidate.timestamp()
+        if self.kind == "monthly":
+            # Months without the requested day (30 February, 31 April) are
+            # skipped instead of silently sliding to the 1st.
+            candidate = current.replace(day=1, hour=self.hour, minute=self.minute,
+                                        second=0, microsecond=0)
+            for _ in range(25):
+                try:
+                    candidate = candidate.replace(day=self.month_day)
+                except ValueError:
+                    pass
+                else:
+                    if candidate > current:
+                        return candidate.timestamp()
+                year, month = candidate.year, candidate.month + 1
+                if month > 12:
+                    year, month = year + 1, 1
+                candidate = candidate.replace(year=year, month=month, day=1)
+            raise ScheduleError(f"schedule {self.text!r} has no occurrence within two years")
+        if self.kind == "cron":
+            candidate = current.replace(second=0, microsecond=0) + dt.timedelta(minutes=1)
+            limit = candidate + dt.timedelta(days=366)
+            minute, hour, dom, month, dow = self.cron
+            while candidate <= limit:
+                if (month.match(candidate.month)
+                        and hour.match(candidate.hour)
+                        and minute.match(candidate.minute)
+                        and self._day_matches(candidate, dom, dow)):
+                    return candidate.timestamp()
+                candidate += dt.timedelta(minutes=1)
+            raise ScheduleError(f"schedule {self.text!r} has no occurrence within a year")
+        raise ScheduleError(f"unhandled schedule kind {self.kind!r}")
+
+    def _day_matches(self, moment: dt.datetime, dom: CronField, dow: CronField) -> bool:
+        cron_dow = moment.weekday() + 1  # cron: Sunday is 0 or 7
+        weekday_match = dow.match(0) if cron_dow == 7 else dow.match(cron_dow)
+        if dow.match(7):
+            weekday_match = weekday_match or cron_dow == 7
+        if dom.wildcard and dow.wildcard:
+            return True
+        if dom.wildcard:
+            return weekday_match
+        if dow.wildcard:
+            return dom.match(moment.day)
+        return dom.match(moment.day) or weekday_match
+
+    def describe(self) -> str:
+        return self.text
+
+
+def parse_timer_file(path: Path) -> dict:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ScheduleError(f"cannot read {path}: {exc}") from exc
+    for number, raw in enumerate(lines, 1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, value = stripped.partition("=")
+        if not sep:
+            raise ScheduleError(f"{path}:{number}: expected 'key = value'")
+        values[key.strip()] = value.strip()
+    for required in ("schedule", "command"):
+        if not values.get(required):
+            raise ScheduleError(f"{path}: missing required key {required!r}")
+    try:
+        values["_schedule"] = Schedule(values["schedule"])
+    except ScheduleError as exc:
+        raise ScheduleError(f"{path}: {exc}") from exc
+    values.setdefault("user", "root")
+    values.setdefault("description", "")
+    values["_name"] = path.name[:-len(".timer")] if path.name.endswith(".timer") else path.stem
+    return values
+
+
+def load_timers() -> list[dict]:
+    directory = timers_dir()
+    timers = []
+    if not directory.is_dir():
+        return timers
+    for path in sorted(directory.glob("*.timer")):
+        try:
+            values = parse_timer_file(path)
+            values["_path"] = str(path)
+            timers.append(values)
+        except ScheduleError as exc:
+            timers.append({"_name": path.stem, "_path": str(path),
+                           "_error": str(exc), "schedule": "invalid",
+                           "command": "", "user": ""})
+    return timers
+
+
+def load_state(name: str) -> dict:
+    path = state_dir() / f"{name}.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(name: str, state: dict) -> None:
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = directory / f".{name}.json.tmp"
+    temporary.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, directory / f"{name}.json")
+
+
+def validate_name(name: str) -> bool:
+    return bool(NAME_RE.match(name))
+
+
+def render_service(name: str) -> tuple[str, str]:
+    service = sv_dir() / f"grintion-timer-{name}"
+    log = log_dir() / f"grintion-timer-{name}.log"
+    script = (
+        "#!/bin/sh\n"
+        f"# Generated by grintion-timer for {name}. Edit the timer file instead.\n"
+        "exec >>" + str(log) + " 2>&1\n"
+        f"exec {timer_bin()} daemon {name}\n"
+    )
+    return str(service), script
+
+
+def write_timer(name: str, schedule: str, command: str, user: str,
+                description: str, enabled: bool, dry_run: bool) -> None:
+    directory = timers_dir()
+    service, script = render_service(name)
+    link = enabled_dir() / f"grintion-timer-{name}"
+    if dry_run:
+        print(f"would write {directory / (name + '.timer')}")
+        print(f"would write {service}/run")
+        print(f"would {'enable' if enabled else 'leave disabled'} {link}")
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    body = [
+        f"# grintion-timer: {description or name}",
+        f"schedule = {schedule}",
+        f"command = {command}",
+        f"user = {user}",
+        f"description = {description}",
+    ]
+    (directory / f"{name}.timer").write_text("\n".join(body) + "\n", encoding="utf-8")
+    Path(service).mkdir(parents=True, exist_ok=True)
+    run = Path(service) / "run"
+    run.write_text(script, encoding="utf-8")
+    os.chmod(run, 0o755)
+    if enabled:
+        enabled_dir().mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(Path(service).resolve())
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    if not validate_name(args.name):
+        print("grintion-timer: name must match [A-Za-z0-9][A-Za-z0-9_.-]*", file=sys.stderr)
+        return 2
+    if "\n" in args.command or "\x00" in args.command:
+        print("grintion-timer: command must be a single line", file=sys.stderr)
+        return 2
+    try:
+        schedule = Schedule(args.schedule)
+    except ScheduleError as exc:
+        print(f"grintion-timer: {exc}", file=sys.stderr)
+        return 2
+    path = timers_dir() / f"{args.name}.timer"
+    if path.exists() and not args.force:
+        print(f"grintion-timer: timer {args.name} already exists; use --force to replace",
+              file=sys.stderr)
+        return 1
+    if not require_root("adding a timer", args.dry_run):
+        return 2
+    write_timer(args.name, schedule.text, args.command, args.user,
+                args.description or "", not args.disabled, args.dry_run)
+    if args.json:
+        print(json.dumps({"schema": 1, "timer": args.name,
+                          "schedule": schedule.text, "enabled": not args.disabled},
+                         indent=2))
+    else:
+        print(f"timer {args.name} saved ({schedule.describe()})")
+        print(f"next run: {dt.datetime.fromtimestamp(schedule.next_after())}")
+        if not args.disabled:
+            print("the runit service was enabled and will start now")
+    return 0
+
+
+def timer_summary(timer: dict) -> dict:
+    name = timer["_name"]
+    state = load_state(name)
+    enabled = (enabled_dir() / f"grintion-timer-{name}").exists()
+    remaining = timer.get("_schedule").next_after() if "_schedule" in timer else None
+    return {
+        "name": name,
+        "schedule": timer.get("schedule", ""),
+        "description": timer.get("description", ""),
+        "command": timer.get("command", ""),
+        "user": timer.get("user", ""),
+        "enabled": enabled,
+        "next_run": (dt.datetime.fromtimestamp(remaining).isoformat(timespec="seconds")
+                     if remaining else None),
+        "last_run": state.get("last_run"),
+        "last_status": state.get("last_status"),
+        "runs": state.get("runs", 0),
+        "failures": state.get("failures", 0),
+        "error": timer.get("_error"),
+    }
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    timers = load_timers()
+    summaries = [timer_summary(timer) for timer in timers]
+    if args.json:
+        print(json.dumps({"schema": 1, "timers": summaries}, indent=2))
+        return 0
+    if not summaries:
+        print(f"no timers in {timers_dir()}")
+        return 0
+    print(f"{'TIMER':<20} {'ENABLED':<8} {'SCHEDULE':<22} {'NEXT RUN':<20} LAST")
+    for item in summaries:
+        if item["error"]:
+            print(f"{item['name']:<20} {'error':<8} {item['schedule']:<22} "
+                  f"{'-':<20} {item['error']}")
+            continue
+        print(f"{item['name']:<20} {'yes' if item['enabled'] else 'no':<8} "
+              f"{item['schedule']:<22} {str(item['next_run']):<20} "
+              f"{item['last_status'] or 'never'}")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    timer = next((t for t in load_timers() if t["_name"] == args.name), None)
+    if timer is None:
+        print(f"grintion-timer: no such timer: {args.name}", file=sys.stderr)
+        return 2
+    summary = timer_summary(timer)
+    if args.json:
+        print(json.dumps({"schema": 1, "timer": summary}, indent=2))
+        return 0
+    for key in ("name", "schedule", "command", "user", "description", "enabled",
+                "next_run", "last_run", "last_status", "runs", "failures"):
+        print(f"{key:<12} {summary[key]}")
+    try:
+        print(f"{'file':<12} {timer['_path']}")
+    except KeyError:
+        pass
+    return 0
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    path = timers_dir() / f"{args.name}.timer"
+    if not path.exists():
+        print(f"grintion-timer: no such timer: {args.name}", file=sys.stderr)
+        return 2
+    if not require_root("removing a timer", args.dry_run):
+        return 2
+    service = sv_dir() / f"grintion-timer-{args.name}"
+    link = enabled_dir() / f"grintion-timer-{args.name}"
+    if args.dry_run:
+        print(f"would remove {path}, {service} and {link}")
+        return 0
+    for candidate in (link,):
+        if candidate.is_symlink() or candidate.exists():
+            candidate.unlink()
+    if service.is_dir():
+        for child in service.iterdir():
+            child.unlink()
+        service.rmdir()
+    path.unlink()
+    if args.purge:
+        state = state_dir() / f"{args.name}.json"
+        if state.is_file():
+            state.unlink()
+        log = log_dir() / f"grintion-timer-{args.name}.log"
+        if log.is_file():
+            log.unlink()
+    if args.json:
+        print(json.dumps({"schema": 1, "removed": args.name,
+                          "purged": args.purge}, indent=2))
+    else:
+        print(f"removed timer {args.name}")
+    return 0
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    timer = next((t for t in load_timers() if t["_name"] == args.name), None)
+    if timer is None or "_schedule" not in timer:
+        print(f"grintion-timer: no valid timer named {args.name}", file=sys.stderr)
+        return 2
+    if not require_root("enabling a timer", args.dry_run):
+        return 2
+    service = sv_dir() / f"grintion-timer-{args.name}"
+    if not (service / "run").is_file():
+        if args.dry_run:
+            print(f"would recreate {service}/run")
+        else:
+            service.mkdir(parents=True, exist_ok=True)
+            _, script = render_service(args.name)
+            (service / "run").write_text(script, encoding="utf-8")
+            os.chmod(service / "run", 0o755)
+    link = enabled_dir() / f"grintion-timer-{args.name}"
+    if args.dry_run:
+        print(f"would link {link}")
+        return 0
+    enabled_dir().mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(service.resolve())
+    if args.json:
+        print(json.dumps({"schema": 1, "timer": args.name, "enabled": True},
+                         indent=2))
+    else:
+        print(f"enabled timer {args.name}")
+    return 0
+
+
+def cmd_disable(args: argparse.Namespace) -> int:
+    link = enabled_dir() / f"grintion-timer-{args.name}"
+    if not link.is_symlink() and not link.exists():
+        print(f"grintion-timer: timer {args.name} is not enabled", file=sys.stderr)
+        return 1
+    if not require_root("disabling a timer", args.dry_run):
+        return 2
+    if args.dry_run:
+        print(f"would remove {link}")
+        return 0
+    link.unlink()
+    if args.json:
+        print(json.dumps({"schema": 1, "timer": args.name, "enabled": False},
+                         indent=2))
+    else:
+        print(f"disabled timer {args.name}")
+    return 0
+
+
+def execute(timer: dict, timeout: int) -> int:
+    name = timer["_name"]
+    command = ["/bin/sh", "-c", timer["command"]]
+    if timer.get("user") and timer["user"] != "root":
+        command = ["su", "-s", "/bin/sh", timer["user"], "-c", timer["command"]]
+    log = log_dir() / f"grintion-timer-{name}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    stamp = dt.datetime.now().isoformat(timespec="seconds")
+    header = f"--- {stamp} {name}: {timer['command']}\n"
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=timeout, check=False)
+        status = result.returncode
+        output = result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        status = 124
+        output = f"timed out after {timeout}s\n"
+    except OSError as exc:
+        status = 127
+        output = f"cannot execute: {exc}\n"
+    duration = round(time.time() - started, 3)
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(header)
+        handle.write(output)
+        handle.write(f"--- exit {status} in {duration}s\n")
+    state = load_state(name)
+    state.update({
+        "last_run": stamp,
+        "last_status": "ok" if status == 0 else f"exit {status}",
+        "last_exit": status,
+        "last_duration_seconds": duration,
+        "runs": int(state.get("runs", 0)) + 1,
+        "failures": int(state.get("failures", 0)) + (0 if status == 0 else 1),
+    })
+    save_state(name, state)
+    return status
+
+
+def cmd_run_now(args: argparse.Namespace) -> int:
+    timer = next((t for t in load_timers() if t["_name"] == args.name), None)
+    if timer is None or "_schedule" not in timer:
+        print(f"grintion-timer: no valid timer named {args.name}", file=sys.stderr)
+        return 2
+    if not require_root("running a timer", args.dry_run):
+        return 2
+    if args.dry_run:
+        print(f"would run as {timer.get('user', 'root')}: {timer['command']}")
+        return 0
+    status = execute(timer, args.timeout)
+    if args.json:
+        print(json.dumps({"schema": 1, "timer": args.name, "exit": status,
+                          "log": str(log_dir() / f'grintion-timer-{args.name}.log')},
+                         indent=2))
+    else:
+        print(f"{args.name}: exit {status} "
+              f"(log: {log_dir() / f'grintion-timer-{args.name}.log'})")
+    return 0 if status == 0 else 1
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    timer = next((t for t in load_timers() if t["_name"] == args.name), None)
+    if timer is None or "_schedule" not in timer:
+        print(f"grintion-timer: no valid timer named {args.name}", file=sys.stderr)
+        return 2
+    schedule: Schedule = timer["_schedule"]
+    print(f"grintion-timer {args.name}: {schedule.describe()}")
+    while True:
+        try:
+            target = schedule.next_after()
+        except ScheduleError as exc:
+            print(f"grintion-timer {args.name}: {exc}", file=sys.stderr)
+            return 2
+        while True:
+            remaining = target - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 300))
+        status = execute(timer, args.timeout)
+        print(f"grintion-timer {args.name}: exit {status}")
+        if schedule.kind == "boot":
+            while True:
+                time.sleep(3600)
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    try:
+        schedule = Schedule(args.schedule)
+        runs = []
+        moment = time.time()
+        for _ in range(3):
+            moment = schedule.next_after(moment)
+            runs.append(dt.datetime.fromtimestamp(moment).isoformat(timespec="seconds"))
+    except ScheduleError as exc:
+        print(f"grintion-timer: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "schedule": schedule.text,
+                          "kind": schedule.kind, "next_runs": runs}, indent=2))
+    else:
+        print(f"schedule: {schedule.text} ({schedule.kind})")
+        for run in runs:
+            print(f"  next: {run}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-timer",
+        description="Schedule jobs as dedicated runit services.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Schedules: every 30m | hourly | daily 03:30 | weekly mon 03:30 |\n"
+            "           monthly 1 04:00 | boot | cron '0 3 * * mon-fri'"
+        ),
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    sub = parser.add_subparsers(dest="command")
+
+    p_add = sub.add_parser("add", parents=[common], help="create a timer")
+    p_add.add_argument("name")
+    p_add.add_argument("--schedule", required=True)
+    p_add.add_argument("--command", required=True, help="shell command to run")
+    p_add.add_argument("--user", default="root")
+    p_add.add_argument("--description", default="")
+    p_add.add_argument("--disabled", action="store_true", help="write it without enabling")
+    p_add.add_argument("--force", action="store_true", help="replace an existing timer")
+    p_add.set_defaults(func=cmd_add)
+
+    sub.add_parser("list", parents=[common], help="list timers"
+                   ).set_defaults(func=cmd_list)
+
+    p_show = sub.add_parser("show", parents=[common], help="show one timer")
+    p_show.add_argument("name")
+    p_show.set_defaults(func=cmd_show)
+
+    p_remove = sub.add_parser("remove", parents=[common], help="delete a timer")
+    p_remove.add_argument("name")
+    p_remove.add_argument("--purge", action="store_true", help="also delete state and log")
+    p_remove.set_defaults(func=cmd_remove)
+
+    p_enable = sub.add_parser("enable", parents=[common], help="enable a timer")
+    p_enable.add_argument("name")
+    p_enable.set_defaults(func=cmd_enable)
+
+    p_disable = sub.add_parser("disable", parents=[common], help="disable a timer")
+    p_disable.add_argument("name")
+    p_disable.set_defaults(func=cmd_disable)
+
+    p_run = sub.add_parser("run-now", parents=[common], help="execute immediately")
+    p_run.add_argument("name")
+    p_run.add_argument("--timeout", type=int, default=3600)
+    p_run.set_defaults(func=cmd_run_now)
+
+    p_daemon = sub.add_parser("daemon", help="supervisor loop (used by the service)")
+    p_daemon.add_argument("name")
+    p_daemon.add_argument("--timeout", type=int, default=3600)
+    p_daemon.set_defaults(func=cmd_daemon, json=False, dry_run=False)
+
+    p_validate = sub.add_parser("validate", parents=[common],
+                                help="check a schedule expression")
+    p_validate.add_argument("schedule")
+    p_validate.set_defaults(func=cmd_validate)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,8 +8,17 @@ mkdir -p /var/log
 # Keep the profile result off tty1; it is still recorded for diagnostics.
 exec >>/var/log/firewall.log 2>&1
 
+# grintion-firewall keeps its deny entries in a separate table that can only
+# add drops, so loading it after the profile never weakens the profile.
+apply_blocklist() {
+    command -v grintion-firewall >/dev/null 2>&1 || return 0
+    grintion-firewall apply --quiet \
+        || echo "firewall: blocklist overlay failed to load"
+}
+
 if command -v grintion-security >/dev/null 2>&1; then
     if grintion-security apply-firewall; then
+        apply_blocklist
         exec sleep 86400
     fi
     echo "firewall: profile ruleset failed; loading the static default"
@@ -17,6 +26,7 @@ fi
 
 if command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ]; then
     if nft -f /etc/nftables.conf; then
+        apply_blocklist
         exec sleep 86400
     fi
 fi

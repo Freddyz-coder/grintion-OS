@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""grintion-ssh - SSH keys, agent state and client configuration audit.
+
+Subcommands:
+  status       ssh version, agent, key count and file permissions
+  keys         fingerprints, types and comments for ~/.ssh keys
+  keygen       create a key without ever putting a passphrase on argv
+  audit        flag risky client options and private-key permissions
+  fingerprint  fetch and print host key fingerprints
+  known-hosts  list or remove known_hosts entries
+  copy-id      run ssh-copy-id with the arguments you pass
+  agent        show the agent socket and loaded keys
+
+Only `fingerprint` and `copy-id` touch the network, and only the host you name.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+KEY_LINE = re.compile(r"^(\d+)\s+(\S+)\s+(.*)\s+\((\S+)\)$")
+SKIP_NAMES = {"config", "known_hosts", "known_hosts.old", "authorized_keys",
+              "environment", "rc"}
+WEAK_CIPHERS = ("arcfour", "3des", "des-cbc", "blowfish", "cast128")
+WEAK_MACS = ("md5", "hmac-sha1", "umac-64")
+WEAK_KEX = ("group1", "diffie-hellman-group14-sha1", "sha1")
+
+
+def user_home() -> Path:
+    override = os.environ.get("GRINTION_USER_HOME")
+    return Path(override) if override else Path.home()
+
+
+def ssh_dir() -> Path:
+    return user_home() / ".ssh"
+
+
+def run(cmd: list[str], timeout: int = 15, stdin: str | None = None) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              input=stdin, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def key_candidates() -> list[Path]:
+    directory = ssh_dir()
+    if not directory.is_dir():
+        return []
+    candidates = []
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file() or entry.name in SKIP_NAMES:
+            continue
+        if entry.suffix in (".pub", ".old", ".bak"):
+            continue
+        try:
+            if entry.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        candidates.append(entry)
+    return candidates
+
+
+def describe_key(path: Path) -> dict:
+    info = {
+        "path": str(path),
+        "bits": None,
+        "fingerprint": None,
+        "comment": "",
+        "type": None,
+        "public_key": path.with_name(path.name + ".pub").is_file(),
+        "mode": oct(stat.S_IMODE(path.stat().st_mode)) if path.exists() else None,
+        "mode_ok": True,
+    }
+    result = run(["ssh-keygen", "-l", "-f", str(path)])
+    if result.returncode == 0:
+        match = KEY_LINE.match(result.stdout.strip())
+        if match:
+            info["bits"] = int(match.group(1))
+            info["fingerprint"] = match.group(2)
+            info["comment"] = match.group(3)
+            info["type"] = match.group(4)
+    else:
+        info["error"] = (result.stderr or result.stdout).strip()
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        info["mode_ok"] = not (mode & 0o077)
+    except OSError:
+        info["mode_ok"] = False
+    return info
+
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    keys = [describe_key(path) for path in key_candidates()]
+    if args.json:
+        print(json.dumps({"schema": 1, "ssh_dir": str(ssh_dir()), "keys": keys}, indent=2))
+        return 0
+    if not keys:
+        print(f"no keys in {ssh_dir()}")
+        return 0
+    for key in keys:
+        print(f"{key['path']}")
+        if key["fingerprint"]:
+            print(f"  {key['bits']} bit {key['type']} {key['fingerprint']} {key['comment']}")
+        else:
+            print(f"  unreadable: {key.get('error', 'ssh-keygen failed')}")
+        print(f"  mode {key['mode']} {'ok' if key['mode_ok'] else 'TOO OPEN (chmod 600)'}"
+              f"{' public key present' if key['public_key'] else ''}")
+    return 0
+
+
+def dir_mode_ok(directory: Path) -> bool:
+    try:
+        return not (stat.S_IMODE(directory.stat().st_mode) & 0o077)
+    except OSError:
+        return False
+
+
+def agent_state() -> dict:
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    state = {"socket": sock, "running": bool(sock and Path(sock).exists()), "keys": []}
+    if not state["running"] or not shutil.which("ssh-add"):
+        return state
+    result = run(["ssh-add", "-l"])
+    if result.returncode == 0:
+        state["keys"] = [line for line in result.stdout.splitlines() if line.strip()]
+    elif "no identities" in (result.stdout + result.stderr).lower():
+        state["keys"] = []
+    return state
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    version = run(["ssh", "-V"])
+    version_text = (version.stderr or version.stdout).strip()
+    keys = [describe_key(path) for path in key_candidates()]
+    known_hosts = ssh_dir() / "known_hosts"
+    known_count = 0
+    if known_hosts.is_file():
+        known_count = sum(1 for line in known_hosts.read_text(
+            encoding="utf-8", errors="replace").splitlines() if line.strip())
+    payload = {
+        "schema": 1,
+        "ssh": version_text,
+        "ssh_available": shutil.which("ssh") is not None,
+        "sshd_available": shutil.which("sshd") is not None,
+        "sshd_enabled": (Path("/var/service/sshd").exists()
+                         or Path("/var/service/sshd").is_symlink()),
+        "ssh_dir": str(ssh_dir()),
+        "ssh_dir_present": ssh_dir().is_dir(),
+        "ssh_dir_mode_ok": dir_mode_ok(ssh_dir()),
+        "config_present": (ssh_dir() / "config").is_file(),
+        "keys": len(keys),
+        "keys_with_open_permissions": [k["path"] for k in keys if not k["mode_ok"]],
+        "known_hosts_entries": known_count,
+        "agent": agent_state(),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    print(f"client:      {payload['ssh'] or 'ssh not installed'}")
+    print(f"sshd:        {'installed' if payload['sshd_available'] else 'not installed'}"
+          f"{', service enabled' if payload['sshd_enabled'] else ''}")
+    print(f"ssh dir:     {ssh_dir()} ({'present' if payload['ssh_dir_present'] else 'missing'}, "
+          f"mode {'ok' if payload['ssh_dir_mode_ok'] else 'TOO OPEN'})")
+    print(f"config:      {'present' if payload['config_present'] else 'absent'}")
+    print(f"keys:        {payload['keys']}")
+    print(f"known_hosts: {known_count} entries")
+    agent = payload["agent"]
+    print(f"agent:       {'running' if agent['running'] else 'not running'}"
+          f" ({len(agent['keys'])} key(s) loaded)")
+    for path in payload["keys_with_open_permissions"]:
+        print(f"  WARNING {path} is readable by group/other", file=sys.stderr)
+    return 1 if payload["keys_with_open_permissions"] else 0
+
+
+def cmd_keygen(args: argparse.Namespace) -> int:
+    if "/" in args.name or args.name in ("", ".", ".."):
+        print("grintion-ssh: key name must be a plain file name", file=sys.stderr)
+        return 2
+    directory = ssh_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    target = directory / args.name
+    if target.exists() and not args.force:
+        print(f"grintion-ssh: {target} exists; use --force to overwrite", file=sys.stderr)
+        return 1
+    command = ["ssh-keygen", "-t", args.type, "-f", str(target), "-C",
+               args.comment or f"{os.environ.get('USER', 'grintion')}@{socket.gethostname()}"]
+    if args.bits:
+        command.extend(["-b", str(args.bits)])
+    if args.no_passphrase:
+        command.extend(["-N", ""])
+    if args.dry_run:
+        print("would run: " + " ".join(command) + (" (empty passphrase)" if args.no_passphrase else ""))
+        return 0
+    if target.exists() and args.force:
+        target.unlink()
+        target.with_name(target.name + ".pub").unlink(missing_ok=True)
+    # A passphrase prompt needs the terminal, so only the batch path captures
+    # output. That keeps machine-readable runs free of ssh-keygen chatter.
+    capture = args.no_passphrase or args.quiet
+    result = subprocess.run(command, capture_output=capture, text=True, check=False)
+    if capture and not args.json and result.stdout:
+        sys.stdout.write(result.stdout)
+    if capture and result.returncode != 0:
+        sys.stderr.write(result.stderr or "")
+    if result.returncode != 0:
+        return 1
+    os.chmod(target, 0o600)
+    public = target.with_name(target.name + ".pub")
+    if public.is_file():
+        os.chmod(public, 0o644)
+    if args.json:
+        print(json.dumps({"schema": 1, "private": str(target),
+                          "public": str(public), "type": args.type}, indent=2))
+    else:
+        print(f"created {target} ({args.type})")
+        if not args.no_passphrase:
+            print("the key is protected by the passphrase ssh-keygen asked for")
+    return 0
+
+
+def config_findings() -> list[dict]:
+    findings: list[dict] = []
+    config = ssh_dir() / "config"
+    if config.is_file():
+        try:
+            lines = config.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for number, raw in enumerate(lines, 1):
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, _, value = stripped.partition(" ")
+            key, value = key.lower(), value.strip().lower()
+            if key == "stricthostkeychecking" and value == "no":
+                findings.append({"source": str(config), "line": number,
+                                 "severity": "high",
+                                 "issue": "StrictHostKeyChecking no disables host verification",
+                                 "fix": "set StrictHostKeyChecking ask or yes"})
+            elif key == "userknownhostsfile" and value in ("/dev/null", "none"):
+                findings.append({"source": str(config), "line": number,
+                                 "severity": "high",
+                                 "issue": "host keys are discarded, so MITM is undetected",
+                                 "fix": "use the default ~/.ssh/known_hosts"})
+            elif key == "forwardagent" and value == "yes":
+                findings.append({"source": str(config), "line": number,
+                                 "severity": "medium",
+                                 "issue": "agent forwarding exposes the agent to the remote host",
+                                 "fix": "set ForwardAgent no or limit it to trusted hosts"})
+            elif key in ("ciphers", "macs", "kexalgorithms"):
+                bad = [name for name in WEAK_CIPHERS + WEAK_MACS + WEAK_KEX
+                       if name in value]
+                if bad:
+                    findings.append({"source": str(config), "line": number,
+                                     "severity": "high",
+                                     "issue": f"{key} enables weak algorithm(s): {', '.join(bad)}",
+                                     "fix": f"remove the weak entries from {key}"})
+    for path in key_candidates():
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue
+        if mode & 0o077:
+            findings.append({"source": str(path), "line": 0, "severity": "high",
+                             "issue": f"private key mode {oct(mode)} is readable by others",
+                             "fix": f"chmod 600 {path}"})
+    if ssh_dir().is_dir():
+        try:
+            mode = stat.S_IMODE(ssh_dir().stat().st_mode)
+        except OSError:
+            mode = 0
+        if mode & 0o077:
+            findings.append({"source": str(ssh_dir()), "line": 0, "severity": "medium",
+                             "issue": f"~/.ssh mode {oct(mode)} is too open",
+                             "fix": "chmod 700 ~/.ssh"})
+    sshd_config = Path(os.environ.get("GRINTION_SSHD_CONFIG", "/etc/ssh/sshd_config"))
+    if sshd_config.is_file():
+        try:
+            lines = sshd_config.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for number, raw in enumerate(lines, 1):
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, _, value = stripped.partition(" ")
+            key, value = key.lower(), value.strip().lower()
+            if key == "permitemptypasswords" and value == "yes":
+                findings.append({"source": str(sshd_config), "line": number,
+                                 "severity": "high",
+                                 "issue": "PermitEmptyPasswords yes accepts accounts without a password",
+                                 "fix": "set PermitEmptyPasswords no"})
+            elif key == "permitrootlogin" and value == "yes":
+                findings.append({"source": str(sshd_config), "line": number,
+                                 "severity": "medium",
+                                 "issue": "root can log in over SSH with a password",
+                                 "fix": "set PermitRootLogin prohibit-password"})
+            elif key == "protocol" and value.startswith("1"):
+                findings.append({"source": str(sshd_config), "line": number,
+                                 "severity": "high",
+                                 "issue": "SSH protocol 1 is broken",
+                                 "fix": "remove the Protocol line"})
+    return findings
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    findings = config_findings()
+    if args.json:
+        print(json.dumps({"schema": 1, "findings": findings,
+                          "high": sum(1 for f in findings if f["severity"] == "high")},
+                         indent=2))
+        return 0 if not findings else 1
+    if not findings:
+        print("no risky SSH client settings found")
+        return 0
+    for finding in findings:
+        location = finding["source"] + (f":{finding['line']}" if finding["line"] else "")
+        print(f"{finding['severity'].upper():<6} {location}")
+        print(f"       {finding['issue']}")
+        print(f"       fix: {finding['fix']}")
+    return 1
+
+
+def cmd_fingerprint(args: argparse.Namespace) -> int:
+    scan = run(["ssh-keyscan", "-T", "3", "-p", str(args.port), args.host], timeout=15)
+    lines = [line for line in scan.stdout.splitlines()
+             if line.strip() and not line.startswith("#")]
+    keys = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".pub", delete=False) as handle:
+            handle.write(line + "\n")
+            temporary = handle.name
+        try:
+            probe = run(["ssh-keygen", "-l", "-f", temporary])
+            if probe.returncode == 0:
+                match = KEY_LINE.match(probe.stdout.strip())
+                keys.append({
+                    "host": fields[0],
+                    "bits": int(match.group(1)) if match else None,
+                    "fingerprint": match.group(2) if match else probe.stdout.strip(),
+                    "type": match.group(4) if match else fields[1],
+                })
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    if args.json:
+        print(json.dumps({"schema": 1, "host": args.host, "keys": keys}, indent=2))
+        return 0 if keys else 1
+    for key in keys:
+        print(f"{key['host']} {key['bits']} bit {key['type']} {key['fingerprint']}")
+    if not keys:
+        print(f"grintion-ssh: no host keys returned by {args.host}:{args.port}",
+              file=sys.stderr)
+    return 0 if keys else 1
+
+
+def cmd_known_hosts(args: argparse.Namespace) -> int:
+    path = ssh_dir() / "known_hosts"
+    if args.remove:
+        if not path.is_file():
+            print(f"grintion-ssh: {path} does not exist", file=sys.stderr)
+            return 1
+        result = run(["ssh-keygen", "-R", args.remove, "-f", str(path)])
+        if result.returncode != 0:
+            print(f"grintion-ssh: removal failed: {result.stderr.strip()}", file=sys.stderr)
+            return 1
+        print(f"removed known_hosts entries for {args.remove}")
+        return 0
+    entries = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip() and not line.startswith("#"):
+                entries.append(line.split()[0])
+    if args.json:
+        print(json.dumps({"schema": 1, "path": str(path), "count": len(entries),
+                          "hosts": entries}, indent=2))
+        return 0
+    print(f"{path}: {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}")
+    for host in entries:
+        print(f"  {host}")
+    return 0
+
+
+def cmd_agent(args: argparse.Namespace) -> int:
+    state = agent_state()
+    if args.add:
+        if not state["running"]:
+            print("grintion-ssh: no agent is running; start one with "
+                  "'eval $(ssh-agent)'", file=sys.stderr)
+            return 1
+        result = subprocess.run(["ssh-add", args.add], check=False)
+        return result.returncode
+    if args.json:
+        print(json.dumps({"schema": 1, **state}, indent=2))
+        return 0
+    print(f"socket: {state['socket'] or 'unset'}")
+    print(f"status: {'running' if state['running'] else 'not running'}")
+    for key in state["keys"]:
+        print(f"  {key}")
+    return 0
+
+
+def cmd_copy_id(args: argparse.Namespace) -> int:
+    if not args.host:
+        print("grintion-ssh: copy-id needs a host", file=sys.stderr)
+        return 2
+    command = ["ssh-copy-id"]
+    if args.port:
+        command.extend(["-p", str(args.port)])
+    if args.identity:
+        command.extend(["-i", args.identity])
+    command.append(args.host)
+    os.execvp(command[0], command)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-ssh",
+        description="Manage SSH keys, agent state and client configuration.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", parents=[common], help="SSH client state"
+                   ).set_defaults(func=cmd_status)
+    sub.add_parser("keys", parents=[common], help="list key fingerprints"
+                   ).set_defaults(func=cmd_keys)
+    sub.add_parser("audit", parents=[common], help="check risky settings"
+                   ).set_defaults(func=cmd_audit)
+
+    p_keygen = sub.add_parser("keygen", parents=[common], help="create a key")
+    p_keygen.add_argument("name")
+    p_keygen.add_argument("--type", default="ed25519",
+                          choices=("ed25519", "rsa", "ecdsa"))
+    p_keygen.add_argument("--bits", type=int)
+    p_keygen.add_argument("--comment")
+    p_keygen.add_argument("--no-passphrase", action="store_true",
+                          help="create an unencrypted key (for automation)")
+    p_keygen.add_argument("--force", action="store_true")
+    p_keygen.add_argument("--dry-run", action="store_true")
+    p_keygen.add_argument("--quiet", action="store_true", help="hide ssh-keygen output")
+    p_keygen.set_defaults(func=cmd_keygen)
+
+    p_fp = sub.add_parser("fingerprint", parents=[common], help="host key fingerprints")
+    p_fp.add_argument("host")
+    p_fp.add_argument("--port", type=int, default=22)
+    p_fp.set_defaults(func=cmd_fingerprint)
+
+    p_known = sub.add_parser("known-hosts", parents=[common], help="known_hosts entries")
+    p_known.add_argument("--remove", metavar="HOST")
+    p_known.set_defaults(func=cmd_known_hosts)
+
+    p_agent = sub.add_parser("agent", parents=[common], help="agent state")
+    p_agent.add_argument("--add", metavar="KEY", help="add a key to the agent")
+    p_agent.set_defaults(func=cmd_agent)
+
+    p_copy = sub.add_parser("copy-id", parents=[common], help="install a key on a host")
+    p_copy.add_argument("host")
+    p_copy.add_argument("--port", type=int)
+    p_copy.add_argument("--identity")
+    p_copy.set_defaults(func=cmd_copy_id)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

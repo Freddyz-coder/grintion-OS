@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""grintion-modules - kernel module inventory, parameters and blacklists.
+
+Subcommands:
+  list        loaded modules with size, use count and dependencies
+  info        modinfo metadata, blacklist state and builtin state
+  params      runtime values from /sys/module/<name>/parameters
+  deps        dependencies declared by the module
+  load        modprobe a module, optionally with parameters
+  unload      remove a module when its use count is zero
+  blacklist   add or remove a modprobe.d blacklist entry
+  builtin     list or test the builtin module set
+  taint       decode /proc/sys/kernel/tainted
+
+The image forces module signatures (CONFIG_MODULE_SIG_FORCE), so an unsigned
+third-party module will be refused by the kernel even when modprobe succeeds;
+`grintion-module-sign` handles signing.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+BLACKLIST_FILE = "/etc/modprobe.d/grintion-blacklist.conf"
+MODULES_DIR = Path("/lib/modules") / platform.release()
+TAINT_FLAGS = {
+    0: "proprietary module",
+    1: "module forced load",
+    2: "kernel forced unload",
+    3: "machine check",
+    4: "bad page",
+    5: "user requested taint",
+    6: "kernel oops",
+    7: "kernel died",
+    8: "ACPI overridden",
+    9: "unsafe SMP",
+    10: "staging driver",
+    11: "firmware workaround",
+    12: "out-of-tree module",
+    13: "unsigned module",
+    14: "soft lockup",
+    15: "live patched",
+    16: "auxiliary taint",
+    17: "struct page layout",
+}
+
+
+def root_path(path: str) -> Path:
+    prefix = os.environ.get("GRINTION_ROOT", "").rstrip("/")
+    if prefix:
+        return Path(f"{prefix}/{path.lstrip('/')}")
+    return Path(path)
+
+
+def require_root(action: str, dry_run: bool) -> bool:
+    if dry_run or os.environ.get("GRINTION_ROOT"):
+        return True
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    print(f"grintion-modules: {action} requires root; rerun with sudo", file=sys.stderr)
+    return False
+
+
+def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def loaded_modules() -> list[dict]:
+    modules = []
+    try:
+        lines = Path("/proc/modules").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return modules
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        modules.append({
+            "name": fields[0],
+            "size_bytes": int(fields[1]) if fields[1].isdigit() else 0,
+            "used_by_count": int(fields[2]) if fields[2].isdigit() else 0,
+            "dependencies": [] if fields[3] == "-" else fields[3].rstrip(",").split(","),
+            "state": fields[4],
+        })
+    return modules
+
+
+def module_params(name: str) -> dict:
+    directory = Path("/sys/module") / name / "parameters"
+    values = {}
+    if not directory.is_dir():
+        return values
+    for entry in sorted(directory.iterdir()):
+        try:
+            values[entry.name] = entry.read_text(encoding="utf-8",
+                                                 errors="replace").strip()
+        except OSError:
+            values[entry.name] = "<unreadable>"
+    return values
+
+
+def blacklist_entries() -> list[dict]:
+    entries = []
+    directories = [root_path("/etc/modprobe.d"), root_path("/usr/lib/modprobe.d")]
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.conf")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for number, raw in enumerate(lines, 1):
+                fields = raw.strip().split()
+                if len(fields) >= 2 and fields[0] in ("blacklist", "install") \
+                        and fields[1] != "=":
+                    if fields[0] == "install" and len(fields) >= 3 \
+                            and fields[2] not in ("/bin/true", "/bin/false"):
+                        continue
+                    entries.append({"module": fields[1], "file": str(path),
+                                    "line": number, "directive": fields[0]})
+    return entries
+
+
+def is_blacklisted(name: str) -> bool:
+    return any(entry["module"] == name for entry in blacklist_entries())
+
+
+def builtin_modules() -> set[str]:
+    path = MODULES_DIR / "modules.builtin"
+    names = set()
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line:
+                names.add(Path(line).stem.split(".")[0].replace("-", "_"))
+    except OSError:
+        pass
+    return names
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    modules = loaded_modules()
+    if args.json:
+        print(json.dumps({"schema": 1, "count": len(modules), "modules": modules},
+                         indent=2))
+        return 0
+    print(f"{'MODULE':<24} {'SIZE':>10} {'USE':>4} DEPENDENCIES")
+    for module in modules:
+        print(f"{module['name']:<24} {module['size_bytes']:>10} "
+              f"{module['used_by_count']:>4} {', '.join(module['dependencies']) or '-'}")
+    return 0
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    modinfo = shutil.which("modinfo")
+    fields: dict[str, list[str]] = {}
+    if modinfo:
+        result = run([modinfo, args.name])
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(":")
+            fields.setdefault(key.strip(), []).append(value.strip())
+    loaded = next((module for module in loaded_modules() if module["name"] == args.name),
+                  None)
+    payload = {
+        "schema": 1,
+        "name": args.name,
+        "loaded": loaded is not None,
+        "builtin": args.name.replace("-", "_") in builtin_modules(),
+        "blacklisted": is_blacklisted(args.name),
+        "filename": (fields.get("filename") or [None])[0],
+        "description": (fields.get("description") or [""])[0],
+        "license": (fields.get("license") or [""])[0],
+        "author": (fields.get("author") or [""])[0],
+        "depends": (fields.get("depends") or [""])[0],
+        "aliases": fields.get("alias", [])[:20],
+        "parameters": module_params(args.name),
+        "module": loaded,
+    }
+    found = bool(fields) or loaded is not None or payload["builtin"]
+    if args.json:
+        print(json.dumps({**payload, "found": found}, indent=2))
+        return 0 if found else 1
+    if not found:
+        print(f"grintion-modules: no module named {args.name}", file=sys.stderr)
+        return 1
+    print(f"module:      {args.name}")
+    print(f"loaded:      {'yes' if payload['loaded'] else 'no'}")
+    print(f"builtin:     {'yes' if payload['builtin'] else 'no'}")
+    print(f"blacklisted: {'yes' if payload['blacklisted'] else 'no'}")
+    if payload["filename"]:
+        print(f"file:        {payload['filename']}")
+    if payload["description"]:
+        print(f"description: {payload['description']}")
+    if payload["depends"]:
+        print(f"depends:     {payload['depends']}")
+    for name, value in payload["parameters"].items():
+        print(f"param:       {name}={value}")
+    return 0
+
+
+def cmd_params(args: argparse.Namespace) -> int:
+    values = module_params(args.name)
+    if not values:
+        print(f"grintion-modules: {args.name} is not loaded or takes no parameters",
+              file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "module": args.name, "parameters": values},
+                         indent=2))
+        return 0
+    for name, value in values.items():
+        print(f"{name} = {value}")
+    return 0
+
+
+def cmd_deps(args: argparse.Namespace) -> int:
+    dependencies: list[str] = []
+    modinfo = shutil.which("modinfo")
+    if modinfo:
+        result = run([modinfo, "-F", "depends", args.name])
+        if result.returncode == 0 and result.stdout.strip():
+            dependencies = [item.strip() for item in result.stdout.strip().split(",")
+                            if item.strip()]
+    if not dependencies:
+        loaded = next((module for module in loaded_modules()
+                       if module["name"] == args.name), None)
+        if loaded:
+            dependencies = loaded["dependencies"]
+    if args.json:
+        print(json.dumps({"schema": 1, "module": args.name,
+                          "dependencies": dependencies}, indent=2))
+        return 0
+    print(f"{args.name}: {', '.join(dependencies) or 'no dependencies'}")
+    return 0
+
+
+def cmd_load(args: argparse.Namespace) -> int:
+    if any(module["name"] == args.name for module in loaded_modules()):
+        print(f"grintion-modules: {args.name} is already loaded")
+        return 0
+    command = ["modprobe", args.name, *(args.param or [])]
+    if args.dry_run:
+        print("would run: " + " ".join(command))
+        return 0
+    if not require_root("loading a module", args.dry_run):
+        return 2
+    result = run(command)
+    if result.returncode != 0:
+        print(f"grintion-modules: modprobe failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "module": args.name, "loaded": True},
+                         indent=2))
+    else:
+        print(f"loaded {args.name}")
+    return 0
+
+
+def cmd_unload(args: argparse.Namespace) -> int:
+    loaded = next((module for module in loaded_modules() if module["name"] == args.name),
+                  None)
+    if loaded is None:
+        print(f"grintion-modules: {args.name} is not loaded", file=sys.stderr)
+        return 1
+    if loaded["used_by_count"] > 0 and not args.force:
+        print(f"grintion-modules: {args.name} is in use by {loaded['used_by_count']} "
+              "other module(s); stop the users first", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print(f"would run: modprobe -r {args.name}")
+        return 0
+    if not require_root("unloading a module", args.dry_run):
+        return 2
+    result = run(["modprobe", "-r", args.name])
+    if result.returncode != 0:
+        print(f"grintion-modules: unload failed: "
+              f"{result.stderr.strip() or result.stdout.strip()}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"schema": 1, "module": args.name, "loaded": False},
+                         indent=2))
+    else:
+        print(f"unloaded {args.name}")
+    return 0
+
+
+def cmd_blacklist(args: argparse.Namespace) -> int:
+    if not re.match(r"^[A-Za-z0-9_-]+$", args.name):
+        print("grintion-modules: invalid module name", file=sys.stderr)
+        return 2
+    if not require_root("changing the module blacklist", args.dry_run):
+        return 2
+    path = root_path(BLACKLIST_FILE)
+    lines: list[str] = []
+    if path.is_file():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    current = [line.strip() for line in lines]
+    marker = f"blacklist {args.name}"
+    if args.remove:
+        if marker not in current:
+            print(f"grintion-modules: {args.name} is not in {BLACKLIST_FILE}",
+                  file=sys.stderr)
+            return 1
+        lines = [line for line in lines
+                 if line.strip() not in (marker, f"install {args.name} /bin/true")]
+        action = "removed"
+    else:
+        if marker in current:
+            print(f"grintion-modules: {args.name} is already blacklisted")
+            return 0
+        if not lines:
+            lines = ["# Managed by grintion-modules", ""]
+        lines.append(marker)
+        action = "added"
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"schema": 1, "dry_run": True, "module": args.name,
+                              "action": action, "file": BLACKLIST_FILE}, indent=2))
+        else:
+            print(f"would {action} '{marker}' in {BLACKLIST_FILE}")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+    if args.json:
+        print(json.dumps({"schema": 1, "module": args.name, "action": action,
+                          "file": BLACKLIST_FILE}, indent=2))
+    else:
+        print(f"{action} '{marker}' in {BLACKLIST_FILE}")
+        print("run 'mkinitcpio -P' or rebuild the initramfs if the module is needed early")
+    return 0
+
+
+def cmd_builtin(args: argparse.Namespace) -> int:
+    names = builtin_modules()
+    if args.name:
+        found = args.name.replace("-", "_") in names
+        if args.json:
+            print(json.dumps({"schema": 1, "module": args.name,
+                              "builtin": found}, indent=2))
+        else:
+            print(f"{args.name}: {'builtin' if found else 'not builtin'}")
+        return 0 if found else 1
+    if args.json:
+        print(json.dumps({"schema": 1, "count": len(names),
+                          "modules": sorted(names)}, indent=2))
+        return 0
+    print(f"{len(names)} builtin modules for {platform.release()}")
+    for name in sorted(names)[:args.top]:
+        print(f"  {name}")
+    return 0
+
+
+def cmd_taint(args: argparse.Namespace) -> int:
+    try:
+        value = int(Path("/proc/sys/kernel/tainted").read_text(
+            encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        value = 0
+    flags = [description for bit, description in TAINT_FLAGS.items()
+             if value & (1 << bit)]
+    if args.json:
+        print(json.dumps({"schema": 1, "tainted": value, "flags": flags,
+                          "clean": value == 0}, indent=2))
+        return 0
+    if value == 0:
+        print("kernel is not tainted")
+        return 0
+    print(f"kernel taint mask: {value}")
+    for flag in flags:
+        print(f"  {flag}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="grintion-modules",
+        description="Inspect and manage kernel modules.",
+    )
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--dry-run", action="store_true", help="print the plan only")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("list", parents=[common], help="loaded modules"
+                   ).set_defaults(func=cmd_list)
+
+    p_info = sub.add_parser("info", parents=[common], help="module metadata")
+    p_info.add_argument("name")
+    p_info.set_defaults(func=cmd_info)
+
+    p_params = sub.add_parser("params", parents=[common], help="runtime parameters")
+    p_params.add_argument("name")
+    p_params.set_defaults(func=cmd_params)
+
+    p_deps = sub.add_parser("deps", parents=[common], help="module dependencies")
+    p_deps.add_argument("name")
+    p_deps.set_defaults(func=cmd_deps)
+
+    p_load = sub.add_parser("load", parents=[common], help="load a module")
+    p_load.add_argument("name")
+    p_load.add_argument("--param", action="append", metavar="KEY=VALUE")
+    p_load.set_defaults(func=cmd_load)
+
+    p_unload = sub.add_parser("unload", parents=[common], help="unload a module")
+    p_unload.add_argument("name")
+    p_unload.add_argument("--force", action="store_true",
+                          help="try even when the use count is nonzero")
+    p_unload.set_defaults(func=cmd_unload)
+
+    p_black = sub.add_parser("blacklist", parents=[common], help="blacklist a module")
+    p_black.add_argument("name")
+    p_black.add_argument("--remove", "--unblacklist", dest="remove",
+                         action="store_true")
+    p_black.set_defaults(func=cmd_blacklist)
+
+    p_builtin = sub.add_parser("builtin", parents=[common], help="builtin module set")
+    p_builtin.add_argument("name", nargs="?")
+    p_builtin.add_argument("--top", type=int, default=40)
+    p_builtin.set_defaults(func=cmd_builtin)
+
+    sub.add_parser("taint", parents=[common], help="decode the taint mask"
+                   ).set_defaults(func=cmd_taint)
+
+    args = parser.parse_args()
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
