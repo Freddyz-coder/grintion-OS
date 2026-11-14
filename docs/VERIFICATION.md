@@ -1,8 +1,43 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.14.2,
-0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work. It does
-not claim coverage of hardware or configurations that were not tested.
+This document records what was actually executed for Grintion-OS 0.14.3,
+0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.14.3 installation speed and console cleanup (2026-11-14)
+
+This patch adds the official Arch Linux Archive selector, raises pacman's
+parallel download limit, keeps service diagnostics out of tty1, reports the
+real tty in fastfetch, removes the `(MISS)` identity suffix, and aligns the
+desktop menu and documentation with the supported runit profiles. The ISO was
+rebuilt from the clean 0.14.3 commit. Live BIOS/UEFI boot, the installer and an
+installed reboot were not rerun for 0.14.3, so the new console and installation
+behavior is covered by the static gate and unit tests rather than a booted
+guest.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 132,169,728 bytes (126 MiB) |
+| SHA-256 | `3dcf4ad1ac86b39f9ba1960deb864883cb5864bdd767b69bf21d951b857eb6bf` |
+| `BUILD-INFO` source commit | `3ed5b11` (0.14.3 release commit) |
+| Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
+| Embedded identity | `Grintion-OS 0.14.3` in `/etc/os-release`, `/etc/issue` and Limine |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | 203 passed |
+| `make iso` | Passed; live rootfs and installed initramfs assembled with the staged Arch AppArmor parser |
+| ISO checksum | `sha256sum -c` passed |
+| Limine entries | `Grintion-OS 0.14.3 (live, RAM)` and `(recovery shell)` present |
+| Installed console boot | Not rerun for 0.14.3 |
+| BIOS/UEFI live boot | Not rerun for 0.14.3 |
+| Desktop/package install | Unit tests only; not rerun on a booted guest |
+| Installer / installed reboot | Not rerun for 0.14.3 |
+| Bare-metal hardware | Not tested |
 
 ## 0.14.2 quiet console and fresh-install packages (2026-11-14)
 

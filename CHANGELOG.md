@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partitioning with the systemd requirement, and the welcome guide no longer
   suggests it.
 
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.14.3:
+  `output/grintion-os-x86_64.iso`, 132,169,728 bytes (126 MiB), SHA-256
+  `3dcf4ad1ac86b39f9ba1960deb864883cb5864bdd767b69bf21d951b857eb6bf`.
+- `make check` passes with 203 tests, and `make iso` completed from commit
+  `3ed5b11`. Live BIOS/UEFI boot, the installer and an installed reboot were
+  not rerun for 0.14.3.
+
 ---
 
 ## [0.14.2] - 2026-11-14
