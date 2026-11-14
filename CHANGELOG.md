@@ -91,11 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Rebuilt the x86_64 BIOS/UEFI ISO as 0.15.0:
   `output/grintion-os-x86_64.iso`, 132,220,928 bytes (126 MiB), SHA-256
-  `3933ea1d765e74038de69b7cf62ba160bdc51d6b5e5fbc33ad4096ea86eee1df`.
+  `96f14a1d45fbe328bd4c92e08be217965e0d5bbcf23da45c6158c645c065fde6`.
 - `make check` passes with 236 tests. The ISO was rebuilt from commit
-  `0000000` (pending release commit) with a staged AppArmor package because the
-  host has no system `apparmor_parser`. Live BIOS/UEFI boot, the installer and an
-  installed reboot were not rerun for 0.15.0.
+  `9f4eb10` with a staged AppArmor package because the host has no system
+  `apparmor_parser`. Live BIOS/UEFI boot, the installer and an installed reboot
+  were not rerun for 0.15.0.
 
 ---
 

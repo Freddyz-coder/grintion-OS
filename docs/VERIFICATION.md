@@ -20,8 +20,8 @@ is covered by the static gate and the new unit tests rather than a booted guest.
 | Artifact | Value |
 | --- | --- |
 | ISO | `output/grintion-os-x86_64.iso`, 132,220,928 bytes (126 MiB) |
-| SHA-256 | `3933ea1d765e74038de69b7cf62ba160bdc51d6b5e5fbc33ad4096ea86eee1df` |
-| `BUILD-INFO` source commit | pending release commit |
+| SHA-256 | `96f14a1d45fbe328bd4c92e08be217965e0d5bbcf23da45c6158c645c065fde6` |
+| `BUILD-INFO` source commit | `9f4eb10` (0.15.0 release commit) |
 | Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
 | Live initramfs identity | `Grintion-OS 0.15.0` in `/etc/os-release`, `/etc/issue` and `/etc/grintion/version` |
 | Installed initramfs identity | `Grintion-OS 0.15.0` in `/etc/os-release`, `/etc/issue` and `/etc/grintion/version` |
