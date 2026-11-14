@@ -6,11 +6,11 @@ Grintion-OS is designed with a clean separation of concerns:
 
 ---
 
-## Verification status (0.11.0 rendering; 0.13.0 install path)
+## Verification status (0.11.0 rendering; 0.13.0 install path; 0.16.1 mouse fix)
 
 The rendered-session evidence below is from 0.11.0. Grintion-OS 0.13.0 did not
 re-render a graphical session; it carries the 0.12.1 KDE target-disk install
-and adds VM pointer synchronization (see [VERIFICATION.md](VERIFICATION.md)).
+and adds VM pointer synchronization (see [VERIFICATION.md](VERIFICATION.md)). 0.16.1 extends this fix to Wayland compositors (Sway, KDE Plasma Wayland via greetd) and fixes a bitmask parser false-positive that could wrongly suppress the mouse when no USB tablet was present.
 
 Verified: `sudo grintion-desktop install xfce` and `... install i3` complete,
 LightDM starts, and both sessions render under Xorg in QEMU/KVM. The probes

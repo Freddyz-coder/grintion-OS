@@ -4,6 +4,21 @@ This document records what was actually executed for Grintion-OS 0.16.0,
 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
 
+## 0.16.1 patch — VM mouse desynchronisation fix (2026-11-14)
+
+The 0.16.1 patch adds no new ISO artifact; the same kernel and initramfs are
+used. Changes are confined to the rootfs:
+
+| Check | Result |
+| --- | --- |
+| `make check` (248 tests) | **248 passed**, 0 failures |
+| New regression tests | `test_multiword_zero_abs_line_is_not_treated_as_absolute_pointer`, `test_touchpad_abs_axes_do_not_suppress_relative_mouse`, `test_greetd_service_runs_pointer_sync_before_compositor` |
+| `bin/pointer-sync` bitmask parser | Fixed — `B: ABS=0 0 0` (all-zero multi-word) no longer triggers the tablet path |
+| `bin/pointer-sync` touchpad guard | Fixed — devices with `ABS_MT_*` bits (bit 47+) are excluded from the VM tablet classification |
+| `etc/sv/greetd/run` | Fixed — `grintion-pointer-sync` now runs before `greetd` for Wayland compositors (Sway, KDE Plasma Wayland) |
+
+---
+
 ## 0.16.0 advanced administration commands (2026-11-14)
 
 This release adds sixteen new `grintion-*` administration commands covering

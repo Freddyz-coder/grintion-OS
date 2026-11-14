@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.16.1] - 2026-11-14
+
+### Fixed
+
+- **VM mouse desynchronisation resolved for all compositor paths.**
+  Three distinct bugs caused the guest cursor to drift away from the host
+  pointer in QEMU/libvirt/VirtualBox VMs:
+
+  1. **Bitmask parser false-positive** (`bin/pointer-sync`): `/proc/bus/input/devices`
+     bitmask lines can span multiple space-separated 32-bit hex words (e.g.
+     `B: ABS=0 0 0`). The old `re.search` negative look-ahead only anchored to
+     end-of-string, so `B: ABS=0 0 0` was incorrectly matched by the leading
+     `=0` before the spaces — making `pointer-sync` believe an absolute tablet
+     was present and suppressing the relative mouse. Replaced with
+     `_has_nonzero_bits()` that splits on whitespace and tests each word.
+
+  2. **Touchpad mis-classified as VM tablet** (`bin/pointer-sync`): internal
+     touchpads also expose `ABS` axes. A system with a touchpad + PS/2 mouse
+     (but no USB tablet) would incorrectly suppress the PS/2 mouse. Added
+     `_is_vm_absolute_tablet()` which rejects devices with `ABS_MT_*` bits
+     (Linux input bit 47+, i.e. touch surfaces).
+
+  3. **Wayland compositor coverage gap** (`etc/sv/greetd/run`): the
+     `display-manager` service (Xorg/KWin) already ran `grintion-pointer-sync`
+     before starting, but `greetd` — used by **Sway** and **KDE Plasma
+     Wayland** — did not. Wayland compositors were therefore still receiving
+     both pointer streams and exhibiting the classic two-cursor drift. The same
+     guard block is now added to `etc/sv/greetd/run`.
+
+### Tests
+
+- `test_multiword_zero_abs_line_is_not_treated_as_absolute_pointer` — regression
+  test for the multi-word all-zero ABS bitmask false-positive.
+- `test_touchpad_abs_axes_do_not_suppress_relative_mouse` — verifies that a
+  Synaptics touchpad with MT axes does not suppress the USB/PS2 mouse.
+- `test_greetd_service_runs_pointer_sync_before_compositor` — asserts the greetd
+  service calls `grintion-pointer-sync` before `exec /usr/bin/greetd`.
+- Full suite: **248 passed**, 0 failures.
+
+---
+
 ## [0.16.0] - 2026-11-14
 
 ### Added

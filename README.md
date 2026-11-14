@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.16.0 — *Clean command names · AppArmor 2.0 · Advanced tooling*
+- **Version:** 0.16.1 — *VM mouse desync fix · Clean command names · AppArmor 2.0 · Advanced tooling*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,7 +17,9 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.16.0 delivers three major improvements over 0.15.0:
+0.16.1 is a patch release fixing VM mouse desynchronisation on all compositor paths (Xorg, KWin, Sway, KDE Plasma Wayland) — see [CHANGELOG.md](CHANGELOG.md) for details.
+
+0.16.0 delivered three major improvements over 0.15.0:
 
 1. **Clean command names** — all 75+ tools in `bin/` drop the redundant
    `grintion-` prefix (e.g. `install`, `desktop`, `apparmor`). The rootfs
