@@ -8,11 +8,18 @@ does not expose the right virtual hardware.
 
 Grintion-OS runs standalone `systemd-udevd` and uses libinput for XFCE/KDE.
 QEMU/libvirt/VirtualBox can still expose both a relative PS/2 mouse and an
-absolute USB tablet. The display-manager service now runs
-`grintion-pointer-sync` before Xorg/KWin: when an absolute tablet is present,
-the relative duplicate is marked with libinput's `LIBINPUT_IGNORE_DEVICE`
-property. Only the absolute device drives the cursor. If no tablet is present,
-the relative mouse is left enabled.
+absolute USB tablet. Both the `display-manager` service (Xorg/KWin) and the
+`greetd` service (Sway, KDE Plasma Wayland) run `grintion-pointer-sync` before
+the compositor starts: when an absolute tablet is present, the relative
+duplicate is marked with libinput's `LIBINPUT_IGNORE_DEVICE` property.  Only
+the absolute device drives the cursor.  If no tablet is present, the relative
+mouse is left enabled.
+
+> [!NOTE]
+> `pointer-sync` correctly handles devices that report multi-word all-zero
+> `B: ABS=` bitmask lines (e.g. `B: ABS=0 0 0`) and distinguishes VM absolute
+> tablets from touch-pads and touch-screens by checking for `ABS_MT_*` bits
+> (bit 47+).  A touchpad will not accidentally suppress a USB mouse.
 
 ### QEMU
 

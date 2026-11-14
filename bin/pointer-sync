@@ -29,6 +29,63 @@ RULE_NAME = "99-grintion-pointer-sync.rules"
 MARKER = Path(os.environ.get("GRINTION_POINTER_MARKER", "/run/grintion/absolute-pointer"))
 
 
+def _has_nonzero_bits(line: str) -> bool:
+    """Return True if any hex word after '=' in *line* is non-zero.
+
+    ``/proc/bus/input/devices`` bitmask lines may contain multiple
+    space-separated 32-bit hex words (MSB first).  A line such as
+    ``B: ABS=0 0 0`` carries all-zero bits; the old ``re.search``
+    negative look-ahead only checked the *last* word and would
+    incorrectly return True for ``B: ABS=0 0 0`` by matching the
+    leading ``=0`` before the spaces.  Splitting on whitespace and
+    testing each word fixes that false positive.
+    """
+    if "=" not in line:
+        return False
+    value_part = line.split("=", 1)[1].strip()
+    return any(
+        word != "0" and re.fullmatch(r"[0-9a-fA-F]+", word)
+        for word in value_part.split()
+    )
+
+
+def _is_vm_absolute_tablet(device: dict[str, object]) -> bool:
+    """Return True when *device* looks like a VM absolute pointer tablet.
+
+    Both QEMU's ``usb-tablet`` and VirtualBox's USB Tablet expose only
+    ``ABS_X`` / ``ABS_Y`` (and optionally ``ABS_PRESSURE``).  Real
+    touch-pads and touch-screens set ``ABS_MT_*`` bits (kernel bit 47+)
+    in addition.  We require that the device has absolute axes **and**
+    no relative axes **and** no multitouch bits so that an internal
+    touch-pad does not suppress a physical USB mouse when the host
+    running on bare metal.
+
+    ``ABS_MT_SLOT`` is Linux input bit 0x2f (47).  Any device whose
+    bitmask value has bit 47 or higher set is a touch surface, not a
+    VM pointer tablet.  The bitmask is stored MSB-first as
+    space-separated 32-bit hex words; the second-to-last word covers
+    bits 32-63.
+    """
+    if not device.get("abs"):
+        return False
+    # Relative-axis devices (normal mice) are never the tablet.
+    if device.get("rel"):
+        return False
+    # Inspect the raw ABS bitmask for MT bits (bit 47 and above).
+    abs_raw: str = str(device.get("abs_raw", "0"))
+    words = abs_raw.split()
+    if len(words) >= 2:
+        try:
+            # Second-to-last word covers bits 32-63 in MSB-first ordering.
+            # ABS_MT_SLOT (bit 47) = bit 15 of that 32-bit word.
+            second_word = int(words[-2], 16)
+            if second_word >> 15:
+                return False  # Has MT axes → touch surface, not a VM tablet
+        except ValueError:
+            pass
+    return True
+
+
 def parse_devices(text: str) -> list[dict[str, object]]:
     devices: list[dict[str, object]] = []
     current: dict[str, object] | None = None
@@ -36,7 +93,7 @@ def parse_devices(text: str) -> list[dict[str, object]]:
         if line.startswith("I: "):
             if current is not None:
                 devices.append(current)
-            current = {"name": "", "event": "", "key": False, "rel": False, "abs": False}
+            current = {"name": "", "event": "", "key": False, "rel": False, "abs": False, "abs_raw": "0"}
             continue
         if current is None:
             continue
@@ -47,11 +104,13 @@ def parse_devices(text: str) -> list[dict[str, object]]:
                 if re.fullmatch(r"event\d+", token):
                     current["event"] = token
         elif line.startswith("B: KEY="):
-            current["key"] = bool(re.search(r"=(?!0+\s*$)[0-9a-fA-F]+", line))
+            current["key"] = _has_nonzero_bits(line)
         elif line.startswith("B: REL="):
-            current["rel"] = bool(re.search(r"=(?!0+\s*$)[0-9a-fA-F]+", line))
+            current["rel"] = _has_nonzero_bits(line)
         elif line.startswith("B: ABS="):
-            current["abs"] = bool(re.search(r"=(?!0+\s*$)[0-9a-fA-F]+", line))
+            raw = line.split("=", 1)[1].strip()
+            current["abs_raw"] = raw
+            current["abs"] = _has_nonzero_bits(line)
     if current is not None:
         devices.append(current)
     return [device for device in devices if device["event"]]
@@ -118,7 +177,10 @@ def main() -> int:
     # A mouse also has KEY bits for its buttons, so KEY cannot be used to
     # identify a keyboard. A pointer is a device with relative or absolute
     # axes; keyboards have neither.
-    absolute = [d for d in devices if d["abs"]]
+    # Use _is_vm_absolute_tablet() instead of bare d["abs"] to avoid treating
+    # an internal touchpad (which also has ABS axes) as the VM tablet; touchpads
+    # have ABS_MT_* bits (bit 47+) which _is_vm_absolute_tablet() rejects.
+    absolute = [d for d in devices if _is_vm_absolute_tablet(d)]
     relative = [d for d in devices if d["rel"] and not d["abs"]]
     if absolute:
         rule: str | None = render_rule([str(d["name"]) for d in relative])

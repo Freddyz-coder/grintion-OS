@@ -30,6 +30,16 @@ if id -u greeter >/dev/null 2>&1; then
     chown -R greeter:greeter /var/lib/greeter 2>/dev/null || true
 fi
 
+# QEMU/libvirt/VirtualBox can expose both a relative PS/2 mouse and an
+# absolute USB tablet. Without suppressing the duplicate relative device
+# libinput feeds both streams to the compositor, causing the classic
+# "two pointers / mouse desynchronisation" symptom under Wayland compositors
+# (Sway, KDE Plasma Wayland) the same way it affects Xorg sessions.
+# Run pointer-sync here as well so Wayland sessions are covered.
+if [ -x /usr/bin/grintion-pointer-sync ]; then
+    /usr/bin/grintion-pointer-sync || true
+fi
+
 echo "greetd: starting /usr/bin/greetd"
 exec /usr/bin/greetd
 
