@@ -32,6 +32,20 @@ NEW_TOOLS = [
 ]
 
 
+def resolve_bin(tool: str) -> Path:
+    p = BIN / tool
+    if p.exists():
+        return p
+    clean = tool.removeprefix("grintion-")
+    p_clean = BIN / clean
+    if p_clean.exists():
+        return p_clean
+    p_prefixed = BIN / f"grintion-{clean}"
+    if p_prefixed.exists():
+        return p_prefixed
+    return p
+
+
 def env_for(**extra: object) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("GRINTION_")}
@@ -41,8 +55,9 @@ def env_for(**extra: object) -> dict[str, str]:
 
 def run_tool(tool: str, *args: str, env: dict[str, str] | None = None,
              timeout: int = 90) -> subprocess.CompletedProcess:
+    path = resolve_bin(tool)
     return subprocess.run(
-        [str(BIN / tool), *args],
+        [str(path), *args],
         capture_output=True,
         text=True,
         env=env or env_for(),
@@ -58,7 +73,7 @@ def json_out(result: subprocess.CompletedProcess) -> dict:
 
 @pytest.mark.parametrize("tool", NEW_TOOLS)
 def test_new_tools_are_executable_and_document_themselves(tool: str) -> None:
-    path = BIN / tool
+    path = resolve_bin(tool)
     assert path.is_file(), tool
     assert os.access(path, os.X_OK), tool
     result = run_tool(tool, "--help")

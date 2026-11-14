@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.15.0
+- **Version:** 0.16.0 — *Clean command names · AppArmor 2.0 · Advanced tooling*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,18 +17,26 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.15.0 adds sixteen advanced administration tools on top of the 0.14 series:
-storage inspection and fstab-backed mounts, runit service control and supervised
-timers, DNS and network diagnostics, an additive firewall deny overlay, SSH and
-TLS tooling, log search and rotation, load and benchmark probes, kernel module
-management, and clock/NTP control. Every tool supports `--json`, and mutations
-support `--dry-run`. See [docs/COMMANDS.md](docs/COMMANDS.md) and
-[CHANGELOG.md](CHANGELOG.md).
+0.16.0 delivers three major improvements over 0.15.0:
 
-Grintion-OS 0.15.0 is built from this tree. Release ISO images are published on
+1. **Clean command names** — all 75+ tools in `bin/` drop the redundant
+   `grintion-` prefix (e.g. `install`, `desktop`, `apparmor`). The rootfs
+   build automatically plants backward-compatible symlinks
+   (`/usr/bin/grintion-<tool> → <tool>`) so existing scripts continue to work.
+2. **AppArmor 2.0** — the `apparmor` tool gains AST-level brace-depth parsing,
+   multi-line header support, fail-closed atomic rollback, securityfs
+   cross-checking, and full flag preservation.
+3. **Advanced administration** — sixteen tools (`disk`, `mount`, `swap`,
+   `space`, `service`, `timer`, `dns`, `netdiag`, `firewall`, `ssh`, `cert`,
+   `logs`, `load`, `bench`, `modules`, `time`) with `--json` and `--dry-run`
+   support.
+
+See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
+
+Grintion-OS 0.16.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
-with `make sign-release` and verified with `bin/grintion-release-verify` (see
+with `make sign-release` and verified with `bin/release-verify` (see
 [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)).
 
 ---
@@ -51,7 +59,7 @@ with `make sign-release` and verified with `bin/grintion-release-verify` (see
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
 Documentation:
-- [Command Reference](docs/COMMANDS.md) (Every advanced `grintion-*` tool and subcommand)
+- [Command Reference](docs/COMMANDS.md) (every tool and subcommand — clean and legacy names)
 - [Handbook](docs/HANDBOOK.md) (Full 10-chapter manual)
 - [Guía Rápida en Español](docs/HANDBOOK-ES.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -228,7 +236,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.15.0 |
+| Feature | 0.16.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -253,16 +261,14 @@ this release builds and tests.
 ## Repository layout
 
 ```text
-bin/            grintion-install, grintion-config, grintion-desktop, grintion-persist, grintion-chroot,
-                garb, limine-deploy, grintion-doctor, grintion-security-report, grintion-hwinfo,
-                grintion-release-verify, grintion-secureboot, grintion-uki, grintion-attest,
-                grintion-tpm-luks, grintion-snapshot, grintion-boot-health, grintion-backup,
-                grintion-reset, grintion-network, grintion-session, grintion-audit,
-                grintion-integrity, grintion-audit-log, grintion-sandbox, grintion-shield,
-                grintion-vault, grintion-usb, grintion-watchdog, grintion-tour, grintion-help, grintion-report,
-                grintion-disk, grintion-mount, grintion-swap, grintion-space, grintion-service, grintion-timer,
-                grintion-dns, grintion-netdiag, grintion-firewall, grintion-ssh, grintion-cert, grintion-logs,
-                grintion-load, grintion-bench, grintion-modules, grintion-time
+bin/            install, config, desktop, persist, chroot, garb, limine-deploy,
+                doctor, security-report, hwinfo, release-verify, secureboot, uki,
+                attest, tpm-luks, snapshot, boot-health, backup, reset, network,
+                session, audit, integrity, audit-log, sandbox, shield, vault, usb,
+                watchdog, tour, help, report, welcome, apparmor, disk, mount, swap,
+                space, service, timer, dns, netdiag, firewall, ssh, cert, logs,
+                load, bench, modules, time
+                (legacy grintion-<name> symlinks auto-created in rootfs)
 build/          kernel, rootfs, initramfs, ISO build scripts, and test/validation suites
 config/         kernel fragment, required binaries, PAM modules, setuid list
 etc/            live and installed system configuration, runit services, profiles
@@ -280,7 +286,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.15.0 has not undergone an independent third-party
+and atomic rollback, but 0.16.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

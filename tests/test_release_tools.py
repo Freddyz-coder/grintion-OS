@@ -7,11 +7,27 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GARB = REPO_ROOT / "bin" / "garb"
-VERIFY = REPO_ROOT / "bin" / "grintion-release-verify"
-SECURITY = REPO_ROOT / "bin" / "grintion-security-report"
-HWINFO = REPO_ROOT / "bin" / "grintion-hwinfo"
-DOCTOR = REPO_ROOT / "bin" / "grintion-doctor"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+GARB = get_bin("garb")
+VERIFY = get_bin("release-verify")
+SECURITY = get_bin("security-report")
+HWINFO = get_bin("hwinfo")
+DOCTOR = get_bin("doctor")
 
 
 def run(script: Path, *args: str) -> subprocess.CompletedProcess:

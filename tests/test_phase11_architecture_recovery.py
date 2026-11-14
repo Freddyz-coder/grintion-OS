@@ -10,11 +10,18 @@ BIN_DIR = REPO_ROOT / "bin"
 
 
 def run_bin(name: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    executable = BIN_DIR / name
+    if not executable.exists():
+        clean = name.removeprefix("grintion-")
+        if (BIN_DIR / clean).exists():
+            executable = BIN_DIR / clean
+        elif (BIN_DIR / f"grintion-{clean}").exists():
+            executable = BIN_DIR / f"grintion-{clean}"
     environ = os.environ.copy()
     if env:
         environ.update(env)
     return subprocess.run(
-        [str(BIN_DIR / name), *args], capture_output=True, text=True, env=environ, check=False
+        [str(executable), *args], capture_output=True, text=True, env=environ, check=False
     )
 
 

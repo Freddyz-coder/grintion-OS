@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# grintion-boot-health - record boot attempts so a boot loop is visible.
+#
+# The boot-health service calls "record" at boot and "mark-good" after a stable
+# window. Three failed attempts leave a marker and try to switch Limine to a
+# snapshot/recovery entry. State updates are locked and atomic so a power loss
+# cannot leave a partial counter that turns into a boot loop.
+#
+# This still does not roll back a root filesystem; the alternate entry must
+# already exist. Use 'grintion-snapshot' for the actual data rollback.
+
+set -Eeuo pipefail
+
+STATE=${GRINTION_BOOT_HEALTH_STATE:-/var/lib/grintion/boot-health}
+ATTEMPTS="$STATE/attempts"
+FAILED="$STATE/failed"
+LAST_GOOD="$STATE/last-good"
+REVERT_LOG="$STATE/revert.log"
+THRESHOLD=3
+
+usage() {
+    prog=$(basename "$0")
+    cat <<EOF
+Usage: $prog COMMAND [--json]
+
+Commands:
+  record          Record one boot attempt (called by the boot service)
+  mark-good       Clear the attempt count after a stable boot
+  verify-session  Verify user/graphical login and mark good if active
+  auto-revert     Switch Limine to a snapshot/recovery entry if threshold exceeded
+  status          Show the current boot-health state
+  -h, --help      Show this help
+EOF
+}
+
+ensure_state() {
+    mkdir -p "$STATE"
+    chmod 0700 "$STATE"
+}
+
+lock_state() {
+    ensure_state
+    exec 9>"$STATE/lock"
+    chmod 0600 "$STATE/lock" 2>/dev/null || true
+    if command -v flock >/dev/null 2>&1; then
+        if ! flock -w 5 9; then
+            echo "[-] boot-health state is locked by another process" >&2
+            return 1
+        fi
+    fi
+}
+
+read_attempts() {
+    local raw
+    raw=$(cat "$ATTEMPTS" 2>/dev/null || true)
+    raw=$(printf '%s' "$raw" | tr -cd '0-9')
+    raw=${raw#"${raw%%[!0]*}"}
+    if [ -z "$raw" ]; then
+        printf '0\n'
+        return 0
+    fi
+    if [ "${#raw}" -gt 3 ]; then
+        printf '999\n'
+        return 0
+    fi
+    printf '%s\n' "$((10#$raw))"
+}
+
+write_attempts() {
+    local value=$1
+    local temporary
+    temporary=$(mktemp "$STATE/.attempts.XXXXXX")
+    printf '%s\n' "$value" > "$temporary"
+    chmod 0600 "$temporary"
+    mv -f "$temporary" "$ATTEMPTS"
+}
+
+find_limine_conf() {
+    if [ -n "${GRINTION_LIMINE_CONF:-}" ]; then
+        printf '%s\n' "$GRINTION_LIMINE_CONF"
+        return 0
+    fi
+    for candidate in /boot/efi/limine.conf /boot/efi/EFI/BOOT/limine.conf; do
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_revert_entry() {
+    local conf=$1
+    local entry=""
+    entry=$(grep -m1 -E '^/[^/]*[Ss]napshot' "$conf" 2>/dev/null | tr -d '/' || true)
+    if [ -z "$entry" ]; then
+        entry=$(grep -m1 -E '^/[^/]*\(recovery\)' "$conf" 2>/dev/null | tr -d '/' || true)
+    fi
+    [ -n "$entry" ] || return 1
+    printf '%s\n' "$entry"
+}
+
+verify_session() {
+    local verified=false
+    if who 2>/dev/null | grep -v 'root' | grep -q '[a-zA-Z0-9]'; then
+        verified=true
+    elif [ -S /run/seatd.sock ] || pgrep -x Xorg >/dev/null 2>&1 \
+        || pgrep -x sway >/dev/null 2>&1 || pgrep -x kwin_wayland >/dev/null 2>&1; then
+        verified=true
+    fi
+
+    if [ "$verified" = "true" ]; then
+        ensure_state
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/session-verified"
+        "$0" mark-good
+        echo "[+] session verified; boot marked good"
+        return 0
+    fi
+    echo "[!] no active human or graphical session verified yet"
+    return 1
+}
+
+auto_revert() {
+    local attempts
+    attempts=$(read_attempts)
+    if [ "$attempts" -lt "$THRESHOLD" ]; then
+        echo "[*] boot attempts ($attempts) below failure threshold ($THRESHOLD); no revert needed"
+        return 0
+    fi
+
+    local limine_conf
+    if ! limine_conf=$(find_limine_conf); then
+        echo "[-] no Limine configuration found for auto-revert" >&2
+        return 1
+    fi
+    if [ ! -w "$limine_conf" ]; then
+        echo "[-] cannot write $limine_conf for auto-revert" >&2
+        return 1
+    fi
+
+    local revert_entry
+    if ! revert_entry=$(find_revert_entry "$limine_conf"); then
+        echo "[!] failure threshold exceeded, but no alternate snapshot/recovery entry found"
+        return 1
+    fi
+
+    local backup="$limine_conf.pre-boot-health"
+    if [ ! -f "$backup" ]; then
+        cp -p "$limine_conf" "$backup" || {
+            echo "[-] cannot back up $limine_conf; refusing to edit it" >&2
+            return 1
+        }
+    fi
+
+    local temporary mode
+    temporary=$(mktemp "$limine_conf.tmp.XXXXXX")
+    mode=$(stat -c '%a' "$limine_conf" 2>/dev/null || printf '644')
+    if ! awk -v entry="$revert_entry" '
+        BEGIN { done=0 }
+        /^[[:space:]]*default_entry:[[:space:]]*/ && !done {
+            print "default_entry: /" entry
+            done=1
+            next
+        }
+        { print }
+        END { if (!done) print "default_entry: /" entry }
+    ' "$limine_conf" > "$temporary"; then
+        rm -f "$temporary"
+        echo "[-] failed to generate a new Limine configuration" >&2
+        return 1
+    fi
+    if ! grep -Fq "default_entry: /$revert_entry" "$temporary"; then
+        rm -f "$temporary"
+        echo "[-] generated Limine configuration did not select the alternate entry" >&2
+        return 1
+    fi
+    chmod "$mode" "$temporary" 2>/dev/null || chmod 0644 "$temporary"
+    mv -f "$temporary" "$limine_conf"
+
+    ensure_state
+    printf '%s auto-reverted default entry to %s after %s attempts\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$revert_entry" "$attempts" >> "$REVERT_LOG"
+    echo "[!] Auto-reverted default bootloader entry to: $revert_entry"
+    return 0
+}
+
+status() {
+    local attempts=0 failed=false last_good="" cmdline="" session_verified="" reverted=false
+    attempts=$(read_attempts)
+    [ -e "$FAILED" ] && failed=true
+    [ -r "$LAST_GOOD" ] && last_good=$(cat "$LAST_GOOD")
+    [ -r "$STATE/last-cmdline" ] && cmdline=$(cat "$STATE/last-cmdline")
+    [ -r "$STATE/session-verified" ] && session_verified=$(cat "$STATE/session-verified")
+    [ -s "$REVERT_LOG" ] && reverted=true
+    if [ "${1:-}" = "--json" ]; then
+        python3 - "$attempts" "$failed" "$last_good" "$cmdline" "$session_verified" "$reverted" "$THRESHOLD" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "schema": 3,
+    "attempts": int(sys.argv[1]),
+    "threshold": int(sys.argv[7]),
+    "failed": sys.argv[2] == "true",
+    "last_good": sys.argv[3] or None,
+    "last_cmdline": sys.argv[4] or None,
+    "session_verified": sys.argv[5] or None,
+    "auto_reverted": sys.argv[6] == "true",
+}, indent=2))
+PY
+    else
+        echo "attempts:         $attempts"
+        echo "threshold:        $THRESHOLD"
+        echo "failed:           $failed"
+        echo "last-good:        ${last_good:-never}"
+        echo "session-verified: ${session_verified:-no}"
+        echo "auto-reverted:    $reverted"
+        [ -n "$cmdline" ] && echo "cmdline:          $cmdline"
+    fi
+}
+
+COMMAND=${1:-}
+case "$COMMAND" in
+    record)
+        lock_state || exit 1
+        attempts=$(read_attempts)
+        attempts=$((attempts + 1))
+        if [ "$attempts" -gt 999 ]; then
+            attempts=999
+        fi
+        write_attempts "$attempts"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/last-attempt"
+        cat /proc/cmdline > "$STATE/last-cmdline" 2>/dev/null || true
+        if [ "$attempts" -ge "$THRESHOLD" ]; then
+            touch "$FAILED"
+            echo "[!] $attempts consecutive boot attempts; the last boot may be failing" >&2
+            echo "[!] use 'grintion-snapshot list' and 'grintion-snapshot boot NAME' to recover" >&2
+            auto_revert || true
+        fi
+        ;;
+    mark-good)
+        lock_state || exit 1
+        write_attempts 0
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$LAST_GOOD"
+        rm -f "$FAILED"
+        ;;
+    verify-session)
+        verify_session
+        ;;
+    auto-revert)
+        lock_state || exit 1
+        auto_revert
+        ;;
+    status)
+        status "${2:-}"
+        ;;
+    -h|--help|"")
+        usage
+        ;;
+    *)
+        echo "unknown command: $COMMAND" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

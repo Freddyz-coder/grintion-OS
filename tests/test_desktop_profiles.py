@@ -6,10 +6,26 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DESKTOP = REPO_ROOT / "bin" / "grintion-desktop"
-SESSION = REPO_ROOT / "bin" / "grintion-session"
-INSTALL = REPO_ROOT / "bin" / "grintion-install"
-AUDIO = REPO_ROOT / "bin" / "grintion-audio"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+DESKTOP = get_bin("desktop")
+SESSION = get_bin("session")
+INSTALL = get_bin("install")
+AUDIO = get_bin("audio")
 PROFILES = REPO_ROOT / "etc" / "grintion" / "desktops.d"
 
 
@@ -165,7 +181,7 @@ def test_udev_service_is_the_standalone_device_manager() -> None:
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert "systemd-udevd" in rootfs
     assert "udevadm" in (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
-    session = (REPO_ROOT / "bin" / "grintion-session").read_text()
+    session = SESSION.read_text()
     assert "/run/udev/control" in session
     # systemd-udevd's interface-name and rule diagnostics must not interleave
     # with the login prompt.

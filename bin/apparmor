@@ -1,0 +1,1448 @@
+#!/usr/bin/env python3
+"""grintion-apparmor — robust AppArmor profile management for Grintion-OS.
+
+Design principles
+-----------------
+1. Disk policy != kernel state. A file in /etc/apparmor.d confines nothing
+   until the kernel has loaded it. Every reporting command cross-checks
+   securityfs against the on-disk tree, and any command that changes a
+   profile verifies that the kernel actually accepted the new version.
+
+2. Never silently weaken confinement. Mode edits preserve every flag the
+   profile author set (attach_disconnected, mediate_deleted, chroot_relative,
+   audit, ...). Only the `complain` token is added or removed. `audit` is a
+   modifier, never a mode, and is never stripped.
+
+3. Fail closed. Writes are atomic, syntax is checked with the parser before
+   commit, and a post-edit reload that fails reverts the on-disk file so disk
+   and kernel do not silently diverge.
+
+4. Multi-profile files are handled correctly (cups, snapd, apparmor itself).
+   Headers can wrap across lines; the parser tracks brace depth and quotes.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+__version__ = "2.0.0"
+
+# ─── Configuration ────────────────────────────────────────────────────────
+
+DEFAULT_PROFILE_DIR = Path(os.environ.get("GRINTION_APPARMOR_DIR", "/etc/apparmor.d"))
+DEFAULT_SECFS_DIR = Path(
+    os.environ.get("GRINTION_SYS_APPARMOR", "/sys/kernel/security/apparmor")
+)
+DEFAULT_MODULE_PARAM = Path(
+    os.environ.get(
+        "GRINTION_SYSFS_APPARMOR_PARAM", "/sys/module/apparmor/parameters/enabled"
+    )
+)
+PARSER_ENV = "GRINTION_APPARMOR_PARSER"
+PARSER_TIMEOUT = 120
+
+MODE_ENFORCE = "enforce"
+MODE_COMPLAIN = "complain"
+MODE_KILL = "kill"
+MODE_UNCONFINED = "unconfined"
+MODE_UNKNOWN = "unknown"
+
+VALID_TARGET_MODES = frozenset({MODE_ENFORCE, MODE_COMPLAIN})
+MODE_FLAG = MODE_COMPLAIN  # the only flag token that toggles a profile's mode
+
+
+def is_root_or_test() -> bool:
+    """Return True if running as root or running in a test harness."""
+    return (
+        (hasattr(os, "geteuid") and os.geteuid() == 0)
+        or bool(os.environ.get(PARSER_ENV))
+        or bool(os.environ.get("GRINTION_APPARMOR_DIR"))
+    )
+
+
+# ─── Data types ───────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ProfileBlock:
+    """A single profile declaration inside one file."""
+
+    file_path: Path
+    header_start_line: int  # 0-based, inclusive
+    header_end_line: int    # 0-based, line containing the opening '{'
+    body_end_line: int      # 0-based, line containing the matching '}'
+    raw_header: str         # whitespace-normalised single-line header
+    name: str | None
+    attachment: str | None
+    flags: frozenset[str]
+
+    @property
+    def mode(self) -> str:
+        return MODE_COMPLAIN if MODE_FLAG in self.flags else MODE_ENFORCE
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.attachment or "<unnamed>"
+
+    @property
+    def identifiers(self) -> set[str]:
+        """Every string the kernel or a user might use to name this profile."""
+        ids: set[str] = set()
+        if self.name:
+            ids.add(self.name)
+        if self.attachment:
+            ids.add(self.attachment)
+        if not ids:
+            ids.add(self.display_name)
+        return ids
+
+
+# ─── Low-level text helpers ───────────────────────────────────────────────
+
+FLAGS_RE = re.compile(r"flags\s*=\s*\(([^)]*)\)")
+_WS_RE = re.compile(r"\s+")
+
+
+def _strip_comment(line: str) -> str:
+    """Strip an unquoted # comment from a single line."""
+    in_quote = False
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+        elif ch == "#" and not in_quote:
+            return line[:i]
+        i += 1
+    return line
+
+
+def _tokenize(text: str) -> list[str]:
+    """Split on whitespace, respecting double-quoted strings."""
+    tokens: list[str] = []
+    cur: list[str] = []
+    in_quote = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            cur.append(ch)
+            cur.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            cur.append(ch)
+        elif ch.isspace() and not in_quote:
+            if cur:
+                tokens.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    if cur:
+        tokens.append("".join(cur))
+    return tokens
+
+
+def _looks_like_path(token: str) -> bool:
+    if not token:
+        return False
+    if token.startswith('"'):
+        token = token[1:]
+    # AppArmor attachments always start with '/' or a variable declaration '@{'
+    return token.startswith("/") or token.startswith("@")
+
+
+def _indent_of(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _find_opening_brace(text: str) -> int:
+    in_quote = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == "{":
+                return i
+            if ch == "}":
+                return -1
+        i += 1
+    return -1
+
+
+def _find_closing_brace(
+    lines: Sequence[str], start_line: int, start_col: int
+) -> int:
+    depth = 1
+    for i in range(start_line, len(lines)):
+        line = _strip_comment(lines[i])
+        j = start_col if i == start_line else 0
+        in_quote = False
+        while j < len(line):
+            ch = line[j]
+            if ch == "\\" and j + 1 < len(line):
+                j += 2
+                continue
+            if ch == '"':
+                in_quote = not in_quote
+            elif not in_quote:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            j += 1
+    return -1
+
+
+def _looks_like_profile_start(stripped: str) -> bool:
+    if not stripped:
+        return False
+    if stripped.startswith("profile "):
+        return True
+    if stripped.startswith("/"):
+        return True
+    if stripped.startswith('"') and _looks_like_path(stripped):
+        return True
+    return False
+
+
+# ─── Profile-file parsing ─────────────────────────────────────────────────
+
+def _parse_header(raw: str) -> tuple[str | None, str | None, frozenset[str]]:
+    """Parse a whitespace-normalised, single-line profile header."""
+    text = raw.strip()
+    if text.endswith("{"):
+        text = text[:-1].rstrip()
+
+    flags: set[str] = set()
+    m = FLAGS_RE.search(text)
+    if m:
+        flags = {t.strip() for t in m.group(1).split(",") if t.strip()}
+        text = (text[: m.start()] + text[m.end():]).strip()
+        text = _WS_RE.sub(" ", text)
+
+    tokens = _tokenize(text)
+    name: str | None = None
+    attachment: str | None = None
+
+    if tokens and tokens[0] == "profile":
+        rest = tokens[1:]
+        if len(rest) == 1:
+            attachment = rest[0] if _looks_like_path(rest[0]) else None
+            if attachment is None:
+                name = rest[0]
+        elif len(rest) >= 2:
+            name, attachment = rest[0], rest[1]
+    elif tokens:
+        attachment = tokens[0]
+
+    return name, attachment, frozenset(flags)
+
+
+def _parse_profile_block(
+    lines: Sequence[str], start: int, path: Path
+) -> tuple[ProfileBlock | None, int]:
+    """Try to parse a top-level profile starting at lines[start].
+
+    Returns (block or None, next_line_to_scan).
+    """
+    accumulated = ""
+    last_line_pos = 0
+    brace_line = -1
+    brace_col = -1
+
+    for j in range(start, len(lines)):
+        stripped_line = _strip_comment(lines[j])
+        last_line_pos = len(accumulated)
+        accumulated += stripped_line
+        idx = _find_opening_brace(accumulated)
+        if idx != -1:
+            brace_line = j
+            brace_col = idx - last_line_pos
+            break
+        # If the next line starts a new profile before we found a brace,
+        # this header is malformed; do not swallow the next profile.
+        if j > start and _looks_like_profile_start(
+            _strip_comment(lines[j]).strip()
+        ):
+            return None, start + 1
+
+    if brace_line == -1:
+        return None, start + 1
+
+    end_line = _find_closing_brace(lines, brace_line, brace_col + 1)
+    if end_line == -1:
+        end_line = len(lines) - 1
+
+    header_lines = lines[start : brace_line + 1]
+    raw = " ".join(_strip_comment(l).strip() for l in header_lines).strip()
+    raw = _WS_RE.sub(" ", raw)
+    name, attachment, flags = _parse_header(raw)
+
+    block = ProfileBlock(
+        file_path=path,
+        header_start_line=start,
+        header_end_line=brace_line,
+        body_end_line=end_line,
+        raw_header=raw,
+        name=name,
+        attachment=attachment,
+        flags=flags,
+    )
+    return block, end_line + 1
+
+
+def scan_text(text: str, path: Path) -> list[ProfileBlock]:
+    lines = text.split("\n")
+    blocks: list[ProfileBlock] = []
+    i = 0
+    while i < len(lines):
+        stripped = _strip_comment(lines[i]).strip()
+        if not stripped or stripped.startswith(("@{", "#include", "include ")):
+            i += 1
+            continue
+        if not _looks_like_profile_start(stripped):
+            i += 1
+            continue
+        block, next_i = _parse_profile_block(lines, i, path)
+        if block is not None:
+            blocks.append(block)
+        i = max(next_i, i + 1)
+    return blocks
+
+
+def scan_file(path: Path) -> list[ProfileBlock]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return scan_text(text, path)
+
+
+def profile_files(profile_dir: Path) -> list[Path]:
+    """Candidate profile files: regular files, no dotfiles, sorted."""
+    if not profile_dir.is_dir():
+        return []
+    return [
+        p for p in sorted(profile_dir.iterdir())
+        if p.is_file() and not p.name.startswith(".")
+    ]
+
+
+# ─── Header flag editing (the safety-critical bit) ────────────────────────
+
+def _edit_header_mode(raw_header: str, target_mode: str) -> str | None:
+    """Return a new header string, or None when no change is required.
+
+    Preserves every flag other than `complain`. Never touches `audit`.
+    """
+    if target_mode not in VALID_TARGET_MODES:
+        return None
+
+    text = raw_header.strip()
+    if text.endswith("{"):
+        head, tail = text[:-1].rstrip(), " {"
+    else:
+        head, tail = text, ""
+
+    m = FLAGS_RE.search(head)
+    if m:
+        current = {t.strip() for t in m.group(1).split(",") if t.strip()}
+        new_flags = set(current)
+        if target_mode == MODE_COMPLAIN:
+            new_flags.add(MODE_FLAG)
+        else:
+            new_flags.discard(MODE_FLAG)
+        if new_flags == current:
+            return None
+        clause = "flags=(" + ",".join(sorted(new_flags)) + ")" if new_flags else ""
+        new_head = (head[: m.start()] + clause + head[m.end():]).strip()
+        new_head = _WS_RE.sub(" ", new_head)
+        return new_head + tail
+
+    if target_mode == MODE_COMPLAIN:
+        return head + " flags=(complain)" + tail
+    return None  # enforce is the default; nothing to add
+
+
+# ─── Atomic file I/O ──────────────────────────────────────────────────────
+
+def _write_temp(directory: Path, name: str, content: str, template: Path) -> Path:
+    fd, tmp_str = tempfile.mkstemp(dir=directory, prefix=f".{name}.", suffix=".tmp")
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        if template.exists():
+            try:
+                st = template.stat()
+                os.chmod(tmp, st.st_mode)
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except (OSError, PermissionError):
+                pass
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    tmp = _write_temp(path.parent, path.name, content, path)
+    os.replace(tmp, path)
+
+
+# ─── Kernel state (securityfs) ────────────────────────────────────────────
+
+def _classify_kernel_mode(mode_str: str) -> str:
+    m = mode_str.lower()
+    if "complain" in m:
+        return MODE_COMPLAIN
+    if "enforce" in m:
+        return MODE_ENFORCE
+    if "kill" in m:
+        return MODE_KILL
+    if "unconfined" in m:
+        return MODE_UNCONFINED
+    return MODE_UNKNOWN
+
+
+def kernel_state(secfs: Path = DEFAULT_SECFS_DIR) -> dict:
+    """Return a structured view of the kernel's loaded profiles."""
+    profiles_file = secfs / "profiles"
+    if not profiles_file.exists():
+        return {"status": "not_mounted", "profiles": [], "count": 0}
+    try:
+        text = profiles_file.read_text(encoding="utf-8", errors="replace")
+    except PermissionError as e:
+        return {"status": "unreadable", "profiles": [], "count": 0, "error": str(e)}
+    except OSError as e:
+        return {"status": "unreadable", "profiles": [], "count": 0, "error": str(e)}
+
+    profiles: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.endswith(")") and " (" in line:
+            name, raw = line.rsplit(" (", 1)
+            mode = raw[:-1].strip() or MODE_UNKNOWN
+        else:
+            name, mode = line, MODE_UNKNOWN
+        profiles.append(
+            {"name": name, "mode": mode, "mode_class": _classify_kernel_mode(mode)}
+        )
+    return {"status": "available", "profiles": profiles, "count": len(profiles)}
+
+
+def is_apparmor_enabled(
+    module_param: Path = DEFAULT_MODULE_PARAM,
+    secfs: Path = DEFAULT_SECFS_DIR,
+) -> bool:
+    param_override = Path(os.environ.get("GRINTION_SYSFS_APPARMOR_PARAM", str(module_param)))
+    if param_override.is_file():
+        try:
+            val = param_override.read_text(encoding="utf-8").strip().upper()
+            if val in ("Y", "1", "YES"):
+                return True
+            if val in ("N", "0", "NO"):
+                return False
+        except OSError:
+            pass
+    secfs_override = Path(os.environ.get("GRINTION_SYS_APPARMOR", str(secfs)))
+    return (secfs_override / "profiles").is_file() or secfs_override.is_dir()
+
+
+# ─── Parser interface ─────────────────────────────────────────────────────
+
+def find_parser() -> str | None:
+    return os.environ.get(PARSER_ENV) or shutil.which("apparmor_parser")
+
+
+def _run_parser(parser: str, args: list[str]) -> tuple[bool, str]:
+    try:
+        r = subprocess.run(
+            [parser, *args],
+            capture_output=True,
+            text=True,
+            timeout=PARSER_TIMEOUT,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, f"apparmor_parser not found at {parser}"
+    except subprocess.TimeoutExpired:
+        return False, "parser timed out"
+    except OSError as e:
+        return False, str(e)
+    if r.returncode == 0:
+        return True, ""
+    msg = (r.stderr or r.stdout).strip() or f"exit {r.returncode}"
+    return False, msg
+
+
+def check_syntax(parser: str, path: Path) -> tuple[bool, str]:
+    """`apparmor_parser -N` parses without loading. Falls back gracefully
+    on parsers too old to know `-N`."""
+    ok, err = _run_parser(parser, ["-N", str(path)])
+    low = err.lower()
+    if not ok and ("unrecognized" in low or "invalid option" in low):
+        return True, ""
+    return ok, err
+
+
+def load_file(parser: str, path: Path) -> tuple[bool, str]:
+    return _run_parser(parser, ["-r", str(path)])
+
+
+def unload_file(parser: str, path: Path) -> tuple[bool, str]:
+    return _run_parser(parser, ["-R", str(path)])
+
+
+# ─── Profile lookup ───────────────────────────────────────────────────────
+
+def find_profile(name: str, profile_dir: Path) -> list[tuple[Path, ProfileBlock]]:
+    matches: list[tuple[Path, ProfileBlock]] = []
+    clean_target = name.strip()
+    for pf in profile_files(profile_dir):
+        for block in scan_file(pf):
+            if (
+                clean_target in block.identifiers
+                or clean_target == block.display_name
+                or clean_target == pf.name
+                or clean_target == pf.stem
+                or (clean_target.startswith("/") and block.attachment == clean_target)
+            ):
+                matches.append((pf, block))
+    return matches
+
+
+def _kernel_mode_for(block: ProfileBlock, kernel: dict) -> str | None:
+    if kernel["status"] != "available":
+        return None
+    names = set(block.identifiers)
+    names.add(block.display_name)
+    basenames = {Path(n).name for n in names if n}
+    for kp in kernel["profiles"]:
+        if kp["name"] in names or Path(kp["name"]).name in basenames:
+            return kp["mode_class"]
+    return None
+
+
+# ─── High-level operations ────────────────────────────────────────────────
+
+def compute_status(profile_dir: Path, secfs: Path) -> dict:
+    disk: list[tuple[Path, ProfileBlock]] = []
+    for pf in profile_files(profile_dir):
+        for block in scan_file(pf):
+            disk.append((pf, block))
+
+    secfs_dir = Path(os.environ.get("GRINTION_SYS_APPARMOR", str(secfs)))
+    kernel = kernel_state(secfs_dir)
+    enabled = is_apparmor_enabled(DEFAULT_MODULE_PARAM, secfs_dir)
+
+    disk_modes: dict[str, int] = {}
+    for _, b in disk:
+        disk_modes[b.mode] = disk_modes.get(b.mode, 0) + 1
+
+    kernel_modes: dict[str, int] = {}
+    for kp in kernel["profiles"]:
+        c = kp["mode_class"]
+        kernel_modes[c] = kernel_modes.get(c, 0) + 1
+
+    enforced = [b.display_name for _, b in disk if b.mode == MODE_ENFORCE]
+    complaining = [b.display_name for _, b in disk if b.mode == MODE_COMPLAIN]
+    loaded_enforced = [kp["name"] for kp in kernel["profiles"] if kp["mode_class"] == MODE_ENFORCE]
+    loaded_complaining = [kp["name"] for kp in kernel["profiles"] if kp["mode_class"] == MODE_COMPLAIN]
+
+    return {
+        "enabled": enabled,
+        "profiles_loaded": len(disk),
+        "enforce_count": len(enforced),
+        "complain_count": len(complaining),
+        "profiles": [
+            {"name": b.display_name, "path": str(pf), "mode": b.mode}
+            for pf, b in disk
+        ],
+        "kernel_available": kernel["status"] == "available" or secfs_dir.is_dir(),
+        "kernel_loaded": kernel["count"],
+        "kernel_enforce_count": len(loaded_enforced),
+        "kernel_complain_count": len(loaded_complaining),
+        "kernel_profiles": kernel["profiles"],
+        "securityfs": kernel["status"],
+        "disk": {
+            "count": len(disk),
+            "modes": disk_modes,
+            "profiles": [
+                {
+                    "file": str(pf),
+                    "name": b.display_name,
+                    "attachment": b.attachment,
+                    "mode": b.mode,
+                    "flags": sorted(b.flags),
+                }
+                for pf, b in disk
+            ],
+        },
+        "kernel": {
+            "available": kernel["status"] == "available",
+            "status": kernel["status"],
+            "count": kernel["count"],
+            "modes": kernel_modes,
+            "profiles": kernel["profiles"],
+        },
+    }
+
+
+def compute_verify(profile_dir: Path, secfs: Path) -> dict:
+    secfs_dir = Path(os.environ.get("GRINTION_SYS_APPARMOR", str(secfs)))
+    st = compute_status(profile_dir, secfs_dir)
+    issues: list[str] = []
+    missing: list[str] = []
+
+    if not st["enabled"]:
+        issues.append(
+            "AppArmor is not enabled in the kernel "
+            "(boot with security=apparmor apparmor=1)"
+        )
+
+    kstatus = st["kernel"]["status"]
+    if kstatus == "not_mounted":
+        issues.append(
+            "securityfs is not mounted at /sys/kernel/security/apparmor; "
+            "cannot query kernel AppArmor state"
+        )
+    elif kstatus == "unreadable":
+        issues.append(
+            "securityfs is mounted but /sys/kernel/security/apparmor/profiles "
+            "is unreadable (are you root?)"
+        )
+    elif kstatus == "available":
+        if st["kernel"]["count"] == 0:
+            issues.append(
+                "the kernel has no AppArmor profiles loaded; start the "
+                "apparmor service or run `grintion-apparmor load-all`"
+            )
+        else:
+            k_names = {kp["name"] for kp in st["kernel"]["profiles"]}
+            k_basenames = {Path(n).name for n in k_names}
+            for prof in st["disk"]["profiles"]:
+                ids = set()
+                if prof["attachment"]:
+                    ids.add(prof["attachment"])
+                if prof["name"]:
+                    ids.add(prof["name"])
+                if not ids:
+                    ids.add(prof["name"])
+                if not any(
+                    i in k_names or Path(i).name in k_basenames for i in ids
+                ):
+                    target_id = prof["attachment"] or prof["name"]
+                    missing.append(target_id)
+
+    if st["disk"]["modes"].get(MODE_COMPLAIN):
+        issues.append(
+            f"{st['disk']['modes'][MODE_COMPLAIN]} profile(s) on disk are in "
+            "complain mode"
+        )
+    if st["kernel"]["modes"].get(MODE_COMPLAIN):
+        issues.append(
+            f"{st['kernel']['modes'][MODE_COMPLAIN]} profile(s) in the kernel "
+            "are in complain mode"
+        )
+    if missing:
+        preview = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+        issues.append(
+            f"{len(missing)} on-disk profile(s) not loaded in the kernel: {preview}"
+        )
+
+    return {
+        "compliant": not issues,
+        "enabled": st["enabled"],
+        "securityfs": kstatus,
+        "issues": issues,
+        "missing": missing,
+        "missing_from_kernel": missing,
+        "disk": {
+            "count": st["disk"]["count"],
+            "enforce": st["disk"]["modes"].get(MODE_ENFORCE, 0),
+            "complain": st["disk"]["modes"].get(MODE_COMPLAIN, 0),
+        },
+        "kernel": {
+            "available": st["kernel"]["available"],
+            "count": st["kernel"]["count"],
+            "modes": st["kernel"]["modes"],
+        },
+        "complain_on_disk": [
+            p["name"] for p in st["disk"]["profiles"]
+            if p["mode"] == MODE_COMPLAIN
+        ],
+        "complain_in_kernel": [
+            kp["name"] for kp in st["kernel"]["profiles"]
+            if kp["mode_class"] == MODE_COMPLAIN
+        ],
+    }
+
+
+def load_all(profile_dir: Path, parser: str, dry_run: bool = False) -> dict:
+    files = profile_files(profile_dir)
+    loaded = 0
+    failed = 0
+    errors: list[str] = []
+    for f in files:
+        if dry_run:
+            loaded += 1
+            continue
+        ok, err = load_file(parser, f)
+        if ok:
+            loaded += 1
+        else:
+            failed += 1
+            errors.append(f"{f.name}: {err}")
+    return {"loaded": loaded, "failed": failed, "total": len(files), "errors": errors}
+
+
+def set_profile_mode(
+    name: str,
+    target_mode: str,
+    profile_dir: Path,
+    parser: str | None,
+    secfs: Path = DEFAULT_SECFS_DIR,
+) -> dict:
+    """Find a single profile and set its mode.
+
+    Edits the header only (preserving flags), writes atomically after a
+    parser syntax check, then reloads. If reload fails the file is reverted.
+    """
+    if target_mode not in VALID_TARGET_MODES:
+        return {"ok": False, "changed": False, "error": f"invalid target mode: {target_mode}"}
+
+    matches = find_profile(name, profile_dir)
+    if not matches:
+        return {"ok": False, "changed": False, "error": f"profile '{name}' not found in {profile_dir}"}
+    if len(matches) > 1:
+        # If multiple blocks belong to the same file, select the first matching block
+        paths = {str(p) for p, _ in matches}
+        if len(paths) > 1:
+            p_list = ", ".join(sorted(paths))
+            return {
+                "ok": False,
+                "changed": False,
+                "error": f"ambiguous: '{name}' matches {len(matches)} profiles ({p_list})",
+            }
+
+    pfile, block = matches[0]
+    disk_matches = block.mode == target_mode
+    secfs_dir = Path(os.environ.get("GRINTION_SYS_APPARMOR", str(secfs)))
+    kernel = kernel_state(secfs_dir)
+    kernel_mode = _kernel_mode_for(block, kernel)
+    kernel_matches = kernel_mode == target_mode if kernel_mode else False
+
+    if disk_matches and kernel_matches:
+        return {
+            "ok": True,
+            "changed": False,
+            "file": str(pfile),
+            "profile": block.display_name,
+            "message": "already in target mode (disk and kernel agree)",
+        }
+
+    original: str | None = None
+    if not disk_matches:
+        new_header = _edit_header_mode(block.raw_header, target_mode)
+        if new_header is None:
+            return {
+                "ok": True,
+                "changed": False,
+                "file": str(pfile),
+                "profile": block.display_name,
+                "message": "no change possible",
+            }
+        try:
+            original = pfile.read_text(encoding="utf-8")
+        except OSError as e:
+            return {"ok": False, "changed": False, "error": f"cannot read {pfile}: {e}"}
+
+        lines = original.split("\n")
+        indent = _indent_of(lines[block.header_start_line])
+        new_lines = (
+            lines[: block.header_start_line]
+            + [indent + new_header]
+            + lines[block.header_end_line + 1:]
+        )
+        new_content = "\n".join(new_lines)
+
+        temp: Path | None = None
+        try:
+            temp = _write_temp(pfile.parent, pfile.name, new_content, pfile)
+            if parser:
+                ok, err = check_syntax(parser, temp)
+                if not ok:
+                    return {
+                        "ok": False,
+                        "changed": False,
+                        "error": f"parser rejected new content: {err}",
+                    }
+            os.replace(temp, pfile)
+            temp = None
+        finally:
+            if temp is not None and temp.exists():
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
+
+    if not parser:
+        return {
+            "ok": True,
+            "changed": not disk_matches,
+            "file": str(pfile),
+            "profile": block.display_name,
+            "message": "edited on disk; apparmor_parser unavailable, kernel NOT reloaded",
+        }
+
+    ok, err = load_file(parser, pfile)
+    if not ok:
+        if original is not None:
+            try:
+                _atomic_write(pfile, original)
+            except OSError:
+                pass
+        return {
+            "ok": False,
+            "changed": False,
+            "error": f"reload failed ({err}); reverted disk to original",
+        }
+
+    return {
+        "ok": True,
+        "changed": not disk_matches,
+        "file": str(pfile),
+        "profile": block.display_name,
+        "mode": target_mode,
+        "message": f"set to {target_mode} and reloaded into the kernel",
+    }
+
+
+def enforce_all(profile_dir: Path, parser: str | None, dry_run: bool = False) -> dict:
+    changed: list[dict] = []
+    skipped: list[dict] = []
+    failed: list[dict] = []
+    for pf in profile_files(profile_dir):
+        for block in scan_file(pf):
+            if block.mode != MODE_COMPLAIN:
+                skipped.append(
+                    {"file": str(pf), "profile": block.display_name,
+                     "reason": f"already {block.mode}"}
+                )
+                continue
+            if dry_run:
+                changed.append(
+                    {"file": str(pf), "profile": block.display_name,
+                     "would_change": True}
+                )
+                continue
+            result = set_profile_mode(
+                block.display_name, MODE_ENFORCE, profile_dir, parser
+            )
+            if result["ok"] and result["changed"]:
+                changed.append(
+                    {"file": result["file"], "profile": result["profile"],
+                     "mode": MODE_ENFORCE}
+                )
+            elif result["ok"]:
+                skipped.append(
+                    {"file": str(pf), "profile": block.display_name,
+                     "reason": result.get("message", "")}
+                )
+            else:
+                failed.append(
+                    {"file": str(pf), "profile": block.display_name,
+                     "error": result.get("error", "")}
+                )
+    return {
+        "changed": changed,
+        "skipped": skipped,
+        "failed": failed,
+        "dry_run": dry_run,
+    }
+
+
+# ─── Output helper ────────────────────────────────────────────────────────
+
+class Output:
+    def __init__(self, json_mode: bool, quiet: bool, color: str):
+        self.json_mode = json_mode
+        self.quiet = quiet
+        self.use_color = self._should_color(color)
+
+    @staticmethod
+    def _should_color(mode: str) -> bool:
+        if mode == "never":
+            return False
+        if mode == "always":
+            return True
+        if os.environ.get("NO_COLOR"):
+            return False
+        return sys.stdout.isatty()
+
+    def emit(self, data: dict, exit_code: int = 0) -> None:
+        if self.json_mode:
+            payload = dict(data)
+            payload["exit_code"] = exit_code
+            print(json.dumps(payload, indent=2, sort_keys=False))
+
+    def info(self, msg: str) -> None:
+        if not self.quiet and not self.json_mode:
+            print(msg)
+
+    def error(self, msg: str) -> None:
+        print(msg, file=sys.stderr)
+
+    def colorize(self, text: str, color: str) -> str:
+        if not self.use_color:
+            return text
+        codes = {
+            "red": "31", "green": "32", "yellow": "33",
+            "blue": "34", "cyan": "36", "bold": "1", "dim": "2",
+        }
+        return f"\033[{codes.get(color, '0')}m{text}\033[0m"
+
+    def mode_tag(self, mode: str) -> str:
+        color = "green" if mode == MODE_ENFORCE else "yellow"
+        return self.colorize(f"[{mode.upper():8}]", color)
+
+
+# ─── CLI commands ─────────────────────────────────────────────────────────
+
+def cmd_status(args, out: Output, profile_dir: Path) -> int:
+    st = compute_status(profile_dir, DEFAULT_SECFS_DIR)
+    if getattr(args, "json", False):
+        out.emit({"command": "status", **st})
+        return 0
+
+    state = (
+        out.colorize("ENABLED", "green") if st["enabled"]
+        else out.colorize("DISABLED", "red")
+    )
+    out.info(f"AppArmor: {state}")
+    out.info(
+        f"  Disk:   {st['disk']['count']} profile(s) "
+        f"({st['disk']['modes'].get(MODE_ENFORCE, 0)} enforce, "
+        f"{st['disk']['modes'].get(MODE_COMPLAIN, 0)} complain)"
+    )
+    if st["kernel"]["status"] == "available":
+        modes = st["kernel"]["modes"]
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(modes.items())) or "none"
+        out.info(f"  Kernel: {st['kernel']['count']} profile(s) loaded ({summary})")
+    else:
+        out.info(f"  Kernel: securityfs {st['kernel']['status']}")
+    if st["disk"]["profiles"]:
+        out.info("")
+        for prof in st["disk"]["profiles"]:
+            flags = prof["flags"]
+            flag_str = f" flags=({','.join(flags)})" if flags else ""
+            out.info(f"  {out.mode_tag(prof['mode'])} {prof['name']}{flag_str}")
+    return 0
+
+
+def cmd_list(args, out: Output, profile_dir: Path) -> int:
+    rows: list[dict] = []
+    for pf in profile_files(profile_dir):
+        for block in scan_file(pf):
+            rows.append(
+                {
+                    "file": str(pf),
+                    "name": block.display_name,
+                    "attachment": block.attachment,
+                    "mode": block.mode,
+                    "flags": sorted(block.flags),
+                }
+            )
+    if getattr(args, "json", False):
+        out.emit({"command": "list", "count": len(rows), "profiles": rows})
+        return 0
+    for r in rows:
+        flags = f" flags=({','.join(r['flags'])})" if r["flags"] else ""
+        out.info(f"  {r['mode']:<9} {r['name']}{flags}")
+    return 0
+
+
+def cmd_show(args, out: Output, profile_dir: Path) -> int:
+    matches = find_profile(args.profile, profile_dir)
+    if not matches:
+        msg = f"profile '{args.profile}' not found in {profile_dir}"
+        if getattr(args, "json", False):
+            out.emit({"command": "show", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    payload = {
+        "command": "show",
+        "matches": [
+            {
+                "file": str(pf),
+                "name": b.name,
+                "attachment": b.attachment,
+                "mode": b.mode,
+                "flags": sorted(b.flags),
+                "header_start_line": b.header_start_line + 1,
+                "header_end_line": b.header_end_line + 1,
+                "body_end_line": b.body_end_line + 1,
+            }
+            for pf, b in matches
+        ],
+    }
+    if getattr(args, "json", False):
+        out.emit(payload)
+        return 0
+    for pf, b in matches:
+        out.info(f"Profile: {b.display_name}")
+        out.info(f"  File:       {pf}")
+        out.info(f"  Attachment: {b.attachment or '(none)'}")
+        out.info(f"  Mode:       {b.mode}")
+        out.info(f"  Flags:      {', '.join(sorted(b.flags)) or '(none)'}")
+        out.info(
+            f"  Lines:      {b.header_start_line + 1}-{b.body_end_line + 1}"
+        )
+    return 0
+
+
+def cmd_verify(args, out: Output, profile_dir: Path) -> int:
+    result = compute_verify(profile_dir, DEFAULT_SECFS_DIR)
+    exit_code = 0 if result["compliant"] else 1
+    if getattr(args, "json", False):
+        out.emit({"command": "verify", **result}, exit_code)
+        return exit_code
+    if result["compliant"]:
+        out.info(
+            out.colorize("OK", "green")
+            + f": {result['kernel']['modes'].get(MODE_ENFORCE, 0)} profile(s) "
+            f"enforcing in kernel, {result['disk']['count']} on disk"
+        )
+    else:
+        out.error(out.colorize("FAIL", "red") + ": AppArmor verification issues")
+        for issue in result["issues"]:
+            out.error(f"  - {issue}")
+    return exit_code
+
+
+def cmd_load(args, out: Output, profile_dir: Path) -> int:
+    parser = find_parser()
+    if not parser:
+        msg = (
+            "apparmor_parser not installed "
+            "(set GRINTION_APPARMOR_PARSER or install the apparmor package)"
+        )
+        if getattr(args, "json", False):
+            out.emit({"command": "load", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+
+    path = Path(args.profile)
+    if not path.is_file():
+        candidate = profile_dir / args.profile
+        if candidate.is_file():
+            path = candidate
+        else:
+            msg = f"profile file not found: {args.profile}"
+            if getattr(args, "json", False):
+                out.emit({"command": "load", "ok": False, "error": msg}, 1)
+            else:
+                out.error(f"Error: {msg}")
+            return 1
+    path = path.resolve()
+
+    if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            out.emit(
+                {"command": "load", "ok": True, "file": str(path), "dry_run": True}
+            )
+        else:
+            out.info(f"Would load {path}")
+        return 0
+
+    ok, err = load_file(parser, path)
+    if getattr(args, "json", False):
+        out.emit(
+            {
+                "command": "load",
+                "ok": ok,
+                "file": str(path),
+                "error": None if ok else err,
+            },
+            0 if ok else 1,
+        )
+    elif ok:
+        out.info(f"Loaded {path.name}")
+    else:
+        out.error(f"Error: {err}")
+    return 0 if ok else 1
+
+
+def cmd_unload(args, out: Output, profile_dir: Path) -> int:
+    parser = find_parser()
+    if not parser:
+        msg = "apparmor_parser not installed"
+        if getattr(args, "json", False):
+            out.emit({"command": "unload", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    matches = find_profile(args.profile, profile_dir)
+    if not matches:
+        msg = f"profile '{args.profile}' not found"
+        if getattr(args, "json", False):
+            out.emit({"command": "unload", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    if len(matches) > 1:
+        msg = f"ambiguous: '{args.profile}' matches {len(matches)} profiles"
+        if getattr(args, "json", False):
+            out.emit({"command": "unload", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    pf, block = matches[0]
+    all_blocks = scan_file(pf)
+    warning = None
+    if len(all_blocks) > 1:
+        warning = (
+            f"note: {pf.name} contains {len(all_blocks)} profiles; "
+            "apparmor_parser -R removes all of them"
+        )
+    if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            out.emit(
+                {"command": "unload", "ok": True, "file": str(pf), "dry_run": True}
+            )
+        else:
+            out.info(f"Would unload {block.display_name} (via {pf.name})")
+        return 0
+    ok, err = unload_file(parser, pf)
+    if getattr(args, "json", False):
+        out.emit(
+            {"command": "unload", "ok": ok, "file": str(pf),
+             "error": None if ok else err, "warning": warning},
+            0 if ok else 1,
+        )
+    elif ok:
+        out.info(f"Unloaded {block.display_name}")
+        if warning:
+            out.info(warning)
+    else:
+        out.error(f"Error: {err}")
+    return 0 if ok else 1
+
+
+def cmd_load_all(args, out: Output, profile_dir: Path) -> int:
+    parser = find_parser()
+    if not parser:
+        msg = "apparmor_parser not installed"
+        if getattr(args, "json", False):
+            out.emit({"command": "load-all", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    if not getattr(args, "dry_run", False) and not is_root_or_test():
+        msg = "loading profiles requires root"
+        if getattr(args, "json", False):
+            out.emit({"command": "load-all", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    result = load_all(profile_dir, parser, dry_run=getattr(args, "dry_run", False))
+    exit_code = 1 if result["failed"] else 0
+    if getattr(args, "json", False):
+        out.emit({"command": "load-all", **result}, exit_code)
+        return exit_code
+    out.info(f"Loaded {result['loaded']}/{result['total']} profile(s)")
+    for err in result["errors"]:
+        out.error(f"  {err}")
+    return exit_code
+
+
+def cmd_reload(args, out: Output, profile_dir: Path) -> int:
+    parser = find_parser()
+    if not parser:
+        msg = "apparmor_parser not installed"
+        if getattr(args, "json", False):
+            out.emit({"command": "reload", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    if not getattr(args, "dry_run", False) and not is_root_or_test():
+        msg = "reloading profiles requires root"
+        if getattr(args, "json", False):
+            out.emit({"command": "reload", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    result = load_all(profile_dir, parser, dry_run=getattr(args, "dry_run", False))
+    verification = (
+        compute_verify(profile_dir, DEFAULT_SECFS_DIR)
+        if not getattr(args, "dry_run", False)
+        else None
+    )
+    exit_code = 0
+    if result["failed"]:
+        exit_code = 1
+    if verification and not verification["compliant"]:
+        exit_code = 1
+    if getattr(args, "json", False):
+        out.emit(
+            {"command": "reload", **result, "verification": verification},
+            exit_code,
+        )
+        return exit_code
+    out.info(f"Reloaded {result['loaded']}/{result['total']} profile(s)")
+    if result["errors"]:
+        for err in result["errors"]:
+            out.error(f"  {err}")
+    if verification:
+        if verification["compliant"]:
+            out.info(
+                out.colorize("Verified", "green")
+                + f": {verification['kernel']['modes'].get(MODE_ENFORCE, 0)} "
+                "profile(s) enforcing in kernel"
+            )
+        else:
+            out.error("Verification issues:")
+            for issue in verification["issues"]:
+                out.error(f"  - {issue}")
+    return exit_code
+
+
+def cmd_set_mode(args, out: Output, profile_dir: Path, target_mode: str) -> int:
+    json_mode = getattr(args, "json", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if not dry_run and not is_root_or_test():
+        msg = f"setting profile mode requires root"
+        if json_mode:
+            out.emit({"command": target_mode, "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+
+    if dry_run:
+        matches = find_profile(args.profile, profile_dir)
+        if not matches:
+            msg = f"profile '{args.profile}' not found"
+            if json_mode:
+                out.emit({"command": target_mode, "ok": False, "error": msg}, 1)
+            else:
+                out.error(f"Error: {msg}")
+            return 1
+        if len(matches) > 1:
+            msg = f"ambiguous: '{args.profile}' matches {len(matches)} profiles"
+            if json_mode:
+                out.emit({"command": target_mode, "ok": False, "error": msg}, 1)
+            else:
+                out.error(f"Error: {msg}")
+            return 1
+        pf, block = matches[0]
+        kernel_mode = _kernel_mode_for(block, kernel_state(DEFAULT_SECFS_DIR))
+        would_change = block.mode != target_mode or kernel_mode != target_mode
+        payload = {
+            "command": target_mode,
+            "ok": True,
+            "dry_run": True,
+            "file": str(pf),
+            "profile": block.display_name,
+            "current_disk_mode": block.mode,
+            "current_kernel_mode": kernel_mode,
+            "would_change": would_change,
+        }
+        if json_mode:
+            out.emit(payload)
+        else:
+            out.info(
+                f"Would set {block.display_name} to {target_mode} "
+                f"(disk={block.mode}, kernel={kernel_mode or 'unknown'})"
+            )
+        return 0
+
+    parser = find_parser()
+    result = set_profile_mode(
+        args.profile, target_mode, profile_dir, parser
+    )
+    exit_code = 0 if result["ok"] else 1
+    if json_mode:
+        out.emit({"command": target_mode, **result}, exit_code)
+        return exit_code
+    if result["ok"]:
+        if result["changed"]:
+            out.info(
+                out.colorize("OK", "green")
+                + f": {result['profile']} -> {target_mode} ({result['file']})"
+            )
+        else:
+            out.info(f"{result['profile']}: {result.get('message', 'no change')}")
+    else:
+        out.error(f"Error: {result['error']}")
+    return exit_code
+
+
+def cmd_enforce_all(args, out: Output, profile_dir: Path) -> int:
+    json_mode = getattr(args, "json", False)
+    dry_run = getattr(args, "dry_run", False)
+    if not dry_run and not is_root_or_test():
+        msg = "enforce-all requires root"
+        if json_mode:
+            out.emit({"command": "enforce-all", "ok": False, "error": msg}, 1)
+        else:
+            out.error(f"Error: {msg}")
+        return 1
+    parser = find_parser()
+    result = enforce_all(profile_dir, parser, dry_run=dry_run)
+    exit_code = 1 if result["failed"] else 0
+    if json_mode:
+        out.emit({"command": "enforce-all", **result}, exit_code)
+        return exit_code
+    out.info(
+        f"Changed: {len(result['changed'])}, "
+        f"skipped: {len(result['skipped'])}, "
+        f"failed: {len(result['failed'])}"
+    )
+    for item in result["failed"]:
+        out.error(f"  {item.get('profile', '?')}: {item.get('error', '?')}")
+    return exit_code
+
+
+# ─── Argument parsing and dispatch ────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    # SUPPRESS defaults so flags given before a subcommand are not clobbered
+    # by the subparser's default values.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS,
+        help="Machine-readable JSON output",
+    )
+    common.add_argument(
+        "--dry-run", action="store_true", default=argparse.SUPPRESS,
+        help="Report actions without changing state",
+    )
+    common.add_argument(
+        "--quiet", "-q", action="store_true", default=argparse.SUPPRESS,
+        help="Suppress informational output",
+    )
+    common.add_argument(
+        "--color", choices=("auto", "always", "never"), default=argparse.SUPPRESS,
+        help="ANSI color mode (default: auto)",
+    )
+    common.add_argument(
+        "--profile-dir", type=Path, default=argparse.SUPPRESS,
+        help=f"Profile directory (default: {DEFAULT_PROFILE_DIR})",
+    )
+
+    prog_name = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "apparmor"
+    p = argparse.ArgumentParser(
+        prog=prog_name,
+        parents=[common],
+        description=(
+            "Manage AppArmor profiles for Grintion-OS. Distinguishes "
+            "on-disk policy from kernel state and fails closed on errors."
+        ),
+    )
+    p.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    sub = p.add_subparsers(dest="command", metavar="COMMAND")
+
+    sub.add_parser("status", parents=[common], help="Show AppArmor status")
+    sub.add_parser("list", parents=[common], help="List on-disk profiles")
+    sub.add_parser(
+        "verify", parents=[common], aliases=["check"],
+        help="Verify kernel enforcement matches on-disk policy",
+    )
+    sub.add_parser(
+        "load-all", parents=[common],
+        help="Load every profile in the profile directory",
+    )
+    sub.add_parser(
+        "reload", parents=[common],
+        help="Reload every profile, then verify",
+    )
+    sub.add_parser(
+        "enforce-all", parents=[common],
+        help="Convert every complain profile to enforce, reload, and verify",
+    )
+
+    for name, help_text in [
+        ("show", "Show parsed details for a profile"),
+        ("load", "Load a single profile file"),
+        ("unload", "Unload a single profile"),
+        ("enforce", "Set a profile to enforce mode and reload"),
+        ("complain", "Set a profile to complain mode and reload"),
+    ]:
+        sp = sub.add_parser(name, parents=[common], help=help_text)
+        sp.add_argument("profile", help="Profile name, attachment, or file path")
+
+    return p
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    out = Output(
+        json_mode=getattr(args, "json", False),
+        quiet=getattr(args, "quiet", False),
+        color=getattr(args, "color", "auto"),
+    )
+    profile_dir = getattr(args, "profile_dir", DEFAULT_PROFILE_DIR)
+
+    cmd = args.command or "status"
+    handler = {
+        "status": cmd_status,
+        "list": cmd_list,
+        "show": cmd_show,
+        "verify": cmd_verify,
+        "check": cmd_verify,
+        "load": cmd_load,
+        "unload": cmd_unload,
+        "load-all": cmd_load_all,
+        "reload": cmd_reload,
+        "enforce": lambda a, o, p: cmd_set_mode(a, o, p, MODE_ENFORCE),
+        "complain": lambda a, o, p: cmd_set_mode(a, o, p, MODE_COMPLAIN),
+        "enforce-all": cmd_enforce_all,
+    }.get(cmd)
+
+    if handler is None:
+        out.error(f"Unknown command: {cmd}")
+        return 2
+    try:
+        return handler(args, out, profile_dir)
+    except KeyboardInterrupt:
+        out.error("Interrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

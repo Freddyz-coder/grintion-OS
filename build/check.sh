@@ -87,8 +87,9 @@ pass "executable bits"
 if [ -d build/work/rootfs ]; then
     [ -f build/work/rootfs/usr/lib/sudo/sudoers.so ] \
         || fail "sudoers.so missing from build/work/rootfs"
-    [ -x build/work/rootfs/usr/bin/grintion-doctor ] \
-        || fail "grintion-doctor missing from build/work/rootfs"
+    [ -x build/work/rootfs/usr/bin/doctor ] \
+        || [ -x build/work/rootfs/usr/bin/grintion-doctor ] \
+        || fail "doctor missing from build/work/rootfs"
 fi
 pass "runtime components in staged rootfs"
 

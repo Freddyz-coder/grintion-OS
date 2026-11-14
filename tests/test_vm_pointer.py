@@ -5,8 +5,24 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-POINTER = REPO_ROOT / "bin" / "grintion-pointer-sync"
-XORG_INPUT = REPO_ROOT / "bin" / "grintion-xorg-input"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+POINTER = get_bin("pointer-sync")
+XORG_INPUT = get_bin("xorg-input")
 DESKTOP_SERVICE = REPO_ROOT / "etc" / "sv" / "display-manager" / "run"
 PROFILES = REPO_ROOT / "etc" / "grintion" / "desktops.d"
 

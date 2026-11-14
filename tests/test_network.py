@@ -5,7 +5,23 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI = REPO_ROOT / "bin" / "grintion-network"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+CLI = get_bin("network")
 LIB = REPO_ROOT / "etc" / "grintion" / "network.lib.sh"
 
 

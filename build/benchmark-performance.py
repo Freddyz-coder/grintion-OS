@@ -11,6 +11,14 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_bin(name: str) -> Path:
+    clean = name.removeprefix("grintion-")
+    p = REPO_ROOT / "bin" / clean
+    if p.exists():
+        return p
+    return REPO_ROOT / "bin" / f"grintion-{clean}"
 BENCHMARKS_DIR = REPO_ROOT / "benchmarks"
 
 
@@ -36,11 +44,11 @@ def benchmark_tool(cmd: list[str], runs: int = 5) -> dict:
 
 def run_benchmarks(runs: int = 3) -> dict:
     targets = [
-        [str(REPO_ROOT / "bin/garb"), "--help"],
-        [str(REPO_ROOT / "bin/grintion-security"), "list"],
-        [str(REPO_ROOT / "bin/grintion-hcl"), "--json"],
-        [str(REPO_ROOT / "bin/grintion-privacy"), "--json"],
-        [str(REPO_ROOT / "bin/grintion-usb"), "status"],
+        [str(get_bin("garb")), "--help"],
+        [str(get_bin("security")), "list"],
+        [str(get_bin("hcl")), "--json"],
+        [str(get_bin("privacy")), "--json"],
+        [str(get_bin("usb")), "status"],
     ]
 
     benchmarks = []

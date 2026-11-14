@@ -7,6 +7,11 @@ msg() { printf '\033[1;31m[grintion]\033[0m %s\n' "$*"; }
 rescue() {
     trap - EXIT
     msg "$*"
+    if grep -q -E '\brd\.shell=0\b|\bpanic=[0-9]+\b|\bpanic_on_fail\b' /proc/cmdline 2>/dev/null; then
+        msg "recovery shell disabled by kernel command line; halting system..."
+        sleep 3
+        poweroff -f 2>/dev/null || reboot -f 2>/dev/null || exit 1
+    fi
     msg "dropping to an emergency recovery shell"
     msg "type 'reboot -f' to reboot, or 'poweroff -f' to shut down"
     while true; do

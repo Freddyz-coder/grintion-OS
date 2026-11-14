@@ -7,13 +7,29 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-HCL = REPO_ROOT / "bin" / "grintion-hcl"
-CONFIG = REPO_ROOT / "bin" / "grintion-config"
-DOCTOR = REPO_ROOT / "bin" / "grintion-doctor"
-WATCHDOG = REPO_ROOT / "bin" / "grintion-watchdog"
-POWER = REPO_ROOT / "bin" / "grintion-power"
-NETWORK = REPO_ROOT / "bin" / "grintion-network"
-CGROUP = REPO_ROOT / "bin" / "grintion-cgroup"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+HCL = get_bin("hcl")
+CONFIG = get_bin("config")
+DOCTOR = get_bin("doctor")
+WATCHDOG = get_bin("watchdog")
+POWER = get_bin("power")
+NETWORK = get_bin("network")
+CGROUP = get_bin("cgroup")
 
 
 def test_grintion_hcl_identifies_machine_json() -> None:

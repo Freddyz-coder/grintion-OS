@@ -10,6 +10,8 @@ fi
 GRINTION_AUDIO_STARTED=1
 export GRINTION_AUDIO_STARTED
 
-if command -v grintion-audio >/dev/null 2>&1; then
+if command -v audio >/dev/null 2>&1; then
+    audio --session >/dev/null 2>&1 || true
+elif command -v grintion-audio >/dev/null 2>&1; then
     grintion-audio --session >/dev/null 2>&1 || true
 fi

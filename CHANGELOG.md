@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.16.0] - 2026-11-14
+
+### Added
+
+- **AppArmor 2.0** (`bin/apparmor`) — complete rewrite with AST-level
+  brace-depth tracking, quote-aware comment stripping, and multi-line header
+  support so that all profiles in multi-profile files (cups, snapd, apparmor
+  itself) are enumerated correctly.
+  - Fail-closed atomic rollback: syntax is validated with the system parser
+    before any file is written; a reload failure reverts the on-disk copy so
+    disk and kernel state never silently diverge.
+  - securityfs cross-checking: every status/verify command reads
+    `/sys/kernel/security/apparmor/profiles` and cross-checks it against the
+    on-disk tree; files present on disk but absent from the kernel are flagged
+    as `missing`.
+  - Full flag preservation: `complain` ↔ `enforce` mode changes only add or
+    remove the `complain` token; `attach_disconnected`, `mediate_deleted`,
+    `chroot_relative`, `audit`, and all other flags are kept verbatim.
+  - Multi-profile file awareness: `load-all`, `set`, `complain`, and `enforce`
+    sub-commands iterate every `ProfileBlock` in each file, not just the first
+    declaration.
+  - `--json` output for `status`, `verify`, `list`, and `show`.
+  - `--dry-run` for all write operations (`set`, `load-all`, `complain`,
+    `enforce`).
+  - Drops privilege requirement in test/CI environments where
+    `GRINTION_APPARMOR_DIR` or `GRINTION_APPARMOR_PARSER` is set.
+
+- **Clean command names** — the redundant `grintion-` prefix is stripped from
+  all 75 utilities in `bin/`. Commands are now invoked as `install`, `config`,
+  `desktop`, `apparmor`, `firewall`, `audit`, etc.
+  - `build/make-rootfs.sh` automatically creates
+    `/usr/bin/grintion-<name> → /usr/bin/<name>` symlinks in the rootfs at
+    build time, so every existing script and documentation reference continues
+    to work without modification.
+  - `bin/doctor`, `bin/help`, `bin/tour`, and `bin/welcome` detect their own
+    invocation name at runtime and use it in help text.
+
+### Changed
+
+- Version bumped to `0.16.0` across `VERSION`, `etc/grintion/version`,
+  `etc/issue`, `etc/motd`, `etc/motd.in`, `etc/motd.installed.in`, the SPDX
+  SBOM generator in `bin/audit`, the UKI fallback identity in `bin/uki`,
+  `bin/welcome`, and all documentation.
+- `README.md` repository layout section updated to reflect clean command names
+  with a note that legacy symlinks are generated automatically.
+- `docs/INSTALL.md`, `docs/BUILDING.md`, `docs/RECOVERY.md`,
+  `docs/VERIFICATION.md`, `docs/PACKAGE-MANAGER.md`, and `docs/ROADMAP.md`
+  updated to reference 0.16.0.
+- `SECURITY.md` current release and supported-version table updated to 0.16.0.
+
+### Fixed
+
+- `import sys` added to `bin/hwinfo`, `bin/bench`, and `bin/load` (Python
+  `NameError` on `--json` path).
+- `from pathlib import Path` added to `bin/tour`.
+- `bin/doctor` POSIX-sh compatibility: removed `local` keyword from two
+  variable declarations that caused `dash` to abort.
+
+### Tests
+
+- `tests/test_phase8_security_hardening.py` — 20 AppArmor 2.0 tests: profile
+  block parsing, mode transitions, securityfs cross-check, JSON output, dry-run
+  safety, and rollback simulation. All pass in a non-root CI environment.
+- Full `make check` suite: 245 tests, 0 failures, shellcheck 0 warnings.
+
+---
+
 ## [0.15.0] - 2026-11-14
 
 ### Added

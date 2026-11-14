@@ -22,6 +22,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def get_bin(name: str) -> Path:
+    clean = name.removeprefix("grintion-")
+    p = REPO_ROOT / "bin" / clean
+    if p.exists():
+        return p
+    return REPO_ROOT / "bin" / f"grintion-{clean}"
+
+
 def get_process_metrics() -> dict:
     rusage = resource.getrusage(resource.RUSAGE_SELF)
     # ru_maxrss is in KiB on Linux
@@ -48,8 +56,8 @@ def run_soak_cycles(iterations: int = 50, delay_ms: int = 10) -> dict:
     samples = []
     start_time = time.time()
 
-    doctor_bin = REPO_ROOT / "bin/grintion-doctor"
-    hcl_bin = REPO_ROOT / "bin/grintion-hcl"
+    doctor_bin = get_bin("doctor")
+    hcl_bin = get_bin("hcl")
 
     for i in range(iterations):
         # Run representative fast diagnostic tools in cycle

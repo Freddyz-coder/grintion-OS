@@ -91,7 +91,14 @@ if [ -n "$CRYPTARG" ]; then
         fi
         tries=$((tries - 1))
     done
-    [ -n "$ROOTDEV" ] || rescue "could not unlock $CRYPT_DEV"
+    [ -n "$ROOTDEV" ] || {
+        if grep -q -E '\brd\.shell=0\b|\bpanic\b' /proc/cmdline 2>/dev/null; then
+            msg "LUKS device could not be unlocked after maximum attempts; halting"
+            sleep 3
+            poweroff -f 2>/dev/null || reboot -f 2>/dev/null || exit 1
+        fi
+        rescue "could not unlock $CRYPT_DEV"
+    }
 else
     case "$ROOTARG" in
         UUID=*|LABEL=*) ROOTDEV="$(findfs "$ROOTARG" 2>/dev/null || true)" ;;

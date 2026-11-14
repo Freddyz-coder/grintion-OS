@@ -13,6 +13,15 @@ BIN_DIR = REPO_ROOT / "bin"
 
 def run_bin(cmd: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     executable = BIN_DIR / cmd
+    if not executable.exists():
+        clean = cmd.removeprefix("grintion-")
+        alt = BIN_DIR / clean
+        if alt.exists():
+            executable = alt
+        else:
+            alt2 = BIN_DIR / f"grintion-{clean}"
+            if alt2.exists():
+                executable = alt2
     environ = os.environ.copy()
     if env:
         environ.update(env)
@@ -402,8 +411,11 @@ def test_apparmor_profiles_load_at_boot_and_deny_secrets():
 
     kernel = (REPO_ROOT / "config" / "kernel-hardened.config").read_text()
     assert "CONFIG_SECURITY_APPARMOR=y" in kernel
-    for boot_file in ("build/build-iso.sh", "bin/limine-deploy", "bin/grintion-install", "bin/grintion-uki"):
-        assert "security=apparmor apparmor=1" in (REPO_ROOT / boot_file).read_text(), boot_file
+    for boot_file in ("build/build-iso.sh", "bin/limine-deploy", "bin/install", "bin/uki"):
+        target_path = REPO_ROOT / boot_file
+        if not target_path.exists():
+            target_path = REPO_ROOT / boot_file.replace("bin/", "bin/grintion-")
+        assert "security=apparmor apparmor=1" in target_path.read_text(), boot_file
 
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert "udev timesync apparmor; do" in rootfs
@@ -427,13 +439,116 @@ def test_x11_remote_transports_and_cookies_are_locked_down():
     assert "chmod 600" in hook_text
     assert "xhost -" in hook_text
 
-    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    desktop_path = BIN_DIR / "desktop" if (BIN_DIR / "desktop").exists() else BIN_DIR / "grintion-desktop"
+    desktop = desktop_path.read_text()
     assert "xserver-command=X -nolisten tcp -nolisten local" in desktop
     assert "ServerArguments=-nolisten tcp -nolisten local" in desktop
 
     wrapper = (REPO_ROOT / "etc" / "X11" / "Xwrapper.config").read_text()
     assert "allowed_users = console" in wrapper
 
-    report = (REPO_ROOT / "bin" / "grintion-security-report").read_text()
+    report_path = BIN_DIR / "security-report" if (BIN_DIR / "security-report").exists() else BIN_DIR / "grintion-security-report"
+    report = report_path.read_text()
     assert "x11-access" in report
+
+
+def test_vault_path_traversal_prevention(tmp_path: Path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    outside_victim = tmp_path / "victim.txt"
+    outside_victim.write_text("IMPORTANT_DATA")
+
+    env = {"GRINTION_VAULT_DIR": str(vault_dir), "GRINTION_CERT_DIR": str(tmp_path / "certs")}
+    (tmp_path / "certs").mkdir()
+
+    # Attempt path traversal write
+    res_set = run_bin("grintion-vault", "set", "../../evil", "secret_val", "--passphrase", "testpass", env=env)
+    assert res_set.returncode != 0
+    assert not (tmp_path / "evil.vault").exists()
+
+    # Attempt path traversal read
+    res_get = run_bin("grintion-vault", "get", "../../evil", "--passphrase", "testpass", env=env)
+    assert res_get.returncode != 0
+
+    # Attempt path traversal cert deletion
+    res_untrust = run_bin("grintion-vault", "untrust-cert", "../victim.txt", env=env)
+    assert res_untrust.returncode != 0
+    assert outside_victim.exists()
+
+
+def test_backup_verify_injection_safety(tmp_path: Path):
+    target = tmp_path / "test-archive.tar.gz"
+    target.write_bytes(b"dummy")
+    meta = tmp_path / "test-archive.tar.gz.json"
+    meta.write_text(json.dumps({"sha256": "fakehash", "path": str(target)}))
+
+    res = run_bin("grintion-backup", "verify", str(target))
+    # Should report integrity check failed, not crash or execute code
+    assert res.returncode == 1
+    assert "FAILED" in res.stderr or "FAILED" in res.stdout
+
+
+def test_mount_and_timer_newline_rejection(tmp_path: Path):
+    fstab = tmp_path / "fstab"
+    fstab.write_text("# fstab\n")
+    env = {"GRINTION_FSTAB": str(fstab), "GRINTION_ROOT": str(tmp_path)}
+
+    res_mnt = run_bin(
+        "grintion-mount", "add", "/dev/sda1", "/mnt/test",
+        "--options", "defaults\n/dev/evil /etc ext4 defaults 0 0",
+        "--no-mount",
+        env=env,
+    )
+    assert res_mnt.returncode == 2
+    assert "/dev/evil" not in fstab.read_text()
+
+    timers_dir = tmp_path / "timers.d"
+    env_timer = {
+        "GRINTION_TIMERS_DIR": str(timers_dir),
+        "GRINTION_SV_DIR": str(tmp_path / "sv"),
+        "GRINTION_SERVICE_DIR": str(tmp_path / "service"),
+        "GRINTION_ROOT": str(tmp_path),
+    }
+    res_timer = run_bin(
+        "grintion-timer", "add", "bad_timer",
+        "--schedule", "hourly",
+        "--command", "echo test",
+        "--description", "injected\nuser = root\ncommand = rm -rf /",
+        "--disabled",
+        env=env_timer,
+    )
+    assert res_timer.returncode == 2
+    assert not (timers_dir / "bad_timer.timer").exists()
+
+
+def test_shield_ip_validation_safety(tmp_path: Path):
+    bans = tmp_path / "bans.json"
+    env = {"GRINTION_SHIELD_BANS": str(bans)}
+
+    res = run_bin("grintion-shield", "ban", "1.2.3.4\nALL: ALL: ALLOW", env=env)
+    assert res.returncode != 0 or not bans.exists() or "ALLOW" not in bans.read_text()
+
+
+def test_service_name_validation(tmp_path: Path):
+    sv_dir = tmp_path / "sv"
+    (sv_dir / "valid_svc").mkdir(parents=True)
+    (sv_dir / "valid_svc" / "run").write_text("#!/bin/sh\n")
+    env = {"GRINTION_SV_DIR": str(sv_dir), "GRINTION_SERVICE_DIR": str(tmp_path / "service")}
+
+    # Path traversal / nested name rejected
+    res_bad = run_bin("grintion-service", "status", "sub/nested", env=env)
+    assert res_bad.returncode == 2
+
+    res_flag = run_bin("grintion-service", "status", "--", "-invalid", env=env)
+    assert res_flag.returncode == 2
+
+    res_dot = run_bin("grintion-service", "status", "../traversal", env=env)
+    assert res_dot.returncode == 2
+
+
+def test_sandbox_empty_command():
+    res = run_bin("grintion-sandbox", "--")
+    assert res.returncode == 1
+    assert "usage:" in res.stdout or "usage:" in res.stderr
+
 

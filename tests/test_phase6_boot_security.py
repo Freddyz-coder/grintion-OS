@@ -7,14 +7,30 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SECUREBOOT = REPO_ROOT / "bin" / "grintion-secureboot"
-UKI = REPO_ROOT / "bin" / "grintion-uki"
-ATTEST = REPO_ROOT / "bin" / "grintion-attest"
-TPM_LUKS = REPO_ROOT / "bin" / "grintion-tpm-luks"
-FIRMWARE = REPO_ROOT / "bin" / "grintion-firmware"
-HIBERNATE = REPO_ROOT / "bin" / "grintion-hibernate"
-KERNEL = REPO_ROOT / "bin" / "grintion-kernel"
-MODULE_SIGN = REPO_ROOT / "bin" / "grintion-module-sign"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+SECUREBOOT = get_bin("secureboot")
+UKI = get_bin("uki")
+ATTEST = get_bin("attest")
+TPM_LUKS = get_bin("tpm-luks")
+FIRMWARE = get_bin("firmware")
+HIBERNATE = get_bin("hibernate")
+KERNEL = get_bin("kernel")
+MODULE_SIGN = get_bin("module-sign")
 
 
 def test_secureboot_key_generation_and_signing(tmp_path: Path) -> None:

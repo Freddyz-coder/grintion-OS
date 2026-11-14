@@ -123,5 +123,6 @@ sign-release:
 	@./build/sign-release.sh
 
 verify-release:
-	@./bin/grintion-release-verify $(ISO) --sha256-file output/SHA256SUMS \
+	@VERIFY_BIN=$$( [ -x ./bin/release-verify ] && echo ./bin/release-verify || echo ./bin/grintion-release-verify ); \
+	    $$VERIFY_BIN $(ISO) --sha256-file output/SHA256SUMS \
 	    $${GRINTION_RELEASE_PUBKEY:+--key "$$GRINTION_RELEASE_PUBKEY"} --require-signature

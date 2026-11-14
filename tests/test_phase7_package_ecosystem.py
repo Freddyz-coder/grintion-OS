@@ -7,9 +7,25 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GARB = REPO_ROOT / "bin" / "garb"
-AUDIT = REPO_ROOT / "bin" / "grintion-audit"
-CHANNEL = REPO_ROOT / "bin" / "grintion-channel"
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
+
+
+GARB = get_bin("garb")
+AUDIT = get_bin("audit")
+CHANNEL = get_bin("channel")
 CHANGELOG = REPO_ROOT / "build" / "gen-changelog.py"
 
 

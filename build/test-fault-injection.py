@@ -19,7 +19,17 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GARB_BIN = REPO_ROOT / "bin/garb"
+
+
+def get_bin(name: str) -> Path:
+    clean = name.removeprefix("grintion-")
+    p = REPO_ROOT / "bin" / clean
+    if p.exists():
+        return p
+    return REPO_ROOT / "bin" / f"grintion-{clean}"
+
+
+GARB_BIN = get_bin("garb")
 
 
 def test_interrupted_transaction(tmp_path: Path) -> dict:
@@ -30,7 +40,7 @@ def test_interrupted_transaction(tmp_path: Path) -> dict:
     # Write a stale lock from a dead PID
     lock_file.write_text("999999\n")
 
-    doctor_bin = REPO_ROOT / "bin/grintion-doctor"
+    doctor_bin = get_bin("doctor")
     env = {"GRINTION_ROOT": str(tmp_path)}
     res = subprocess.run([str(doctor_bin), "--fix"], capture_output=True, text=True, env=env)
     
@@ -80,7 +90,7 @@ def test_enospc_handling(tmp_path: Path) -> dict:
 
 def test_readonly_filesystem(tmp_path: Path) -> dict:
     # Read-only diagnosis execution
-    sec_report = REPO_ROOT / "bin/grintion-security-report"
+    sec_report = get_bin("security-report")
     res = subprocess.run([str(sec_report), "--json"], capture_output=True, text=True)
     ok = res.returncode == 0
     return {

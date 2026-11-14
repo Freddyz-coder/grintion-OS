@@ -57,8 +57,10 @@ def normalize_pacman_package(spec: str) -> str:
     Only bare names are rewritten. Local archive paths and relative paths are
     left alone; a version constraint keeps its ``name=version`` form.
     """
+    if spec.startswith("-"):
+        raise GarbError(f"package name cannot start with a hyphen: {spec!r}")
     name, separator, version = spec.partition("=")
-    if not name or "/" in name or name.startswith(".") or name.startswith("-"):
+    if not name or "/" in name or name.startswith("."):
         return spec
     normalized = PACMAN_PACKAGE_ALIASES.get(name.lower(), name.lower())
     return f"{normalized}{separator}{version}" if separator else normalized
@@ -235,7 +237,7 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
             if getattr(args, "format", "text") != "text":
                 raise GarbError("--format json is a native-garb option")
             argv.append("-Qk" if args.quick else "-Qkk")
-            argv += normalize_pacman_packages(args.package)
+            argv += [*normalize_pacman_packages(args.package)]
         elif command == "upgrade":
             if args.package:
                 argv += ["-S", "--noconfirm", *normalize_pacman_packages(args.package)]
@@ -244,6 +246,13 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
         else:
             raise GarbError(f"pacman has no mapping for garb {command}")
         return argv
+
+    packages = getattr(args, "package", []) or []
+    if isinstance(packages, str):
+        packages = [packages]
+    for pkg in packages:
+        if pkg.startswith("-"):
+            raise GarbError(f"package name cannot start with a hyphen: {pkg!r}")
 
     if command == "update":
         if getattr(args, "key", None) or getattr(args, "allow_unsigned", False):

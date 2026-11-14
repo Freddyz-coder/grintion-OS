@@ -14,6 +14,12 @@ ETC_DIR = Path(__file__).resolve().parent.parent / "etc"
 
 def run_bin(cmd: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     executable = BIN_DIR / cmd
+    if not executable.exists():
+        clean = cmd.removeprefix("grintion-")
+        if (BIN_DIR / clean).exists():
+            executable = BIN_DIR / clean
+        elif (BIN_DIR / f"grintion-{clean}").exists():
+            executable = BIN_DIR / f"grintion-{clean}"
     environ = os.environ.copy()
     if env:
         environ.update(env)

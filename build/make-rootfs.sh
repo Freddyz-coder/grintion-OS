@@ -152,6 +152,11 @@ for tool_path in "$GRINTION_REPO_ROOT"/bin/*; do
     # stale /usr/sbin copy. That made the Sway user config step silently
     # disappear. Nothing invokes these tools through /usr/sbin.
     install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/$tool"
+    # Provide backward-compatibility symlink in rootfs so legacy scripts/services calling grintion-$tool work
+    case "$tool" in
+        grintion-*) ;;
+        *) ln -sfn "$tool" "$ROOTFS/usr/bin/grintion-$tool" ;;
+    esac
 done
 
 # garb is split into a package; the CLI adds /usr/lib/garb when it is not

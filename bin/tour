@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""grintion-tour - interactive onboarding tour for Grintion-OS users."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+STATION_STOPS = [
+    {
+        "step": 1,
+        "title": "Welcome to Grintion-OS",
+        "description": "Grintion-OS is a modern, security-hardened Linux distribution designed for predictability, speed, and privacy without systemd.",
+        "commands": ["cat /etc/grintion/version", "grintion-welcome"],
+    },
+    {
+        "step": 2,
+        "title": "Garb Package Management",
+        "description": "Garb provides atomic package transactions, rollback generations, binary deltas, and cryptographically signed repositories.",
+        "commands": ["garb list", "garb generations", "garb mirror-rank"],
+    },
+    {
+        "step": 3,
+        "title": "Runit Service Supervision",
+        "description": "Services are managed simply through directory symlinks in /var/service with watchdog self-healing and cgroup resource limits.",
+        "commands": ["sv status /var/service/*", "grintion-watchdog status"],
+    },
+    {
+        "step": 4,
+        "title": "Unified Configuration",
+        "description": "Configure timezones, network roaming, power governors, and user accounts through one central tool.",
+        "commands": ["grintion-config", "grintion-network status", "grintion-power status"],
+    },
+    {
+        "step": 5,
+        "title": "Defense-in-Depth Security",
+        "description": "Pre-configured AppArmor profiles, USBGuard protection, application sandboxing, and customizable security profiles.",
+        "commands": ["grintion-security status", "grintion-privacy", "grintion-sandbox --help"],
+    },
+    {
+        "step": 6,
+        "title": "System Diagnostics & Recovery",
+        "description": "Integrated self-healing checks, atomic snapshots, and emergency hardware inspection.",
+        "commands": ["grintion-doctor --fix", "grintion-snapshot list", "grintion-hcl"],
+    },
+    {
+        "step": 7,
+        "title": "Advanced Operations",
+        "description": "Storage health, supervised timers, log triage, networking and firewall overlays with JSON output for automation.",
+        "commands": [
+            "grintion-disk health",
+            "grintion-service list",
+            "grintion-timer list",
+            "grintion-logs errors --strict",
+            "grintion-netdiag summary",
+            "grintion-firewall list",
+        ],
+    },
+]
+
+
+def print_stop(stop: dict) -> None:
+    print(f"\n[{stop['step']}/{len(STATION_STOPS)}] {stop['title'].upper()}")
+    print("-" * 50)
+    print(stop["description"])
+    print("\nKey Tools to Try:")
+    for cmd in stop["commands"]:
+        print(f"  $ {cmd}")
+    print()
+
+
+def main() -> int:
+    prog_name = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "tour"
+    parser = argparse.ArgumentParser(
+        prog=prog_name,
+        description="Interactive onboarding tour for Grintion-OS.",
+    )
+    parser.add_argument("--step", type=int, choices=range(1, len(STATION_STOPS) + 1),
+                        help="View specific tour step")
+    parser.add_argument("--json", action="store_true", help="Output all stops in JSON")
+    args = parser.parse_args()
+
+    if args.json:
+        print(json.dumps(STATION_STOPS, indent=2))
+        return 0
+
+    if args.step:
+        stop = next(s for s in STATION_STOPS if s["step"] == args.step)
+        print_stop(stop)
+        return 0
+
+    print("==================================================")
+    print("           WELCOME TO THE GRINTION-OS TOUR        ")
+    print("==================================================")
+    for stop in STATION_STOPS:
+        print_stop(stop)
+
+    print("Tour complete! Explore docs/HANDBOOK.md for the full system handbook.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

@@ -8,9 +8,23 @@ import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_bin(name: str) -> Path:
+    p = REPO_ROOT / "bin" / name
+    if p.exists():
+        return p
+    clean = name.removeprefix("grintion-")
+    p_clean = REPO_ROOT / "bin" / clean
+    if p_clean.exists():
+        return p_clean
+    p_pref = REPO_ROOT / "bin" / f"grintion-{clean}"
+    if p_pref.exists():
+        return p_pref
+    return p
 SHUTDOWN = REPO_ROOT / "bin" / "shutdown"
 LIMINE = REPO_ROOT / "bin" / "limine-deploy"
-INSTALLER = REPO_ROOT / "bin" / "grintion-install"
+INSTALLER = get_bin("install")
 
 
 def load_seed_module():
@@ -216,7 +230,7 @@ def test_graphical_sessions_start_a_dbus_session_bus() -> None:
     wrapper = REPO_ROOT / "etc" / "lightdm" / "Xsession-grintion"
     assert wrapper.is_file()
     assert "exec dbus-run-session -- /etc/lightdm/Xsession" in wrapper.read_text()
-    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    desktop = (get_bin("desktop")).read_text()
     assert "session-wrapper=/etc/lightdm/Xsession-grintion" in desktop
     # lightdm.conf is loaded after lightdm.conf.d/ and Arch ships an
     # uncommented upstream session-wrapper, so the installer must rewrite the
@@ -238,7 +252,7 @@ def test_xorg_uses_evdev_fallback() -> None:
     # Standalone udev feeds libinput, but Xorg can launch before that database
     # settles. The explicit evdev sections keep the real mouse and keyboard
     # working even when the libudev path is unavailable.
-    generator = REPO_ROOT / "bin" / "grintion-xorg-input"
+    generator = get_bin("xorg-input")
     assert generator.is_file()
     text = generator.read_text()
     assert "/proc/bus/input/devices" in text
@@ -265,7 +279,7 @@ def test_dbus_service_logs_off_the_console() -> None:
 
 
 def test_desktop_install_streams_output_and_provisions_accounts() -> None:
-    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    script = (get_bin("desktop")).read_text()
     # Streaming output replaced an all-at-once $(...) capture that hid a
     # 7-10 minute download behind a blank screen.
     assert "tee -a" in script
@@ -281,7 +295,7 @@ def test_desktop_download_survives_archive_low_speed_timeouts() -> None:
     conf = (REPO_ROOT / "etc" / "pacman.conf").read_text()
     assert "DisableDownloadTimeout" in conf
     assert "ParallelDownloads = 10" in conf
-    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    desktop = (get_bin("desktop")).read_text()
     assert "--disable-download-timeout" in desktop
 
 
@@ -324,7 +338,7 @@ def test_pacman_mirror_selector_rewrites_all_dated_servers(tmp_path: Path) -> No
         env["GRINTION_ALA_MIRRORS"] = mirror
         result = subprocess.run(
             [
-                str(REPO_ROOT / "bin" / "grintion-pacman-mirror"),
+                str(get_bin("pacman-mirror")),
                 "--root",
                 str(root),
                 "--snapshot",
@@ -352,14 +366,18 @@ def test_pacman_mirror_selector_rewrites_all_dated_servers(tmp_path: Path) -> No
 def test_every_pacman_install_path_uses_the_mirror_selector() -> None:
     paths = (
         "bin/garblib/backends.py",
-        "bin/grintion-desktop",
-        "bin/grintion-install",
-        "bin/grintion-kernel",
-        "bin/grintion-apps",
-        "bin/grintion-driver-select",
+        "bin/desktop",
+        "bin/install",
+        "bin/kernel",
+        "bin/apps",
+        "bin/driver-select",
     )
     for relative in paths:
-        assert "grintion-pacman-mirror" in (REPO_ROOT / relative).read_text(), relative
+        target = REPO_ROOT / relative
+        if not target.exists():
+            target = REPO_ROOT / relative.replace("bin/", "bin/grintion-")
+        text = target.read_text()
+        assert ("grintion-pacman-mirror" in text or "pacman-mirror" in text), relative
 
 
 def test_boot_services_write_diagnostics_off_the_console() -> None:
@@ -397,7 +415,7 @@ def test_live_kde_install_fails_before_filling_the_ram_overlay() -> None:
     # KDE is ~4.8 GiB including its download, but a 4 GiB live VM has a 1.9 GiB
     # RAM overlay. The supported path is grintion-install --desktop kde, which
     # uses the target disk for both the cache and installed files.
-    desktop = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    desktop = (get_bin("desktop")).read_text()
     assert 'free_mib=$(df -Pm / | awk' in desktop
     assert "live RAM overlay has" in desktop
     assert "grintion-install --desktop kde" in desktop
@@ -414,7 +432,7 @@ def test_lightdm_greeter_pam_supports_unauthenticated_setcred() -> None:
     assert "pam_limits.so" not in greeter
     assert "pam_unix.so" not in greeter
 
-    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    script = (get_bin("desktop")).read_text()
     start = script.index("fix_lightdm_greeter_pam()")
     end = script.index("# dbus-daemon drops privileges", start)
     stack = script[start:end]
@@ -427,7 +445,7 @@ def test_desktop_writes_an_explicit_lightdm_greeter_session() -> None:
     # LightDM's compiled default is "default", but Arch ships
     # lightdm-gtk-greeter.desktop. Relying on the commented package default
     # leaves LightDM with no greeter and it exits instead of drawing.
-    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    script = (get_bin("desktop")).read_text()
     assert "50-grintion.conf" in script
     assert "greeter-session=lightdm-gtk-greeter" in script
 
@@ -464,7 +482,7 @@ def test_lightdm_account_has_a_shadow_entry(tmp_path: Path) -> None:
 
 
 def test_desktop_repairs_accounts_without_shadow_entries() -> None:
-    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    script = (get_bin("desktop")).read_text()
     assert 'getent shadow "$user"' in script
     assert 'printf \'%s:!:19000:0:99999:7:::\\n\' "$user" >> "$TARGET_ROOT/etc/shadow"' in script
 
@@ -474,7 +492,7 @@ def test_live_boot_brings_loopback_up() -> None:
     # then failed with connection errors even though DHCP worked.
     stage1 = (REPO_ROOT / "etc" / "runit" / "1").read_text()
     assert "ip link set lo up" in stage1
-    doctor = (REPO_ROOT / "bin" / "grintion-doctor").read_text()
+    doctor = (get_bin("doctor")).read_text()
     assert "loopback interface is down" in doctor
 
 
@@ -482,11 +500,11 @@ def test_secure_boot_is_detected_and_refused() -> None:
     # There is no signed Grintion boot chain. The installer must fail before it
     # partitions a disk that the firmware will not boot, and the doctor must
     # report the state rather than implying verified boot support.
-    doctor = (REPO_ROOT / "bin" / "grintion-doctor").read_text()
+    doctor = (get_bin("doctor")).read_text()
     assert "SecureBoot-*" in doctor
     assert "does not support Secure Boot" in doctor
 
-    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    installer = (get_bin("install")).read_text()
     assert "secure_boot_enabled" in installer
     assert "does not ship a signed boot chain" in installer
 
@@ -495,7 +513,7 @@ def test_desktop_never_uses_a_blanket_overwrite() -> None:
     # --overwrite '*' let any upstream package replace account, sudo and boot
     # files. The desktop installer now retries only the exact reported paths and
     # rejects the security-sensitive ones.
-    script = (REPO_ROOT / "bin" / "grintion-desktop").read_text()
+    script = (get_bin("desktop")).read_text()
     assert "--overwrite '*'" not in script
     assert "reported conflict path" in script
     assert "refusing to overwrite security-sensitive path" in script
@@ -512,7 +530,7 @@ def test_desktop_profiles_install_and_start_pipewire() -> None:
     hook_text = hook.read_text()
     assert "grintion-audio --session" in hook_text
 
-    helper = REPO_ROOT / "bin" / "grintion-audio"
+    helper = get_bin("audio")
     assert helper.is_file()
     assert os.access(helper, os.X_OK)
     text = helper.read_text()
@@ -583,7 +601,7 @@ def test_installer_does_not_report_incomplete_desktop_as_installed() -> None:
     # A failed desktop transaction still leaves a usable base system, but the
     # summary must not start with "[+] ... installed" and the installer must
     # exit nonzero so scripts and users see the failure.
-    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    installer = (get_bin("install")).read_text()
     assert (
         'if [ "$DESKTOP_READY" -eq 1 ] && [ "$KERNEL_READY" -eq 1 ] '
         '&& [ "$SELF_TEST_OK" -eq 1 ]; then'
@@ -769,7 +787,7 @@ def test_installer_custom_partitioning_dry_run() -> None:
 
 
 def test_grintion_boot_operations(tmp_path: Path) -> None:
-    boot_tool = REPO_ROOT / "bin" / "grintion-boot"
+    boot_tool = get_bin("boot")
     esp_dir = tmp_path / "boot" / "efi"
     esp_dir.mkdir(parents=True)
     conf = esp_dir / "limine.conf"
@@ -795,7 +813,7 @@ default_entry: /Grintion-OS 0.10.0
 
 
 def test_grintion_boot_health_advanced() -> None:
-    health_tool = REPO_ROOT / "bin" / "grintion-boot-health"
+    health_tool = get_bin("boot-health")
     res = subprocess.run([str(health_tool), "status", "--json"], capture_output=True, text=True, check=False)
     assert res.returncode == 0
     data = __import__("json").loads(res.stdout)
@@ -805,7 +823,7 @@ def test_grintion_boot_health_advanced() -> None:
 
 
 def test_boot_health_counter_is_bounded_and_auto_revert_is_atomic(tmp_path: Path) -> None:
-    health_tool = REPO_ROOT / "bin" / "grintion-boot-health"
+    health_tool = get_bin("boot-health")
     state = tmp_path / "health"
     limine = tmp_path / "limine.conf"
     limine.write_text(
@@ -860,7 +878,7 @@ def test_boot_health_counter_is_bounded_and_auto_revert_is_atomic(tmp_path: Path
 
 
 def test_grintion_backup_lifecycle(tmp_path: Path) -> None:
-    backup_tool = REPO_ROOT / "bin" / "grintion-backup"
+    backup_tool = get_bin("backup")
     help_res = subprocess.run([str(backup_tool), "--help"], capture_output=True, text=True, check=False)
     assert help_res.returncode == 0
     assert "create" in help_res.stdout
@@ -899,13 +917,13 @@ def test_grintion_backup_lifecycle(tmp_path: Path) -> None:
 
 
 def test_grintion_reset_and_migrate() -> None:
-    reset_tool = REPO_ROOT / "bin" / "grintion-reset"
+    reset_tool = get_bin("reset")
     res = subprocess.run([str(reset_tool), "status", "--json"], capture_output=True, text=True, check=False)
     assert res.returncode == 0
     data = __import__("json").loads(res.stdout)
     assert "factory_reset_supported" in data
 
-    migrate_tool = REPO_ROOT / "bin" / "grintion-migrate"
+    migrate_tool = get_bin("migrate")
     help_res = subprocess.run([str(migrate_tool), "--help"], capture_output=True, text=True, check=False)
     assert help_res.returncode == 0
     assert "export" in help_res.stdout
@@ -913,14 +931,14 @@ def test_grintion_reset_and_migrate() -> None:
 
 
 def test_grintion_a11y_and_display() -> None:
-    a11y_tool = REPO_ROOT / "bin" / "grintion-a11y"
+    a11y_tool = get_bin("a11y")
     res = subprocess.run([str(a11y_tool), "status", "--json"], capture_output=True, text=True, check=False)
     assert res.returncode == 0
     data = __import__("json").loads(res.stdout)
     assert "screen_reader" in data
     assert "high_contrast" in data
 
-    display_tool = REPO_ROOT / "bin" / "grintion-display"
+    display_tool = get_bin("display")
     d_res = subprocess.run([str(display_tool), "status", "--json"], capture_output=True, text=True, check=False)
     assert d_res.returncode == 0
     d_data = __import__("json").loads(d_res.stdout)
@@ -928,7 +946,7 @@ def test_grintion_a11y_and_display() -> None:
 
 
 def test_grintion_apps_and_welcome() -> None:
-    apps_tool = REPO_ROOT / "bin" / "grintion-apps"
+    apps_tool = get_bin("apps")
     env = os.environ.copy()
     env["GRINTION_APP_PROFILES_DIR"] = str(REPO_ROOT / "etc" / "grintion" / "profiles.d")
     res = subprocess.run([str(apps_tool), "list", "--json"], capture_output=True, text=True, check=False, env=env)
@@ -937,7 +955,7 @@ def test_grintion_apps_and_welcome() -> None:
     names = {p["name"] for p in data["profiles"]}
     assert {"browser", "office", "gaming", "vmguest", "dev"}.issubset(names)
 
-    welcome_tool = REPO_ROOT / "bin" / "grintion-welcome"
+    welcome_tool = get_bin("welcome")
     w_res = subprocess.run([str(welcome_tool), "--json"], capture_output=True, text=True, check=False)
     assert w_res.returncode == 0
     w_data = __import__("json").loads(w_res.stdout)
@@ -962,7 +980,7 @@ def test_early_boot_quiets_kernel_audit_records() -> None:
 
 
 def test_boot_entries_request_a_quiet_console() -> None:
-    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    installer = (get_bin("install")).read_text()
     limine = (REPO_ROOT / "bin" / "limine-deploy").read_text()
     iso = (REPO_ROOT / "build" / "build-iso.sh").read_text()
     assert "rw quiet loglevel=3" in installer
