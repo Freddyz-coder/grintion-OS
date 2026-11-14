@@ -5,9 +5,13 @@
 # audit userspace (auditd, auditctl, ausearch, aureport) and this service fails
 # visibly if it is ever missing, instead of pretending to run.
 
-exec 2>&1
 mkdir -p /var/log/audit
 chmod 0750 /var/log/audit
+
+# runsv sends a service's stdout to the console when it has no log service.
+# auditd's diagnostics and any pre-daemon kernel records used to interleave
+# with the login prompt; keep this service's output in a file.
+exec >>/var/log/audit/auditd.log 2>&1
 
 if ! command -v auditd >/dev/null 2>&1; then
     echo "auditd: binary is missing from the image; refusing to fake the service"
@@ -35,8 +39,10 @@ if [ -f /etc/audit/audit.rules ]; then
         printf '%s\n' "$line" >> "$filtered"
     done < /etc/audit/audit.rules
     if ! auditctl -R "$filtered"; then
-        echo "auditd: failed to load $filtered"
-        exit 1
+        # Keep the daemon running even if one rule is rejected: stopping it
+        # sends every audit record back to the kernel console instead of the
+        # audit log, which is both noisy and worse for accountability.
+        echo "auditd: failed to load $filtered; continuing without those rules"
     fi
 fi
 

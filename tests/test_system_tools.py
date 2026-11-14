@@ -832,3 +832,50 @@ def test_grintion_apps_and_welcome() -> None:
     w_data = __import__("json").loads(w_res.stdout)
     assert w_data["os"] == "Grintion-OS"
 
+
+def test_auditd_writes_to_a_log_and_survives_a_bad_rule_file() -> None:
+    # runsv sends a service's stdout to the console when it has no log service.
+    # auditd's records and diagnostics used to land on the login prompt.
+    service = (REPO_ROOT / "etc" / "sv" / "auditd" / "run").read_text()
+    assert "exec >>/var/log/audit/auditd.log 2>&1" in service
+    assert "continuing without those rules" in service
+    assert "exit 1" not in service
+
+
+def test_early_boot_quiets_kernel_audit_records() -> None:
+    # Kernel audit records generated before auditd connects are printed at
+    # KERN_NOTICE, which lands on the console at the default loglevel.
+    for rel in ("init/live-init", "init/install-init", "etc/runit/1"):
+        text = (REPO_ROOT / rel).read_text()
+        assert "printf '3 3 3 3' > /proc/sys/kernel/printk" in text, rel
+
+
+def test_boot_entries_request_a_quiet_console() -> None:
+    installer = (REPO_ROOT / "bin" / "grintion-install").read_text()
+    limine = (REPO_ROOT / "bin" / "limine-deploy").read_text()
+    iso = (REPO_ROOT / "build" / "build-iso.sh").read_text()
+    assert "rw quiet loglevel=3" in installer
+    assert "rw quiet loglevel=3" in limine
+    assert "rdinit=/init quiet loglevel=3" in iso
+
+    # The post-reboot summary must name the account and the first commands.
+    assert "sudo garb install <package>" in installer
+    assert "sudo grintion-desktop install kde" in installer
+
+
+def test_rootfs_explains_pacstrap_and_points_at_supported_commands() -> None:
+    # Arch guides tell users to run pacstrap and pacman -s after a fresh
+    # install. A tracked shim now answers with the supported commands.
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert "pacstrap is an Arch Linux installer tool" in rootfs
+    assert "sudo garb install firefox networkmanager plasma-meta" in rootfs
+    assert "sudo grintion-desktop install kde" in rootfs
+
+    issue = (REPO_ROOT / "etc" / "issue.installed.in").read_text()
+    assert "Log in as the user created during installation" in issue
+
+    motd = (REPO_ROOT / "etc" / "motd.installed.in").read_text()
+    assert "sudo garb install <package>" in motd
+    assert "first install syncs automatically" in motd
+    assert "sudo grintion-desktop list" in motd
+

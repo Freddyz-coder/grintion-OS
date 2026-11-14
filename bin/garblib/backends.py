@@ -32,6 +32,15 @@ PROTECTED_OVERWRITE_PATHS = (
 )
 MAX_OVERWRITE_CONFLICTS = 1024
 
+# Names users know from other distributions, mapped to the package that
+# provides the same thing in the pinned Arch snapshot. Arch package names are
+# lowercase, so normalization alone fixes casing such as "NetworkManager".
+PACMAN_PACKAGE_ALIASES = {
+    "kde-plasma": "plasma-meta",
+    "network-manager": "networkmanager",
+}
+PACMAN_SYNC_DB_COMMANDS = frozenset({"install", "search", "upgrade"})
+
 
 def backend_kind(path: str) -> str:
     name = Path(path).name.lower()
@@ -40,6 +49,23 @@ def backend_kind(path: str) -> str:
     if "apk" in name:
         return "apk"
     raise GarbError(f"GARB_BACKEND_BIN must point at pacman or apk, not: {path}")
+
+
+def normalize_pacman_package(spec: str) -> str:
+    """Map a user-facing package name to its Arch package name.
+
+    Only bare names are rewritten. Local archive paths and relative paths are
+    left alone; a version constraint keeps its ``name=version`` form.
+    """
+    name, separator, version = spec.partition("=")
+    if not name or "/" in name or name.startswith(".") or name.startswith("-"):
+        return spec
+    normalized = PACMAN_PACKAGE_ALIASES.get(name.lower(), name.lower())
+    return f"{normalized}{separator}{version}" if separator else normalized
+
+
+def normalize_pacman_packages(packages: list[str]) -> list[str]:
+    return [normalize_pacman_package(package) for package in packages]
 
 
 def backend_version(backend: str, binary: str) -> tuple[int, int, int]:
@@ -99,6 +125,53 @@ def external_backend_binary(requested: str) -> tuple[str, str] | None:
     return None
 
 
+def _pacman_conf_repositories(root: Path) -> list[str]:
+    """Return the repository sections configured for the target root."""
+    try:
+        text = (root / "etc/pacman.conf").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    repositories = []
+    for line in text.splitlines():
+        match = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+        if match is not None and match.group(1) != "options":
+            repositories.append(match.group(1))
+    return repositories
+
+
+def pacman_databases_missing(root: Path) -> bool:
+    """A fresh install has a local pacman database but no sync databases."""
+    sync = root / "var/lib/pacman/sync"
+    repositories = _pacman_conf_repositories(root)
+    if not repositories:
+        return not sync.is_dir() or not any(sync.glob("*.db"))
+    return any(not (sync / f"{repository}.db").exists() for repository in repositories)
+
+
+def sync_pacman_databases(binary: str, root: Path) -> None:
+    """Download pacman's sync databases on a system that has none.
+
+    The image ships the seeded local database but not the remote metadata.
+    `pacman -S` without it prints "database file for 'core' does not exist" and
+    then "target not found" for every package, which looks like a broken
+    package manager. `garb update` remains available, but the first operation
+    that needs remote metadata now performs it automatically.
+    """
+    if not pacman_databases_missing(root):
+        return
+    warn("package databases are missing; synchronizing them first (pacman -Sy)")
+    argv = [binary]
+    if str(root) != "/":
+        argv += ["--root", str(root)]
+    argv.append("-Sy")
+    print(f"[garb] {' '.join(argv)}", file=sys.stderr)
+    if subprocess.run(argv).returncode != 0:
+        raise GarbError(
+            "could not download the package databases; connect to the network "
+            "and run 'sudo garb update' before installing packages"
+        )
+
+
 def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[str]:
     """Translate a garb command into the external manager's argument list."""
     root = Path(args.root)
@@ -115,7 +188,10 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
         elif command == "search":
             argv += ["-Ss", args.query]
         elif command == "info":
-            argv += ["-Qi" if getattr(args, "installed", False) else "-Si", args.package]
+            argv += [
+                "-Qi" if getattr(args, "installed", False) else "-Si",
+                normalize_pacman_package(args.package),
+            ]
         elif command == "install":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
@@ -127,19 +203,19 @@ def external_argv(backend: str, binary: str, args: argparse.Namespace) -> list[s
             argv.append("-S")
             if not getattr(args, "upgrade", False):
                 argv.append("--needed")
-            argv += ["--noconfirm", *args.package]
+            argv += ["--noconfirm", *normalize_pacman_packages(args.package)]
         elif command == "remove":
             if args.force:
                 raise GarbError("--force is not supported by the pacman backend")
-            argv += ["-R", "--noconfirm", *args.package]
+            argv += ["-R", "--noconfirm", *normalize_pacman_packages(args.package)]
         elif command == "verify":
             if getattr(args, "format", "text") != "text":
                 raise GarbError("--format json is a native-garb option")
             argv.append("-Qk" if args.quick else "-Qkk")
-            argv += args.package
+            argv += normalize_pacman_packages(args.package)
         elif command == "upgrade":
             if args.package:
-                argv += ["-S", "--noconfirm", *args.package]
+                argv += ["-S", "--noconfirm", *normalize_pacman_packages(args.package)]
             else:
                 argv += ["-Su", "--noconfirm"]
         else:
@@ -252,6 +328,14 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         )
     if backend == "pacman" and getattr(args, "command", "") in ("install", "remove", "upgrade"):
         _repair_mtab(root)
+    if backend == "pacman" and (
+        getattr(args, "command", "") in PACMAN_SYNC_DB_COMMANDS
+        or (
+            getattr(args, "command", "") == "info"
+            and not getattr(args, "installed", False)
+        )
+    ):
+        sync_pacman_databases(binary, root)
     argv = external_argv(backend, binary, args)
     warn(f"using the {backend} backend; garb signature and transaction checks do not apply")
     print(f"[garb] {' '.join(argv)}", file=sys.stderr)
@@ -274,6 +358,13 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
                 "nothing to do (use 'garb upgrade' to reinstall)"
             )
         return 0
+    missing = sorted(set(re.findall(r"^error: target not found:\s*(\S+)", output, re.MULTILINE)))
+    if missing:
+        warn("pacman could not find: " + ", ".join(missing))
+        warn(
+            "check the name with 'garb search <name>'; desktop environments "
+            "install with 'sudo grintion-desktop install kde' (or xfce, lxqt, sway, i3)"
+        )
     conflicts = conflict_paths(output)
     if not conflicts:
         return rc

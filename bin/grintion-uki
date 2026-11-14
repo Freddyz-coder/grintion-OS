@@ -29,7 +29,7 @@ def build_uki(
     kernel: Path,
     initrd: Path,
     output: Path,
-    cmdline: str = "quiet root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1",
+    cmdline: str = "quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1",
     ucode: Path | None = None,
     os_release: Path | None = None,
     stub_efi: Path | None = None,
@@ -50,7 +50,7 @@ def build_uki(
                 osrel_content = p.read_text(encoding="utf-8")
                 break
         if not osrel_content:
-            osrel_content = "NAME=Grintion-OS\nID=grintion\nVERSION_ID=0.14.1\n"
+            osrel_content = "NAME=Grintion-OS\nID=grintion\nVERSION_ID=0.14.2\n"
 
     # Use objcopy if systemd-stub or standard UEFI stub is available
     objcopy = shutil.which("objcopy")
@@ -161,7 +161,7 @@ def main() -> None:
     build_p.add_argument("--kernel", required=True, type=Path)
     build_p.add_argument("--initrd", required=True, type=Path)
     build_p.add_argument("--output", required=True, type=Path)
-    build_p.add_argument("--cmdline", default="quiet root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1")
+    build_p.add_argument("--cmdline", default="quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1")
     build_p.add_argument("--ucode", type=Path)
     build_p.add_argument("--os-release", type=Path)
 

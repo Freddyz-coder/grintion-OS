@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.14.1
+- **Version:** 0.14.2
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,17 +17,19 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.14.1 is a patch release on top of the 0.14.0 hardware-support release. It
-fixes desktop networking: graphical profiles now install NetworkManager and its
-matching applet, and enable a tracked runit service instead of leaving only the
-base dhcpcd service. `grintion-desktop network` repairs existing desktop
-installs. The 0.14.0 release added 32-bit userspace compatibility on 64-bit
-machines, automatic driver, firmware and CPU-microcode selection, firmware-aware
-hardware reports, a functional auditd service, zram by default, self-healing,
-safer snapshot rollback, stronger AppArmor profiles, and a zstd initramfs. See
+0.14.2 is a patch release on top of 0.14.1. It quiets the installed console:
+`auditd` writes to `/var/log/audit/auditd.log` and boot entries use
+`loglevel=3`, so audit, AppArmor and failed-login records no longer scroll over
+the login prompt. It also makes package installation work on a fresh
+`--desktop none` install by downloading the missing pacman databases, resolves
+common names such as `NetworkManager` and `kde-plasma`, and points Arch-guide
+commands (`pacstrap`) at the supported tools. The 0.14.1 release fixed desktop
+networking, and 0.14.0 added 32-bit userspace compatibility, automatic driver,
+firmware and CPU-microcode selection, a functional auditd service, zram,
+self-healing and stronger AppArmor profiles. See
 [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.14.1 is built from this tree. Release ISO images are published on
+Grintion-OS 0.14.2 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/grintion-release-verify` (see
@@ -106,20 +108,26 @@ translator but is not installed. `garb` uses pacman for `install`, `remove`,
 to the running system (`--root /`); use `--backend pacman|apk|native` to choose
 explicitly. Delegation bypasses garb's signature and transaction checks.
 
+On a fresh install, the first delegated `install`, `search`, `info` or
+`upgrade` downloads missing pacman sync databases automatically; `garb update`
+refreshes them later. Package names are normalized to Arch's lowercase names,
+and `kde-plasma`/`network-manager` map to their Arch packages.
+
 **Backend integration:** `garb` supports dual backends:
 - **Pacman backend (bundled):** Delegates to the dated Arch Linux Archive snapshot in `config/arch-snapshot` (`core`, `extra`) using the bundled `pacman` and Arch public keyrings. The snapshot matches the image's OpenSSL 3 ABI; rolling mirrors have moved to OpenSSL 4 and produce dependency conflicts.
 - **Native backend:** Uses Ed25519-signed repository indexes and SHA-256 archive verification for custom packages.
 
 ```sh
-garb update                      # Synchronize the dated snapshot databases
+garb update                      # Refresh the dated snapshot databases
+                                 # (the first install syncs automatically)
 garb search jq                   # Search packages
 garb info jq                     # Package metadata
-garb install jq                  # Install package and dependencies
+sudo garb install jq             # Install package and dependencies
 garb verify                      # Verify file integrity
 garb list                        # List native-backend packages
 garb list --upgradable           # Native-backend upgrades
-garb clean                       # Purge the native repository cache
-garb remove jq                   # Remove package
+sudo garb clean                  # Purge the native repository cache
+sudo garb remove jq              # Remove package
 ```
 
 Build the demo repository from this tree:
@@ -218,7 +226,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.14.1 |
+| Feature | 0.14.2 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -267,7 +275,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.14.1 has not undergone an independent third-party
+and atomic rollback, but 0.14.2 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

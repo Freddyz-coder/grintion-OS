@@ -19,6 +19,12 @@ trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
 
 mkdir -p /proc /sys /dev /run /sys/fs/cgroup
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
+
+# The console is for operator-visible output. Kernel audit records generated
+# before auditd connects are printed at KERN_NOTICE; /etc/sysctl.d raises the
+# threshold later, but early udev and AppArmor events would already be on the
+# boot screen. Apply the same value here, before any userspace starts.
+printf '3 3 3 3' > /proc/sys/kernel/printk 2>/dev/null || true
 mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
 if ! mountpoint -q /dev; then
     mount -t devtmpfs dev /dev -o mode=0755,nosuid

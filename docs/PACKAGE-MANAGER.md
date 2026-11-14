@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.14.1 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.14.2 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -92,6 +92,13 @@ fails with an explicit root-required message instead of pacman's misleading
 service link to `/var/service/NetworkManager`, which is what the desktop network
 applets use. On an existing desktop install, repair the link with
 `sudo grintion-desktop network`.
+
+The first delegated operation on a freshly installed system downloads the
+missing pacman sync databases automatically; `garb update` remains the explicit
+way to refresh them. Package names are normalized to Arch's lowercase names,
+and a few familiar aliases are mapped (`kde-plasma` to `plasma-meta`,
+`network-manager` to `networkmanager`). A target pacman cannot find produces a
+hint pointing at `garb search` and `grintion-desktop install`.
 
 ```sh
 garb --backend auto install htop     # delegate if pacman/apk is installed

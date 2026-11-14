@@ -17,6 +17,10 @@ trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
 
 mkdir -p /proc /sys /dev /run /newroot
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
+
+# Match the live init: keep early audit records, udev chatter and driver
+# diagnostics off the login console before /etc/sysctl.d is applied.
+printf '3 3 3 3' > /proc/sys/kernel/printk 2>/dev/null || true
 mountpoint -q /sys || mount -t sysfs sys /sys -o nosuid,noexec,nodev
 if ! mountpoint -q /dev; then
     mount -t devtmpfs dev /dev -o mode=0755,nosuid

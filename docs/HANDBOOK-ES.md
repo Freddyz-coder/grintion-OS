@@ -29,7 +29,7 @@ grintion-install --tui
 
 | Tarea | Comando |
 | :--- | :--- |
-| **Instalar software** | `garb install <paquete>` |
+| **Instalar software** | `sudo garb install <paquete>` |
 | **Reversión de versión** | `garb rollback-generation <ID>` |
 | **Estado de servicios** | `sv status /var/service/*` |
 | **Configuración unificada**| `grintion-config` |
@@ -38,4 +38,7 @@ grintion-install --tui
 | **Aislamiento de apps** | `grintion-sandbox --no-net <comando>` |
 | **Reparación del sistema**| `grintion-doctor --fix` |
 | **Ayuda y códigos de error**| `grintion-help <CODIGO>` |
+
+La primera instalación descarga automáticamente las bases de datos de pacman;
+los nombres `NetworkManager` y `kde-plasma` se normalizan antes de instalar.
 

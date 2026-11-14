@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.2] - 2026-11-14
+
+### Fixed
+
+- **An installed console boots quietly.** `auditd` now writes service output to
+  `/var/log/audit/auditd.log` instead of the console, and keeps running when a
+  rule is rejected instead of returning every audit record to the kernel
+  console. The live and installed initramfs, runit stage 1, Limine entries and
+  snapshot entries set `loglevel=3`, so early udev PATH records, AppArmor
+  `STATUS` records and failed logins no longer scroll over the login prompt.
+  The installed banner names the account to log in with.
+- **`garb install` works on a fresh install without a manual database sync.**
+  The image ships the seeded local pacman database but no `core.db`/`extra.db`,
+  so pacman reported "database file for 'core' does not exist" and "target not
+  found" for every package. `garb` now downloads missing sync databases before
+  the first install, search, info or upgrade, and prints an actionable message
+  when the network is unavailable.
+- **Common package names resolve.** `kde-plasma` maps to `plasma-meta`,
+  `NetworkManager` is normalized to `networkmanager`, and an unknown target
+  points at `garb search` and `grintion-desktop install`.
+- **Arch-guide commands fail with guidance.** A tracked `pacstrap` shim
+  explains that Grintion installs from the live image, and the installed MOTD
+  lists `sudo garb install <package>`, `sudo garb update` and
+  `sudo grintion-desktop list` instead of leaving users to copy pacman flags.
+- **The installer summary lists the first post-reboot commands**, including the
+  login account and how to add a desktop after `--desktop none`.
+
+---
+
 ## [0.14.1] - 2026-11-13
 
 ### Fixed

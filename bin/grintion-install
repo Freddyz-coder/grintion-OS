@@ -1295,7 +1295,7 @@ if [ "$NO_BOOTLOADER" -eq 0 ]; then
     install -D -m 0644 /usr/share/limine/BOOTX64.EFI \
         "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
 
-    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet security=apparmor apparmor=1"
+    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 security=apparmor apparmor=1"
     if [ "$FILESYSTEM" = "btrfs" ]; then
         ROOT_CMDLINE="$ROOT_CMDLINE rootflags=subvol=@"
     fi
@@ -1520,9 +1520,15 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
         warn "the base system is installed, but the requested desktop is not ready"
     fi
 else
-    echo "desktop:   console base (install graphical desktop anytime with 'grintion-desktop')"
+    echo "desktop:   console base (no graphical environment pre-installed)"
 fi
 echo "boot:      $([ "$NO_BOOTLOADER" -eq 1 ] && echo 'bootloader skipped' || echo 'Limine BIOS + UEFI')"
+echo
+echo "After the reboot:"
+echo "  - log in as $USER_NAME (root is locked unless you set a root password)"
+echo "  - sudo garb install <package>      install software; databases sync automatically"
+echo "  - sudo grintion-desktop install kde   add Plasma (xfce, lxqt, sway and i3 also work)"
+echo "  - sudo grintion-doctor             verify the installed system"
 echo
 echo "Remove the installation media and reboot."
 echo "=============================================================="

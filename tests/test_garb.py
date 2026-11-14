@@ -33,6 +33,13 @@ def run(root: Path, *args: str, check: bool = True, env: dict | None = None,
     return result
 
 
+def mark_synced(root: Path) -> None:
+    """Pretend pacman's sync databases are already downloaded."""
+    sync = root / "var/lib/pacman/sync"
+    sync.mkdir(parents=True, exist_ok=True)
+    (sync / "core.db").write_text("")
+
+
 def write_package(src: Path, name: str, version: str = "1.0.0", deps: list[str] | None = None,
                   files: dict[str, str] | None = None) -> None:
     pkg = src / name
@@ -151,6 +158,7 @@ def test_archive_checksum_mismatch_fails(environment: dict) -> None:
 def test_pacman_backend_translation(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
+    mark_synced(root)
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
     fake.write_text(
@@ -377,6 +385,7 @@ def test_pacman_backend_requires_parseable_version(tmp_path: Path) -> None:
 def test_pacman_backend_limits_overwrite_to_reported_conflicts(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
+    mark_synced(root)
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
     fake.write_text(
@@ -407,6 +416,7 @@ def test_pacman_backend_parses_colon_conflict_format(tmp_path: Path) -> None:
     # colon. A parser that only accepts one form silently skips the retry.
     root = tmp_path / "root"
     root.mkdir()
+    mark_synced(root)
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
     fake.write_text(
@@ -432,6 +442,7 @@ def test_pacman_backend_parses_colon_conflict_format(tmp_path: Path) -> None:
 def test_pacman_backend_refuses_sensitive_conflict(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
+    mark_synced(root)
     log = tmp_path / "pacman.args"
     fake = tmp_path / "pacman"
     fake.write_text(
@@ -669,3 +680,53 @@ def test_fsck_reports_incomplete_journal_and_backup(environment: dict) -> None:
     kinds = {issue["kind"] for issue in payload["issues"]}
     assert "journal" in kinds
     assert "backup" in kinds
+
+
+def test_pacman_backend_syncs_missing_databases_before_install(tmp_path: Path) -> None:
+    # A fresh install has the seeded local database but no core.db/extra.db.
+    # pacman then reports "database file for 'core' does not exist" followed by
+    # "target not found" for every package, which looks like a broken manager.
+    root = tmp_path / "root"
+    root.mkdir()
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$*" >> "$GARB_FAKE_LOG"\n'
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "firefox", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        f"--root {root} -Sy",
+        f"--root {root} -S --needed --noconfirm firefox",
+    ]
+    assert "synchronizing" in result.stderr
+
+
+def test_pacman_backend_maps_common_package_names(tmp_path: Path) -> None:
+    # Users arrive from Debian/Fedora spellings. Arch package names are
+    # lowercase, and some familiar names have a different Arch package.
+    root = tmp_path / "root"
+    root.mkdir()
+    mark_synced(root)
+    log = tmp_path / "pacman.args"
+    fake = tmp_path / "pacman"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
+        'printf \'%s\\n\' "$*" >> "$GARB_FAKE_LOG"\n'
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["GARB_BACKEND_BIN"] = str(fake)
+    env["GARB_FAKE_LOG"] = str(log)
+    result = run(root, "install", "kde-plasma", "NetworkManager", backend="pacman", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        f"--root {root} -S --needed --noconfirm plasma-meta networkmanager"
+    ]

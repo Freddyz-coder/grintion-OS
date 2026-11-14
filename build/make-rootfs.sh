@@ -307,6 +307,28 @@ esac
 exit 0
 SHIM
 
+# Users follow Arch installation guides on a console-only Grintion system and
+# then hit "pacstrap: command not found". Fail with the supported commands
+# instead of leaving them to guess.
+install -D -m 0755 /dev/null "$ROOTFS/usr/bin/pacstrap"
+cat > "$ROOTFS/usr/bin/pacstrap" <<'SHIM'
+#!/bin/sh
+cat >&2 <<'EOF'
+pacstrap is an Arch Linux installer tool; Grintion-OS does not use it.
+
+Install Grintion-OS onto a disk from the live image:
+  grintion-install --disk /dev/sdX
+
+Install a desktop environment on an installed system:
+  sudo grintion-desktop install kde      # or xfce, lxqt, sway, i3
+
+Install packages (pacman's -S/-s flags do not apply):
+  sudo garb install firefox networkmanager plasma-meta
+  sudo garb update
+EOF
+exit 1
+SHIM
+
 # Deploy glibc gconv modules for codepage conversion (needed by mkfs.vfat / iconv)
 if [ -d /usr/lib/gconv ]; then
     log "deploying glibc iconv conversion modules"

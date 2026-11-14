@@ -113,16 +113,13 @@ grintion-install --disk /dev/vda
 ### Option B: Install on a running or live system
 
 ```sh
-# 1. Update package databases
-garb update
-
-# 2. Install your chosen desktop environment
-grintion-desktop install xfce       # Fast, lightweight traditional desktop (Recommended)
-grintion-desktop install gnome      # Modern, gesture-rich Wayland desktop
-grintion-desktop install kde        # KDE Plasma - customizable and feature-rich
-grintion-desktop install sway       # Modern tiling Wayland compositor
-grintion-desktop install lxqt       # Ultra-lightweight Qt desktop
-grintion-desktop install i3         # Classic X11 tiling window manager
+# Install your chosen desktop environment. The tool syncs the pacman
+# databases itself; a separate "garb update" is not required.
+sudo grintion-desktop install xfce       # Fast, lightweight traditional desktop (Recommended)
+sudo grintion-desktop install kde        # KDE Plasma - customizable and feature-rich
+sudo grintion-desktop install sway       # Modern tiling Wayland compositor
+sudo grintion-desktop install lxqt       # Ultra-lightweight Qt desktop
+sudo grintion-desktop install i3         # Classic X11 tiling window manager
 ```
 
 ---

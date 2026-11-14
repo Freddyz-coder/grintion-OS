@@ -47,7 +47,10 @@ Run `grintion-install --tui` to step through the guided partitioner, filesystem 
 
 ## 3. Package Management with `garb`
 
-`garb` provides transactional, generation-tracked software management.
+`garb` provides transactional, generation-tracked software management. On a
+fresh install the first `install`, `search`, `info` or `upgrade` syncs missing
+pacman databases automatically; package names such as `NetworkManager` and
+`kde-plasma` are normalized before delegation.
 
 - **Search and Info**:
   ```bash
@@ -56,8 +59,8 @@ Run `grintion-install --tui` to step through the guided partitioner, filesystem 
   ```
 - **Install and Upgrade**:
   ```bash
-  garb install neovim git
-  garb upgrade
+  sudo garb install neovim git
+  sudo garb upgrade
   ```
 - **Rollback Generations**:
   Every upgrade creates a timestamped generation snapshot.

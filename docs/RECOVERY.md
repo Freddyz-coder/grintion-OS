@@ -119,7 +119,7 @@ sudo grintion-boot list
 sudo grintion-boot list --json
 
 # Set default boot entry
-sudo grintion-boot set-default "Grintion-OS 0.14.1"
+sudo grintion-boot set-default "Grintion-OS 0.14.2"
 
 # Set boot menu timeout in seconds
 sudo grintion-boot set-timeout 5

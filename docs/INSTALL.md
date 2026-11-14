@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.14.1 installs from the live ISO to a target disk or existing
+Grintion-OS 0.14.2 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.14.1 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.14.1 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.14.2 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.14.2 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -258,6 +258,10 @@ the `dkms` package. Out-of-tree modules still need signing for this kernel's
 Remove the installation medium and reboot. Log in as the user you created. Root
 is locked by default, so administrative work goes through `sudo`.
 
+If you chose `--desktop none`, the console is the intended base system. Add a
+desktop later with `sudo grintion-desktop install kde` (or `xfce`, `lxqt`,
+`sway`, `i3`); nothing needs to be reinstalled.
+
 ```sh
 sudo passwd root          # only if you want a root password
 date                      # UTC by default
@@ -268,28 +272,35 @@ ln -sf /usr/share/zoneinfo/Region/City /etc/localtime
 ### Installing additional packages
 
 The image includes **pacman** as an external backend for `garb`; `apk` is not
-installed. After the network is up:
+installed. Run package operations as root. pacman's operation letters are
+uppercase (`-S`, not `-s`); on Grintion use `garb`:
 
 ```sh
-garb update
-# or: garb --backend pacman update
-garb install PACKAGE
+sudo garb install firefox networkmanager plasma-meta
+sudo garb update
 ```
 
-`garb update` synchronizes the `core` and `extra` databases from the dated Arch
-Linux Archive snapshot in `config/arch-snapshot`. Keeping that date matched to
-the image matters: the base's `cryptsetup`, `curl`, `pacman` and `sudo` are
-linked against OpenSSL 3, while rolling mirrors have moved to OpenSSL 4 and
-return `breaks dependency 'libcrypto.so=3-64'`. `garb install` delegates to
-`pacman -S --noconfirm`. The native signed-repository backend is still
+The first `garb install` synchronizes missing package databases automatically
+(`pacman -Sy`), so a fresh console install needs no separate setup step.
+`garb update` remains available to refresh them later. `garb` also accepts the
+names people commonly use from other distributions: `NetworkManager` becomes
+`networkmanager`, and `kde-plasma` becomes `plasma-meta`.
+
+The databases come from the dated Arch Linux Archive snapshot in
+`config/arch-snapshot`. Keeping that date matched to the image matters: the
+base's `cryptsetup`, `curl`, `pacman` and `sudo` are linked against OpenSSL 3,
+while rolling mirrors have moved to OpenSSL 4 and return
+`breaks dependency 'libcrypto.so=3-64'`. `garb install` delegates to
+`pacman -S --needed --noconfirm`. The native signed-repository backend is still
 available with `garb --backend native`; it does not use pacman.
 
-Package installation works out-of-the-box using the bundled pacman backend
-and `/etc/mtab` tracking kernel mounts:
+Grintion-OS is not Arch: there is no `pacstrap` on an installed system, and an
+Arch installation guide does not apply here. Install from the live image with
+`grintion-install`, and add software with `garb`:
 
 ```sh
-garb update
-garb install jq
+sudo garb install jq
+sudo grintion-desktop install kde
 ```
 
 `garb list` and `garb clean` operate on the native signed-repository database

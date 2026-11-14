@@ -1,7 +1,8 @@
 Grintion-OS @VERSION@
 Minimalist - Independent - Secure - Stable
 
-Package manager:  garb --help
-Desktop / GUI:    grintion-desktop --help
-Services:         sv status /var/service/*
-Package database: /var/lib/garb/db.json
+Package manager:    sudo garb install <package>   (garb --help)
+Package databases:  sudo garb update              (first install syncs automatically)
+Desktop / GUI:      sudo grintion-desktop list
+Services:           sv status /var/service/*
+System check:       sudo grintion-doctor

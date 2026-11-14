@@ -8,6 +8,10 @@ umask 022
 
 mountpoint -q /proc || mount -t proc proc /proc -o nosuid,noexec,nodev
 
+# A custom initramfs may not set this before stage 1. Suppress KERN_NOTICE
+# audit and driver messages so only meaningful boot failures reach the console.
+printf '3 3 3 3' > /proc/sys/kernel/printk 2>/dev/null || true
+
 # Loopback is not optional: D-Bus, X11, and local package repositories all use
 # 127.0.0.1. The live image used to boot with lo DOWN because nothing brought
 # it up before the services started.

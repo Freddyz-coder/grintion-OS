@@ -134,11 +134,11 @@ cmd_boot() {
 
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
-            root=*|rootflags=*|rw|ro|quiet|BOOT_IMAGE=*|initrd=*) ;;
+            root=*|rootflags=*|rw|ro|quiet|loglevel=*|BOOT_IMAGE=*|initrd=*) ;;
             *) cmdline+=("$arg") ;;
         esac
     done
-    cmd="root=UUID=$uuid rootflags=subvol=@snapshots/$boot_name rw quiet ${cmdline[*]-}"
+    cmd="root=UUID=$uuid rootflags=subvol=@snapshots/$boot_name rw quiet loglevel=3 ${cmdline[*]-}"
 
     local temp
     temp=$(mktemp)

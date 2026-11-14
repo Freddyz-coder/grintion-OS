@@ -138,13 +138,18 @@ startx
 
 | Command | Action |
 | :--- | :--- |
-| `sudo garb update` | Update package databases |
+| `sudo garb update` | Refresh package databases (installs sync automatically) |
 | `sudo garb upgrade` | Upgrade installed packages |
 | `sudo garb install <pkg>` | Install package |
 | `sudo garb remove <pkg>` | Remove package |
 | `garb search <query>` | Search packages |
 | `garb list [--upgradable]` | List installed or upgradable packages |
 | `sudo garb clean` | Purge cached repository data (run `garb update` afterwards) |
+
+`garb install`, `search`, `info` and `upgrade` download missing pacman
+databases on first use, so a fresh install needs no separate `garb update`.
+Names are normalized to Arch's lowercase names (`NetworkManager`) and common
+aliases are mapped (`kde-plasma` to `plasma-meta`).
 
 ### Common Packages
 ```bash
