@@ -4,6 +4,44 @@ This document records what was actually executed for Grintion-OS 0.17.0,
 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
 
+## 0.17.0 audit daemon and AppArmor user-space completion (2026-11-15)
+
+This minor release makes the audit daemon and its log path part of the release
+image, adds read-only `aa-status` and `aa-unconfined` inspection tools, and
+ships the full GNU gzip command set with a fail-closed gzip >= 1.12 guard. The
+ISO was rebuilt from commit `e7ccbd3` with the staged Arch AppArmor parser
+(`GRINTION_APPARMOR_ROOT`) because the host has no system `apparmor_parser`.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 131,975,168 bytes (126 MiB) |
+| SHA-256 | `13b344520e2d4ccf796905216ef37b4582f16017460d6c6879cd5e47007ef048` |
+| `BUILD-INFO` source commit | `e7ccbd3` |
+| Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
+| Live initramfs identity | `0.17.0` in `/etc/grintion/version`; `/etc/issue` reports `Grintion-OS 0.17.0 (x86_64)` |
+| Installed initramfs | Minimal pre-root image; it intentionally carries no `/etc/grintion/version`. The installed root identity comes from the live rootfs `/etc/grintion/version`. |
+| Limine entries | `Grintion-OS 0.17.0 (live, RAM)` and `Grintion-OS 0.17.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **245 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| `make iso` | Passed; 244 required commands installed, AppArmor profiles parsed, 110 MiB live initramfs produced |
+| ISO checksum | `sha256sum -c` passed from `output/` |
+| `BUILD-INFO` | Records `git_commit=e7ccbd3` |
+| gzip set | `gzip`, `gunzip`, `zcat`, `gzexe`, `zcmp`, `zdiff`, `zegrep`, `zfgrep`, `zforce`, `zgrep`, `zless`, `zmore`, `znew` and `cmp` present and executable |
+| AppArmor tools | `aa-status`, `aa-unconfined` and `apparmor_parser` present and executable |
+| Audit userspace | `auditd`, `auditctl`, `ausearch` and `aureport` present and executable |
+| Audit path | `/var/log/audit` mode 0750; `auditd.conf` names `/var/log/audit/audit.log`; the `auditd` service is linked and runs with umask 0077 |
+| BIOS/UEFI live boot | Not rerun for 0.17.0 |
+| Installer / installed reboot | Not rerun for 0.17.0 |
+| Bare-metal hardware | Not tested |
+
+---
+
 ## 0.16.1 patch — VM mouse desynchronisation fix (2026-11-14)
 
 The 0.16.1 patch adds no new ISO artifact; the same kernel and initramfs are
