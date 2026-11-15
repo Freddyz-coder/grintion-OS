@@ -30,6 +30,15 @@ need_cmd ldd
 need_cmd cpio
 need_cmd gzip
 need_cmd zstd
+
+# zgrep before gzip 1.12 allows arbitrary file writes through crafted
+# filenames (CVE-2022-1271). The image ships zgrep and its companions, so an
+# older host gzip must fail the build instead of shipping the vulnerable path.
+gzip_version="$(gzip --version | sed -n '1s/.* //p')"
+[ -n "$gzip_version" ] || die "cannot determine the gzip version"
+if ! printf '%s\n%s\n' 1.12 "$gzip_version" | sort -V -C; then
+    die "gzip $gzip_version is too old; 1.12 or newer is required (CVE-2022-1271)"
+fi
 need_cmd sha256sum
 
 log "assembling live rootfs for Grintion-OS $GRINTION_VERSION ($KREL)"
@@ -38,7 +47,7 @@ log "assembling live rootfs for Grintion-OS $GRINTION_VERSION ($KREL)"
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS"/usr/{bin,sbin,lib,lib64,share,include,libexec} \
          "$ROOTFS"/{etc,var,run,proc,sys,dev,tmp,root,home,mnt,media,srv,opt,boot}
-mkdir -p "$ROOTFS"/var/{log,spool/mail,lib/garb,lib/dhcpcd,cache/garb,lib/pacman/local,cache/pacman/pkg}
+mkdir -p "$ROOTFS"/var/{log,log/audit,spool/mail,lib/garb,lib/dhcpcd,cache/garb,lib/pacman/local,cache/pacman/pkg}
 mkdir -p "$ROOTFS"/var/service
 mkdir -p "$ROOTFS"/usr/lib/{modules,security,locale,grintion/boot}
 mkdir -p "$ROOTFS"/usr/share/{limine,terminfo,zoneinfo,doc/grintion}
@@ -550,6 +559,7 @@ chmod 0600 "$ROOTFS/etc/gshadow" 2>/dev/null || true
 chmod 0440 "$ROOTFS/etc/sudoers"
 chmod 0640 "$ROOTFS/etc/audit/auditd.conf" "$ROOTFS/etc/audit/audit.rules" 2>/dev/null || true
 chmod 0750 "$ROOTFS/etc/audit" "$ROOTFS/etc/audit/rules.d" 2>/dev/null || true
+chmod 0750 "$ROOTFS/var/log/audit"
 chmod 0755 "$ROOTFS/etc/runit/1" "$ROOTFS/etc/runit/2" "$ROOTFS/etc/runit/3"
 chmod 0755 "$ROOTFS"/etc/sv/*/run
 chmod 0700 "$ROOTFS/var/lib/garb" "$ROOTFS/var/lib/dhcpcd"

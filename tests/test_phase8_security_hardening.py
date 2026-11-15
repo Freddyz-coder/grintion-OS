@@ -552,3 +552,102 @@ def test_sandbox_empty_command():
     assert "usage:" in res.stdout or "usage:" in res.stderr
 
 
+def _write_proc_task(proc: Path, pid: int, comm: str, current: str) -> None:
+    task = proc / str(pid)
+    (task / "attr").mkdir(parents=True)
+    (task / "fd").mkdir()
+    (task / "comm").write_text(comm + "\n")
+    (task / "attr" / "current").write_text(current + "\n")
+
+
+def test_aa_status_reports_kernel_and_process_state(tmp_path: Path):
+    secfs = tmp_path / "apparmor"
+    secfs.mkdir()
+    (secfs / "profiles").write_text(
+        "/usr/bin/demo (enforce)\n/usr/sbin/legacy (complain)\n"
+    )
+    param = tmp_path / "enabled"
+    param.write_text("Y\n")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _write_proc_task(proc, 101, "demo", "demo (enforce)")
+    _write_proc_task(proc, 102, "shell", "unconfined")
+
+    env = {
+        "GRINTION_SYS_APPARMOR": str(secfs),
+        "GRINTION_SYSFS_APPARMOR_PARAM": str(param),
+        "GRINTION_PROC": str(proc),
+    }
+    res = run_bin("aa-status", "--json", env=env)
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["enabled"] is True
+    assert data["profiles_loaded"] == 2
+    assert data["profile_modes"]["enforce"] == 1
+    assert data["profile_modes"]["complain"] == 1
+    assert data["processes_confined"] == 1
+    assert data["processes_unconfined"] == 1
+
+    assert run_bin("aa-status", "--enabled", env=env).returncode == 0
+
+    # An enabled module with an unreadable profile list must not look healthy.
+    (secfs / "profiles").unlink()
+    missing = run_bin("aa-status", "--json", env=env)
+    assert missing.returncode == 1
+    assert json.loads(missing.stdout)["securityfs"] == "unreadable"
+
+
+def test_aa_unconfined_reports_unconfined_socket_owners(tmp_path: Path):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _write_proc_task(proc, 4242, "exposed", "unconfined")
+    _write_proc_task(proc, 4343, "confined", "/usr/sbin/confined (enforce)")
+    _write_proc_task(proc, 4444, "established", "unconfined")
+
+    net = proc / "net"
+    net.mkdir()
+    (net / "tcp").write_text(
+        "  sl  local_address rem_address   st ...\n"
+        "   0: 0100007F:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 12345 1\n"
+        "   1: 00000000:22B8 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 23456 1\n"
+        "   2: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000 0 0 34567 1\n"
+    )
+    os.symlink("socket:[12345]", proc / "4242" / "fd" / "3")
+    os.symlink("socket:[23456]", proc / "4343" / "fd" / "4")
+    os.symlink("socket:[34567]", proc / "4444" / "fd" / "5")
+
+    env = {"GRINTION_PROC": str(proc)}
+    res = run_bin("aa-unconfined", "--json", env=env)
+    assert res.returncode == 1, res.stderr
+    data = json.loads(res.stdout)
+    assert data["count"] == 1
+    assert data["unconfined"][0]["pid"] == 4242
+    assert data["unconfined"][0]["address"] == "127.0.0.1:22"
+
+    paranoid = run_bin("aa-unconfined", "--json", "--paranoid", env=env)
+    assert paranoid.returncode == 1
+    assert {row["pid"] for row in json.loads(paranoid.stdout)["unconfined"]} == {
+        4242,
+        4444,
+    }
+
+
+def test_gzip_companions_and_version_guard_are_in_the_image():
+    required = (REPO_ROOT / "config" / "rootfs.required-binaries").read_text()
+    for command in (
+        "gzexe",
+        "zcmp",
+        "zdiff",
+        "zegrep",
+        "zfgrep",
+        "zforce",
+        "zgrep",
+        "zless",
+        "zmore",
+        "znew",
+        "cmp",
+    ):
+        assert f"\n{command}\n" in required, command
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert "CVE-2022-1271" in rootfs
+

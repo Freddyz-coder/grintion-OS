@@ -297,8 +297,9 @@ def auditd_running() -> bool:
 def auditd_service(enabled: bool, spec: dict) -> None:
     """Stage the auditd service when userspace is available.
 
-    The base image does not currently ship the audit daemon. Do not create a
-    service link to a program that cannot run; report the limitation instead.
+    The image ships the audit userspace. A partial or custom image without it
+    must not get a service link to a program that cannot run; report the
+    limitation instead of implying the trail is active.
     """
     if not spec.get("auditd_enabled"):
         link = SERVICE_DIR / "auditd"

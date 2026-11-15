@@ -5,6 +5,10 @@
 # audit userspace (auditd, auditctl, ausearch, aureport) and this service fails
 # visibly if it is ever missing, instead of pretending to run.
 
+# auditd.log can receive kernel records that predate the daemon. Keep the
+# file and directory root-only instead of relying on the inherited umask.
+umask 0077
+
 mkdir -p /var/log/audit
 chmod 0750 /var/log/audit
 

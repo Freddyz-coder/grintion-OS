@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""aa-unconfined — report unconfined processes that own network sockets.
+
+Standard-library-only implementation for Grintion-OS. It reads /proc/net and
+/proc/<pid>/fd directly: no `ss`, no `lsof`, no shell, and no writes.
+
+By default only TCP sockets in LISTEN state and bound UDP sockets are
+considered, which is what a remote attacker can reach. `--paranoid` reports
+every TCP/UDP socket, including established connections.
+
+Fail-closed: a process whose AppArmor label cannot be read is treated as
+unconfined and flagged, and an unreadable /proc is an error (exit 2), not an
+empty result.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+__version__ = "1.0.0"
+
+MODE_ENFORCE = "enforce"
+MODE_COMPLAIN = "complain"
+MODE_KILL = "kill"
+MODE_UNCONFINED = "unconfined"
+MODE_UNKNOWN = "unknown"
+
+DEFAULT_PROC = Path(os.environ.get("GRINTION_PROC", "/proc"))
+DEFAULT_NET = Path(os.environ.get("GRINTION_PROC_NET", str(DEFAULT_PROC / "net")))
+DEFAULT_MODULE_PARAM = Path(
+    os.environ.get(
+        "GRINTION_SYSFS_APPARMOR_PARAM", "/sys/module/apparmor/parameters/enabled"
+    )
+)
+DEFAULT_SECFS = Path(
+    os.environ.get("GRINTION_SYS_APPARMOR", "/sys/kernel/security/apparmor")
+)
+
+SOCKET_FILES = (("tcp", "tcp"), ("tcp6", "tcp6"), ("udp", "udp"), ("udp6", "udp6"))
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _safe(value: str) -> str:
+    return "".join(
+        ch if ch.isprintable() or ch in (" ", "\t") else "?" for ch in value
+    )
+
+
+def _mode_from_label(label: str) -> str:
+    low = label.lower()
+    for mode in (MODE_ENFORCE, MODE_COMPLAIN, MODE_KILL):
+        if mode in low:
+            return mode
+    return MODE_UNKNOWN
+
+
+def apparmor_enabled(
+    secfs: Path = DEFAULT_SECFS, module_param: Path = DEFAULT_MODULE_PARAM
+) -> bool:
+    value = _read(module_param)
+    if value is not None:
+        flag = value.strip().upper()
+        if flag in ("Y", "1", "YES"):
+            return True
+        if flag in ("N", "0", "NO"):
+            return False
+    return (secfs / "profiles").is_file()
+
+
+def _decode_address(proto: str, raw: str) -> str:
+    host, _, port_hex = raw.partition(":")
+    try:
+        port = int(port_hex, 16)
+        packed = bytes.fromhex(host)
+        if proto.endswith("6"):
+            if len(packed) != 16:
+                return raw
+            words = [packed[i : i + 4][::-1] for i in range(0, 16, 4)]
+            address = socket.inet_ntop(socket.AF_INET6, b"".join(words))
+            return f"[{address}]:{port}"
+        if len(packed) != 4:
+            return raw
+        address = socket.inet_ntop(socket.AF_INET, packed[::-1])
+        return f"{address}:{port}"
+    except (OSError, ValueError):
+        return raw
+
+
+def _local_port(raw: str) -> int:
+    _, _, port_hex = raw.partition(":")
+    try:
+        return int(port_hex, 16)
+    except ValueError:
+        return 0
+
+
+def network_sockets(net_dir: Path, paranoid: bool) -> tuple[list[dict], bool]:
+    """Return sockets and whether at least one /proc/net file was readable."""
+    sockets: list[dict] = []
+    readable = False
+
+    for filename, proto in SOCKET_FILES:
+        text = _read(net_dir / filename)
+        if text is None:
+            continue
+        readable = True
+        for line in text.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            local = fields[1]
+            state = fields[3].upper()
+            inode = fields[9]
+            if inode == "0":
+                continue
+            if proto.startswith("tcp"):
+                if not paranoid and state != "0A":
+                    continue
+            else:
+                # UDP has no LISTEN state; a bound socket has a local port.
+                if _local_port(local) == 0:
+                    continue
+            sockets.append(
+                {
+                    "proto": proto,
+                    "address": _decode_address(proto, local),
+                    "state": state,
+                    "inode": inode,
+                }
+            )
+
+    return sockets, readable
+
+
+def socket_owners(proc: Path) -> dict[str, list[int]]:
+    owners: dict[str, list[int]] = defaultdict(list)
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return owners
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        seen: set[str] = set()
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if not (target.startswith("socket:[") and target.endswith("]")):
+                continue
+            inode = target[8:-1]
+            if inode in seen:
+                continue
+            seen.add(inode)
+            owners[inode].append(pid)
+    return owners
+
+
+def confinement(proc: Path, pid: int) -> tuple[str, str | None, str | None]:
+    """Return (state, profile, note) for one task."""
+    text = _read(proc / str(pid) / "attr" / "current")
+    if text is None:
+        return MODE_UNCONFINED, None, "attr/current unreadable"
+    value = text.strip()
+    if value in ("", MODE_UNCONFINED):
+        return MODE_UNCONFINED, None, None
+    profile = value
+    mode = MODE_UNKNOWN
+    if value.endswith(")") and " (" in value:
+        profile, label = value.rsplit(" (", 1)
+        mode = _mode_from_label(label[:-1])
+    return "confined", _safe(profile), mode if mode != MODE_UNKNOWN else None
+
+
+def process_name(proc: Path, pid: int) -> str:
+    comm = _read(proc / str(pid) / "comm")
+    if comm:
+        return _safe(comm.strip() or "?")
+    return "?"
+
+
+def compute_unconfined(proc: Path, net_dir: Path, paranoid: bool) -> dict:
+    enabled = apparmor_enabled(DEFAULT_SECFS, DEFAULT_MODULE_PARAM)
+    sockets, readable = network_sockets(net_dir, paranoid)
+    owners = socket_owners(proc)
+
+    rows: list[dict] = []
+    seen: set[tuple[int, str, str]] = set()
+    for item in sockets:
+        for pid in owners.get(item["inode"], []):
+            state, profile, note = confinement(proc, pid)
+            if state == "confined":
+                continue
+            key = (pid, item["proto"], item["address"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "pid": pid,
+                    "process": process_name(proc, pid),
+                    "profile": profile,
+                    "mode": state,
+                    "note": note,
+                    "proto": item["proto"],
+                    "address": item["address"],
+                    "state": item["state"],
+                }
+            )
+
+    rows.sort(key=lambda row: (row["pid"], row["proto"], row["address"]))
+    return {
+        "tool": "aa-unconfined",
+        "version": __version__,
+        "enabled": enabled,
+        "paranoid": paranoid,
+        "sockets_readable": readable,
+        "count": len(rows),
+        "unconfined": rows,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aa-unconfined",
+        description=(
+            "List unconfined processes that own network sockets. Read-only; "
+            "an unreadable AppArmor label is treated as unconfined."
+        ),
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Machine-readable report"
+    )
+    parser.add_argument(
+        "--paranoid",
+        action="store_true",
+        help="Include established TCP connections, not only listeners",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    data = compute_unconfined(DEFAULT_PROC, DEFAULT_NET, args.paranoid)
+
+    if not data["sockets_readable"]:
+        message = f"aa-unconfined: cannot read network sockets under {DEFAULT_NET}"
+        if args.json:
+            data["error"] = message
+            print(json.dumps(data, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        print(
+            "aa-unconfined: warning: not root; socket ownership may be incomplete",
+            file=sys.stderr,
+        )
+    if not data["enabled"]:
+        print(
+            "aa-unconfined: warning: AppArmor is not enabled; every process is unconfined",
+            file=sys.stderr,
+        )
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+    elif data["unconfined"]:
+        print("PID\tPROCESS\tSOCKET\tPROFILE")
+        for row in data["unconfined"]:
+            print(
+                f"{row['pid']}\t{row['process']}\t"
+                f"{row['proto']} {row['address']}\t"
+                f"{row['profile'] or 'unconfined'}"
+            )
+    else:
+        print("No unconfined processes own network sockets.")
+
+    return 1 if data["unconfined"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

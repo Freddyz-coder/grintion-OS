@@ -7,17 +7,21 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.16.1 — *VM mouse desync fix · Clean command names · AppArmor 2.0 · Advanced tooling*
+- **Version:** 0.17.0 — *audit daemon fixed · AppArmor status tools · full GNU gzip suite*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
   configuration fragment
 - **Init:** runit
-- **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client
+- **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client, GNU gzip with its full companion set
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.16.1 is a patch release fixing VM mouse desynchronisation on all compositor paths (Xorg, KWin, Sway, KDE Plasma Wayland) — see [CHANGELOG.md](CHANGELOG.md) for details.
+0.17.0 is a security and user-space completeness release. The audit daemon and
+its userspace now ship with a root-only `/var/log/audit`, `aa-status` and
+`aa-unconfined` report kernel AppArmor state without extra Python modules, and
+the full GNU gzip companion set is part of the image contract. See
+[CHANGELOG.md](CHANGELOG.md).
 
 0.16.0 delivered three major improvements over 0.15.0:
 
@@ -35,7 +39,7 @@ indexes.
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.16.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.17.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -56,7 +60,7 @@ with `make sign-release` and verified with `bin/release-verify` (see
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
-| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), read-only `aa-status`/`aa-unconfined` reporting, Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
@@ -238,7 +242,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.16.0 |
+| Feature | 0.17.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -267,7 +271,8 @@ bin/            install, config, desktop, persist, chroot, garb, limine-deploy,
                 doctor, security-report, hwinfo, release-verify, secureboot, uki,
                 attest, tpm-luks, snapshot, boot-health, backup, reset, network,
                 session, audit, integrity, audit-log, sandbox, shield, vault, usb,
-                watchdog, tour, help, report, welcome, apparmor, disk, mount, swap,
+                watchdog, tour, help, report, welcome, apparmor, aa-status,
+                aa-unconfined, disk, mount, swap,
                 space, service, timer, dns, netdiag, firewall, ssh, cert, logs,
                 load, bench, modules, time
                 (legacy grintion-<name> symlinks auto-created in rootfs)
@@ -288,7 +293,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.16.0 has not undergone an independent third-party
+and atomic rollback, but 0.17.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

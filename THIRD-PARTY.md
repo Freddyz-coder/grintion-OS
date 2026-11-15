@@ -62,6 +62,7 @@ on the host; `pacman -Qi <package>` reports them.
 | less | GPL-3.0-or-later |
 | tar | GPL-3.0-or-later |
 | gzip | GPL-3.0-or-later |
+| audit | GPL-2.0-or-later AND LGPL-2.0-or-later |
 | xz | 0BSD AND LGPL-2.1-or-later |
 | pacman | GPL-2.0-or-later |
 | GnuPG | GPL-3.0-or-later (mixed BSD, LGPL and permissive components) |

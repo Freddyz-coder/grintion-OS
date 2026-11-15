@@ -59,8 +59,18 @@ profile file that is not loaded confines nothing, so do not treat the files in
   `grintion-apparmor complain <profile>`. `verify` fails unless the kernel has
   loaded the profiles in enforce mode; `status` separates on-disk profiles from
   kernel-loaded profiles.
+- Inspect the running kernel with `aa-status` (loaded profiles, modes and
+  per-process labels) and `aa-unconfined` (unconfined processes that own
+  network sockets; `--paranoid` includes established connections). Both are
+  read-only and fail closed when securityfs or `/proc` cannot be read.
 - An experimental SELinux configuration remains at `/etc/selinux/config`; it is
   not the default MAC implementation.
+
+The image requires GNU gzip 1.12 or newer and fails the rootfs build on an
+older host. `zgrep` before 1.12 allows arbitrary file writes through crafted
+filenames (CVE-2022-1271). The full companion set (`zgrep`, `zegrep`, `zfgrep`,
+`zdiff`, `zcmp`, `zless`, `zmore`, `gzexe`, `znew`, `zforce`) ships from the
+same package, and `cmp` is required for `zcmp`.
 
 ## 3. Application Sandboxing (`grintion-sandbox`)
 
@@ -73,7 +83,7 @@ profile file that is not loaded confines nothing, so do not treat the files in
 
 ## 4. Audit Logging & Privileged Tracing
 
-- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` monitor `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes. The image ships `auditd`, `auditctl`, `ausearch` and `aureport`, and the service starts at boot.
+- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` monitor `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes. The image ships `auditd`, `auditctl`, `ausearch` and `aureport`, and the service starts at boot. Records land in `/var/log/audit/audit.log`; `/var/log/audit` is mode 0750 and the service runs with umask 0077 so its diagnostics are root-only.
 - Rules naming binaries or paths absent from the minimal image are filtered during the rootfs build; `auditd` fails closed on a malformed rule, so the build validates the resulting file before enabling the service.
 - Sudo I/O logging is configured separately via `/etc/sudoers.d/audit-log` and does not depend on auditd.
 - Inspect available logs with `grintion-audit-log` or `grintion-audit-log --sudo` when the relevant daemon or sudo I/O files exist.

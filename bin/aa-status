@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""aa-status — read-only AppArmor status for Grintion-OS.
+
+Small, standard-library-only replacement for the apparmor package's aa-status.
+It reports the module state, the profiles the kernel has loaded and the
+confinement state of every process. It never writes, loads or changes policy,
+so it is safe to run unprivileged.
+
+Fail-closed: a missing or unreadable securityfs interface is reported as an
+error (exit 1), never as an empty profile set. That matters on a system whose
+security claim depends on AppArmor actually being attached.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+__version__ = "1.0.0"
+
+MODE_ENFORCE = "enforce"
+MODE_COMPLAIN = "complain"
+MODE_KILL = "kill"
+MODE_UNCONFINED = "unconfined"
+MODE_UNKNOWN = "unknown"
+
+DEFAULT_SECFS = Path(
+    os.environ.get("GRINTION_SYS_APPARMOR", "/sys/kernel/security/apparmor")
+)
+DEFAULT_MODULE_PARAM = Path(
+    os.environ.get(
+        "GRINTION_SYSFS_APPARMOR_PARAM", "/sys/module/apparmor/parameters/enabled"
+    )
+)
+DEFAULT_PROC = Path(os.environ.get("GRINTION_PROC", "/proc"))
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _safe(value: str) -> str:
+    """Keep terminal/log output free of control characters."""
+    return "".join(
+        ch if ch.isprintable() or ch in (" ", "\t") else "?" for ch in value
+    )
+
+
+def _mode_from_label(label: str) -> str:
+    low = label.lower()
+    for mode in (MODE_ENFORCE, MODE_COMPLAIN, MODE_KILL, MODE_UNCONFINED):
+        if mode in low:
+            return mode
+    return MODE_UNKNOWN
+
+
+def apparmor_enabled(
+    secfs: Path = DEFAULT_SECFS, module_param: Path = DEFAULT_MODULE_PARAM
+) -> bool:
+    value = _read(module_param)
+    if value is not None:
+        flag = value.strip().upper()
+        if flag in ("Y", "1", "YES"):
+            return True
+        if flag in ("N", "0", "NO"):
+            return False
+    return (secfs / "profiles").is_file()
+
+
+def kernel_profiles(secfs: Path = DEFAULT_SECFS) -> list[dict] | None:
+    """Return loaded profiles, or None when the kernel interface is unreadable."""
+    text = _read(secfs / "profiles")
+    if text is None:
+        return None
+    profiles: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name = line
+        mode = MODE_UNKNOWN
+        if line.endswith(")") and " (" in line:
+            name, label = line.rsplit(" (", 1)
+            mode = _mode_from_label(label[:-1])
+        profiles.append({"name": _safe(name), "mode": mode})
+    return profiles
+
+
+def process_states(proc: Path = DEFAULT_PROC) -> list[dict]:
+    """Return confinement state for every procfs task that exposes it."""
+    states: list[dict] = []
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return states
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        current = _read(entry / "attr" / "current")
+        if current is None:
+            continue
+        value = current.strip()
+        comm = (_read(entry / "comm") or "?").strip()
+        record = {
+            "pid": int(entry.name),
+            "process": _safe(comm or "?"),
+            "profile": None,
+            "mode": MODE_UNCONFINED,
+        }
+        if value and value != MODE_UNCONFINED:
+            profile = value
+            mode = MODE_UNKNOWN
+            if value.endswith(")") and " (" in value:
+                profile, label = value.rsplit(" (", 1)
+                mode = _mode_from_label(label[:-1])
+            record["profile"] = _safe(profile)
+            record["mode"] = mode
+        states.append(record)
+
+    return sorted(states, key=lambda item: item["pid"])
+
+
+def compute_status(secfs: Path, module_param: Path, proc: Path) -> dict:
+    enabled = apparmor_enabled(secfs, module_param)
+    profiles = kernel_profiles(secfs)
+    processes = process_states(proc)
+
+    if profiles is None:
+        securityfs = "not_mounted" if not secfs.is_dir() else "unreadable"
+    else:
+        securityfs = "available"
+
+    issues: list[str] = []
+    if not enabled:
+        issues.append("AppArmor is not enabled in the kernel")
+    if profiles is None:
+        issues.append(
+            "cannot read the AppArmor profile list from securityfs "
+            f"({secfs / 'profiles'})"
+        )
+    elif not profiles:
+        issues.append("no AppArmor profiles are loaded in the kernel")
+
+    profile_modes: dict[str, int] = {}
+    for profile in profiles or []:
+        profile_modes[profile["mode"]] = profile_modes.get(profile["mode"], 0) + 1
+
+    process_modes: dict[str, int] = {}
+    for process in processes:
+        process_modes[process["mode"]] = process_modes.get(process["mode"], 0) + 1
+
+    confined = [p for p in processes if p["mode"] != MODE_UNCONFINED]
+    return {
+        "tool": "aa-status",
+        "version": __version__,
+        "enabled": enabled,
+        "securityfs": securityfs,
+        "profiles_loaded": len(profiles or []),
+        "profile_modes": profile_modes,
+        "profiles": profiles or [],
+        "processes": processes,
+        "processes_confined": len(confined),
+        "processes_unconfined": len(processes) - len(confined),
+        "process_modes": process_modes,
+        "issues": issues,
+    }
+
+
+def _human_report(data: dict, args: argparse.Namespace) -> None:
+    if args.profiled:
+        for process in data["processes"]:
+            if process["mode"] != MODE_UNCONFINED:
+                print(
+                    f"{process['pid']:>7} {process['process']} "
+                    f"{process['profile'] or ''}".rstrip()
+                )
+        return
+    if args.complaining:
+        for profile in data["profiles"]:
+            if profile["mode"] == MODE_COMPLAIN:
+                print(profile["name"])
+        for process in data["processes"]:
+            if process["mode"] == MODE_COMPLAIN:
+                print(profile_line(process))
+        return
+    if args.kill:
+        for profile in data["profiles"]:
+            if profile["mode"] == MODE_KILL:
+                print(profile["name"])
+        for process in data["processes"]:
+            if process["mode"] == MODE_KILL:
+                print(profile_line(process))
+        return
+    if args.unconfined:
+        for process in data["processes"]:
+            if process["mode"] == MODE_UNCONFINED:
+                print(profile_line(process))
+        return
+
+    if not data["enabled"]:
+        print("apparmor module is not loaded.")
+        return
+
+    print("apparmor module is loaded.")
+    if data["securityfs"] != "available":
+        print(
+            "apparmor: cannot read the profile list from securityfs "
+            f"({data['securityfs']})",
+            file=sys.stderr,
+        )
+        return
+
+    print(f"{data['profiles_loaded']} profiles are loaded.")
+    for mode, label in (
+        (MODE_ENFORCE, "enforce"),
+        (MODE_COMPLAIN, "complain"),
+        (MODE_KILL, "kill"),
+    ):
+        count = data["profile_modes"].get(mode, 0)
+        print(f"{count} profiles are in {label} mode.")
+        for profile in data["profiles"]:
+            if profile["mode"] == mode:
+                print(f"   {profile['name']}")
+
+    print(f"{data['processes_confined']} processes have profiles defined.")
+    for mode, label in (
+        (MODE_ENFORCE, "enforce"),
+        (MODE_COMPLAIN, "complain"),
+        (MODE_KILL, "kill"),
+    ):
+        count = data["process_modes"].get(mode, 0)
+        print(f"{count} processes are in {label} mode.")
+        for process in data["processes"]:
+            if process["mode"] == mode:
+                print(f"   {profile_line(process)}")
+    print(f"{data['processes_unconfined']} processes are unconfined.")
+
+
+def profile_line(process: dict) -> str:
+    profile = process["profile"] or MODE_UNCONFINED
+    return f"{profile} ({process['pid']})"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aa-status",
+        description=(
+            "Report AppArmor kernel state. Read-only and fail-closed: an "
+            "unreadable securityfs is an error, not an empty policy."
+        ),
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Machine-readable status report"
+    )
+    parser.add_argument(
+        "--enabled",
+        action="store_true",
+        help="Exit 0 when AppArmor is enabled, 1 otherwise",
+    )
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument(
+        "--profiled", action="store_true", help="Show confined processes only"
+    )
+    display.add_argument(
+        "--complaining",
+        action="store_true",
+        help="Show complain-mode profiles and processes only",
+    )
+    display.add_argument(
+        "--kill", action="store_true", help="Show kill-mode profiles and processes only"
+    )
+    display.add_argument(
+        "--unconfined",
+        action="store_true",
+        help="Show unconfined processes only",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    data = compute_status(DEFAULT_SECFS, DEFAULT_MODULE_PARAM, DEFAULT_PROC)
+
+    if args.enabled:
+        return 0 if data["enabled"] else 1
+
+    failed = not data["enabled"] or data["securityfs"] != "available"
+    if args.json:
+        payload = dict(data)
+        payload["exit_code"] = 1 if failed else 0
+        print(json.dumps(payload, indent=2))
+        return 1 if failed else 0
+
+    _human_report(data, args)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -162,8 +162,17 @@ def test_auditd_service_has_userspace_and_rules() -> None:
     assert "auditctl -R" in service
     assert "refusing to fake the service" in service
     assert "auditd -f" in service
+    assert "umask 0077" in service
     assert (REPO_ROOT / "etc/audit/auditd.conf").is_file()
     assert "-k identity" in (REPO_ROOT / "etc/audit/audit.rules").read_text()
+
+    # The release rootfs is built in this container; without the audit package
+    # the image cannot contain the daemon that writes /var/log/audit/audit.log.
+    container = (REPO_ROOT / "build/rootfs-container/Containerfile").read_text()
+    assert "audit conntrack-tools" in container
+    rootfs = (REPO_ROOT / "build/make-rootfs.sh").read_text()
+    assert "log/audit" in rootfs
+    assert 'chmod 0750 "$ROOTFS/var/log/audit"' in rootfs
 
 
 def test_kernel_contract_covers_audit_ia32_and_zram() -> None:

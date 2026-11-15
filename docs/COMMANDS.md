@@ -335,6 +335,49 @@ of `/var/log/timesync.log`. `tz` validates the zone against
 
 ---
 
+## AppArmor user-space reporting
+
+Grintion ships read-only implementations of the two AppArmor inspection tools,
+so they work without the apparmor package's Python modules:
+
+```sh
+aa-status
+aa-status --json
+aa-status --enabled
+aa-status --complaining
+aa-status --unconfined
+aa-unconfined
+aa-unconfined --paranoid
+aa-unconfined --json
+```
+
+`aa-status` exits `1` when AppArmor is disabled or securityfs cannot be read;
+`aa-unconfined` exits `1` when an unconfined process owns a network socket and
+`2` when `/proc/net` is unreadable. A process whose
+`/proc/<pid>/attr/current` cannot be read is treated as unconfined, never as
+safe.
+
+---
+
+## GNU gzip companions
+
+The image ships GNU gzip and its complete companion set. `gzexe`, `zcmp`,
+`zdiff`, `zegrep`, `zfgrep`, `zforce`, `zgrep`, `zless`, `zmore` and `znew`
+are part of the rootfs command contract alongside `gzip`, `gunzip` and `zcat`;
+`cmp` is installed because `zcmp` uses it.
+
+```sh
+zgrep -i error /var/log/audit/audit.log.gz
+zless /var/log/audit/audit.log.gz
+znew -9 old.log.gz
+```
+
+The build requires GNU gzip 1.12 or newer and fails closed on older hosts:
+before 1.12, `zgrep` could write arbitrary files through crafted archive member
+names (CVE-2022-1271).
+
+---
+
 ## Related existing tools
 
 | Need | Tool |

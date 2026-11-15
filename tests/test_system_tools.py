@@ -969,6 +969,7 @@ def test_auditd_writes_to_a_log_and_survives_a_bad_rule_file() -> None:
     assert "exec >>/var/log/audit/auditd.log 2>&1" in service
     assert "continuing without those rules" in service
     assert "exit 1" not in service
+    assert "umask 0077" in service
 
 
 def test_early_boot_quiets_kernel_audit_records() -> None:

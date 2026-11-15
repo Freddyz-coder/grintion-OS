@@ -1,6 +1,6 @@
 # Building Grintion-OS
 
-This document covers building the 0.16.1 ISO from source. Installation is in
+This document covers building the 0.17.0 ISO from source. Installation is in
 [INSTALL.md](INSTALL.md); the boot flow is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The build is **offline after the first fetch**. `make tools` and `make kernel`
@@ -26,7 +26,7 @@ iteration but is not the release path.
 ```sh
 sudo pacman -S --needed base-devel bc bison flex kmod cpio gzip curl \
     openssl parted dosfstools e2fsprogs rsync xorriso \
-    pacman gnupg archlinux-keyring apparmor \
+    pacman gnupg archlinux-keyring apparmor audit \
     python python-pytest python-pexpect \
     qemu-full edk2-ovmf shellcheck
 ```
@@ -44,14 +44,21 @@ GRINTION_APPARMOR_ROOT="$PWD/build/work/apparmor-root" make rootfs
 
 The resulting `make check` gate still runs on hosts without AppArmor.
 
+GNU gzip 1.12 or newer is required. The rootfs build rejects older versions
+because `zgrep` before 1.12 allowed arbitrary file writes through crafted
+filenames (CVE-2022-1271). The image contract includes `gzexe`, `zcmp`,
+`zdiff`, `zegrep`, `zfgrep`, `zforce`, `zgrep`, `zless`, `zmore` and `znew`,
+plus `cmp` (used by `zcmp`).
+
 What each group is for:
 
 | Package | Used by |
 | --- | --- |
 | `apparmor` | `make rootfs`: supplies `apparmor_parser` and the policy abstractions; the build fails without it. `make check` does not require it. |
+| `audit` | `make rootfs`: supplies `auditd`, `auditctl`, `ausearch` and `aureport`; the build fails without them. `make check` does not require it. |
 | `base-devel`, `bison`, `flex`, `kmod` | kernel build, `depmod` |
 | `bc` | kernel build (a pinned copy is also built into `tools/bin/bc`) |
-| `cpio`, `gzip` | live rootfs staging checks |
+| `cpio`, `gzip` (>= 1.12) | live rootfs staging checks; older gzip fails the build |
 | `curl` | `build/build-tools.sh` downloads |
 | `openssl` | `garb` signatures and installer |
 | `parted`, `dosfstools`, `e2fsprogs`, `rsync` | installer and installed initramfs |

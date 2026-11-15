@@ -3,12 +3,13 @@
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 current source tree provides; the most recent image built from this tree is
-0.16.1. It also records the limits of that protection and how to report a problem.
+0.17.0. It also records the limits of that protection and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
+| 0.17.x | Security fixes on a best-effort basis |
 | 0.16.x | Security fixes on a best-effort basis |
 | 0.15.x | Security fixes on a best-effort basis |
 | 0.14.x | Security fixes on a best-effort basis |
@@ -107,11 +108,13 @@ the policy recorded in `security.conf`. The firewall service falls back to
 `/etc/nftables.conf` if the profile ruleset cannot be generated, so a broken
 profile update does not leave the system with no ruleset.
 
-**Audit limitation:** the base image stages audit rules and an auditd service
-file, but does not currently include the `auditd`/`auditctl` userspace. The
-profile therefore reports auditd as a warning, not a passing control. Kernel
-audit support and sudo I/O logging are separate and may still work depending on
-the installed packages.
+**Audit availability:** the base image ships the audit userspace (`auditd`,
+`auditctl`, `ausearch`, `aureport`), focused rules and the `auditd` runit
+service. `auditd` creates `/var/log/audit/audit.log` when the service starts;
+`/var/log/audit` is mode 0750 and service diagnostics are written root-only to
+`/var/log/audit/auditd.log`. If the userspace is removed from a custom image,
+the service refuses to fake success and the security profile reports auditd as
+unavailable rather than claiming a running trail.
 
 ### Accounts and access
 
@@ -215,10 +218,11 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 - **The pacman backend trusts Arch upstream.** It trusts Arch official repositories
   and the copied Arch public keyring rather than a dedicated Grintion key. Upstream
   packages and hooks may assume systemd for service enablement.
-- **No audit daemon in the base image.** Kernel audit support and audit rules
-  may exist, but the shipped image does not include `auditd`/`auditctl`
-  userspace. A security profile marks auditd as unavailable rather than
-  claiming a running audit trail.
+- **Audit depends on the daemon starting.** Kernel audit support and rules are
+  built in, and the image ships `auditd`/`auditctl`. If the service is stopped
+  or its userspace is removed from a custom image, records are not written to
+  `/var/log/audit/audit.log`; a security profile reports auditd as unavailable
+  rather than claiming a running audit trail.
 - **Auto-revert is a bootloader edit, not a filesystem rollback.**
   `grintion-boot-health` can switch Limine to an existing snapshot/recovery
   entry after repeated failures, but it does not restore files or prove that

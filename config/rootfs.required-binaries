@@ -52,6 +52,7 @@ xargs
 file
 which
 diff
+cmp
 dirname
 basename
 readlink
@@ -119,6 +120,20 @@ unxz
 unzip
 cpio
 zcat
+
+# GNU gzip companion programs. They come from the same gzip package as the
+# commands above and are part of the image contract: a missing zgrep or zdiff
+# is a broken compression toolset, not an optional extra.
+gzexe
+zcmp
+zdiff
+zegrep
+zfgrep
+zforce
+zgrep
+zless
+zmore
+znew
 
 # Filesystems and disks
 mount

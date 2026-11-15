@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.0] - 2026-11-15
+
+### Added
+
+- **AppArmor user-space completeness.** `aa-status` reports loaded profiles,
+  modes and per-process labels; `aa-unconfined` finds unconfined processes that
+  own network sockets. Both are standard-library, read-only and fail closed
+  when securityfs, `/proc` or a process label cannot be read.
+- **Full GNU gzip command set.** `gzexe`, `zcmp`, `zdiff`, `zegrep`, `zfgrep`,
+  `zforce`, `zgrep`, `zless`, `zmore` and `znew` are now part of the image
+  contract alongside `gzip`, `gunzip` and `zcat`; `cmp` is required for `zcmp`.
+
+### Fixed
+
+- **The audit daemon and its log path now ship in release images.** The pinned
+  rootfs container and CI host packages install `audit`, the rootfs creates
+  `/var/log/audit` with mode 0750, and the service runs with umask 0077 from
+  `/etc/sv/auditd/run` so `/var/log/audit/auditd.log` is root-only. This fixes
+  the missing `/var/log/audit/audit.log` on images built from hosts that did
+  not have audit userspace installed.
+
+### Security
+
+- The rootfs build refuses GNU gzip older than 1.12, which fixes the `zgrep`
+  arbitrary-file-write vulnerability (CVE-2022-1271).
+
+---
+
 ## [0.16.1] - 2026-11-14
 
 ### Fixed
