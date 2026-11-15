@@ -1122,6 +1122,13 @@ def test_audit_rules_cover_privileged_surfaces_and_service_checks_enabled() -> N
         assert flag in shm_mount, flag
 
 
+def test_rootfs_keeps_util_linux_mount_and_names_the_wrapper() -> None:
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert 'if [ "$tool" = "mount" ]; then' in rootfs
+    assert '"$ROOTFS/usr/bin/grintion-mount"' in rootfs
+    assert 'install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/$tool"' in rootfs
+
+
 def test_rootfs_strips_inherited_setid_and_ssh_host_keys() -> None:
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert 'find "$ROOTFS" -xdev -type f -perm /6000 -exec chmod u-s,g-s {} +' in rootfs

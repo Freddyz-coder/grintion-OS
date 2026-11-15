@@ -33,6 +33,11 @@ baked SSH host keys, and the installer generates fresh host keys with
 `ssh-keygen -A` and mode `0600` private keys.
 - **Runtime hardening adds `vm.unprivileged_userfaultfd=0` and
 `net.core.bpf_jit_harden=2`.**
+- **The system `mount` binary is no longer shadowed.** The advanced wrapper is
+installed only as `grintion-mount`, leaving util-linux `mount` available to
+initramfs init, runit stage 1, the installer and chroot. This fixed a live-boot
+failure where `mount -t proc` invoked the Python wrapper and the fail-closed
+path powered off.
 
 ### Changed
 
@@ -43,9 +48,9 @@ host-key permissions in addition to the existing posture checks.
 
 ### Tests
 
-- `make check`: **254 passed**, 0 failures; shellcheck, Python compilation,
+- `make check`: **255 passed**, 0 failures; shellcheck, Python compilation,
   documentation links, executable bits and staged-rootfs checks passed.
-- Focused boot, system-tool and release-tool suites: **78 passed**.
+- Focused boot, system-tool and release-tool suites: **80 passed**.
 - New regression coverage checks fail-closed recovery, the recovery/LUKS
   ordering, lockdown command lines, kernel lockdown symbols, expanded audit
   rules, set-ID stripping, SSH host-key provisioning and the new report IDs.

@@ -156,6 +156,13 @@ ln -sfn runit "$ROOTFS/usr/sbin/init"
 for tool_path in "$GRINTION_REPO_ROOT"/bin/*; do
     [ -f "$tool_path" ] && [ -x "$tool_path" ] || continue
     tool="$(basename "$tool_path")"
+    if [ "$tool" = "mount" ]; then
+        # /usr/bin/mount must remain util-linux: initramfs init, runit stage 1,
+        # the installer and chroot all call it with mount(8) syntax. The
+        # advanced wrapper is exposed under its grintion-mount name only.
+        install -D -m 0755 "$tool_path" "$ROOTFS/usr/bin/grintion-mount"
+        continue
+    fi
     # Install each tool once. Root's PATH puts /usr/sbin before /usr/bin, so a
     # second copy there shadowed the /usr/bin one: after the desktop installer
     # updated /usr/bin/grintion-desktop, 'grintion-desktop' still executed the

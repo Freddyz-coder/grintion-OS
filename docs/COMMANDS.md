@@ -49,6 +49,11 @@ only targets real block-device mounts.
 
 ### `grintion-mount`
 
+The advanced wrapper is installed as `grintion-mount`; `/usr/bin/mount` remains
+util-linux so initramfs init, runit stage 1, the installer and chroot can use
+standard mount(8) syntax. Use the standard `mount` for ordinary mounts and
+`grintion-mount` for fstab-aware operations.
+
 ```sh
 grintion-mount list --fstype ext4
 sudo grintion-mount add UUID=0123-4567 /srv/data --options noatime --passno 2
