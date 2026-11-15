@@ -30,6 +30,7 @@ need_cmd ldd
 need_cmd cpio
 need_cmd gzip
 need_cmd zstd
+need_cmd curl
 
 # zgrep before gzip 1.12 allows arbitrary file writes through crafted
 # filenames (CVE-2022-1271). The image ships zgrep and its companions, so an
@@ -365,6 +366,19 @@ if [ -d /usr/share/glib-2.0 ]; then
     cp -a /usr/share/glib-2.0/. "$ROOTFS/usr/share/glib-2.0/"
 fi
 
+# These host data trees belong to desktop, accessibility and media packages
+# that are not part of the base image. Keeping them unowned makes the first
+# real package transaction abort with "exists in filesystem" (Firefox pulls in
+# gtk3, avahi, v4l-utils and their schemas/policies). Let those packages install
+# their own files; the base does not need any of them.
+rm -rf "$ROOTFS/usr/share/glib-2.0/schemas"
+rm -rf "$ROOTFS/usr/share/dbus-1/accessibility-services" \
+       "$ROOTFS/usr/share/dbus-1/interfaces" \
+       "$ROOTFS/usr/share/dbus-1/services" \
+       "$ROOTFS/usr/share/dbus-1/system-services" \
+       "$ROOTFS/usr/share/dbus-1/system.d"
+# seed-pacman-db.py removes udev rules/helpers that no seeded package owns.
+
 # Ensure full GLib library suite is present for desktop and D-Bus services
 for glib_so in /usr/lib/libglib-2.0.so* /usr/lib/libgio-2.0.so* /usr/lib/libgmodule-2.0.so* /usr/lib/libgobject-2.0.so* /usr/lib/libgthread-2.0.so* /usr/lib/libgirepository-*.so*; do
     [ -e "$glib_so" ] || continue
@@ -510,6 +524,33 @@ for keyfile in archlinux.gpg archlinux-trusted archlinux-revoked; do
     [ -f "/usr/share/pacman/keyrings/$keyfile" ] || die "pacman keyring source missing: $keyfile"
     install -m 0644 "/usr/share/pacman/keyrings/$keyfile" \
         "$ROOTFS/usr/share/pacman/keyrings/$keyfile"
+done
+
+# The snapshot never changes, so ship its sync databases instead of forcing a
+# fresh image to download metadata before the first `pacman -S`. Without them,
+# direct pacman prints "database file for 'core' does not exist" followed by
+# "target not found" for every package. Keep the verified downloads in the
+# build cache so a rebuild does not depend on the network again.
+sync_cache="$GRINTION_REPO_ROOT/build/cache/pacman-sync/$PACMAN_SNAPSHOT"
+mkdir -p "$sync_cache" "$ROOTFS/var/lib/pacman/sync"
+fetch_pacman_db() {
+    local repo="$1"
+    local cache="$sync_cache/$repo.db"
+    local url="https://archive.archlinux.org/repos/$PACMAN_SNAPSHOT/$repo/os/$GRINTION_ARCH/$repo.db"
+    if [ ! -s "$cache" ] || ! gzip -t "$cache" 2>/dev/null; then
+        log "downloading pinned pacman database: $repo.db"
+        rm -f "$cache.part"
+        curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 \
+            -o "$cache.part" "$url" \
+            || die "failed to download pinned pacman database: $url"
+        gzip -t "$cache.part" \
+            || die "downloaded pacman database is not gzip data: $url"
+        mv "$cache.part" "$cache"
+    fi
+    install -m 0644 "$cache" "$ROOTFS/var/lib/pacman/sync/$repo.db"
+}
+for repo in core extra multilib; do
+    fetch_pacman_db "$repo"
 done
 
 printf '%s\n' "$GRINTION_VERSION" > "$ROOTFS/etc/grintion/version"

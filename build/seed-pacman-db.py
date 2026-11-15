@@ -66,10 +66,13 @@ def declared_binaries(entry: Path) -> list[str]:
             if path.startswith(("usr/bin/", "usr/sbin/", "bin/", "sbin/"))]
 
 
+LIBRARY_RE = re.compile(r"\.so(?:\.|$)")
+
+
 def declared_libraries(entry: Path) -> list[str]:
     return [path for path in recorded_files(entry)
             if path.startswith(("usr/lib/", "lib/"))
-            and ".so" in path.rsplit("/", 1)[-1]]
+            and LIBRARY_RE.search(path.rsplit("/", 1)[-1])]
 
 
 def library_owner_packages(entries: dict[str, Path], root: Path) -> set[str]:
@@ -99,48 +102,101 @@ def library_owner_packages(entries: dict[str, Path], root: Path) -> set[str]:
     return owners
 
 
+def complete_library_sets(
+    selected: dict[str, Path], root: Path, source: Path = Path("/")
+) -> int:
+    """Copy missing shared-library files for partially present packages.
+
+    resolve-libs.py copies the libraries a base binary needs, not every
+    extension a later application may load. If such a partially present
+    package is recorded as installed, pacman skips it and the application
+    later fails to load a missing .so (for example libxcb-render.so.0 after
+    Firefox installed GTK). Complete the library set from the build host
+    before writing the DB entry, so a seeded package is never missing a
+    declared shared library.
+    """
+    copied = 0
+    for _name, entry in selected.items():
+        libraries = declared_libraries(entry)
+        if not any(
+            (root / rel).is_file() or (root / rel).is_symlink()
+            for rel in libraries
+        ):
+            continue
+        for rel in libraries:
+            destination = root / rel
+            if destination.is_file() or destination.is_symlink():
+                continue
+            origin = source / rel
+            if origin.is_symlink():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.symlink_to(os.readlink(origin))
+            elif origin.is_file():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(origin, destination)
+            else:
+                raise SystemExit(
+                    f"package {_name} declares a missing shared library: {rel}"
+                )
+            copied += 1
+    return copied
+
+
+def prune_unowned_udev_data(root: Path) -> int:
+    """Remove host udev rules/helpers that no seeded package owns.
+
+    make-rootfs.sh copies the build host's /usr/lib/udev tree so the live
+    system has the core device rules. The host also has rules from packages
+    that are not installed here (alsa-utils, v4l-utils, modemmanager, ...).
+    Those unowned files make the first package that ships the same rule abort
+    with "exists in filesystem". Keep only files owned by the seeded local DB;
+    preserve the compiled hwdb.bin, which no package owns.
+    """
+    owned: set[str] = set()
+    for entry in package_names(root / "var/lib/pacman/local").values():
+        owned.update(recorded_files(entry))
+
+    udev = root / "usr/lib/udev"
+    if not udev.is_dir():
+        return 0
+    removed = 0
+    compiled = root / "usr/lib/udev/hwdb.bin"
+    for directory, _subdirs, filenames in os.walk(udev, topdown=False):
+        current = Path(directory)
+        for name in filenames:
+            path = current / name
+            if path == compiled:
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative not in owned:
+                path.unlink()
+                removed += 1
+        try:
+            current.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 def installed_packages(selected: dict[str, Path], root: Path) -> tuple[dict[str, Path], list[str]]:
-    """Drop DB entries for packages whose files are absent from the rootfs.
+    """Keep DB entries that own at least one path present in the rootfs.
 
-    pacman trusts a local DB entry: a seeded package is treated as installed and
-    is never reinstalled as a dependency, even when its files were never copied.
-    A package is kept when ANY of these conditions hold:
-      1. It ships at least one binary that exists in the rootfs.
-      2. It ships only shared libraries and ALL declared .so files exist.
-      3. It is a data package (no binaries, no libraries) and at least one
-         declared file exists.
-
-    Rationale for rule 1: resolve-libs.py copies all required shared-library
-    dependencies after this filter runs; we do not punish a binary package for
-    having a companion .so that hasn't been copied yet.  Only packages whose
-    primary artefact (a binary) is completely absent should be dropped.
+    pacman trusts the local DB as its only file-ownership map. Dropping a
+    package because one companion binary or library is absent leaves every
+    path it still owns unowned; the next transaction that ships the same path
+    then aborts with "exists in filesystem". Keep every package with at least
+    one surviving file and let write_entry() prune the inventory to paths that
+    really exist. A package with no surviving path is still dropped so pacman
+    installs it as a real dependency.
     """
     installed: dict[str, Path] = {}
     dropped: list[str] = []
     for name, entry in selected.items():
-        binaries = declared_binaries(entry)
-        libraries = declared_libraries(entry)
         files = recorded_files(entry)
-
-        if binaries:
-            # Keep if at least one declared binary is present; resolve-libs.py
-            # will satisfy any shared-library deps afterwards.
-            if any((root / path).is_file() for path in binaries):
-                installed[name] = entry
-            else:
-                dropped.append(name)
-        elif libraries:
-            # Library-only package: all declared .so files must be present.
-            if all((root / path).is_file() or (root / path).is_symlink() for path in libraries):
-                installed[name] = entry
-            else:
-                dropped.append(name)
+        if any((root / path).is_file() or (root / path).is_symlink() for path in files):
+            installed[name] = entry
         else:
-            # Data package: at least one declared file must exist.
-            if any((root / path).is_file() or (root / path).is_symlink() for path in files):
-                installed[name] = entry
-            else:
-                dropped.append(name)
+            dropped.append(name)
     return installed, sorted(dropped)
 
 
@@ -326,6 +382,10 @@ def main() -> int:
             if dependency:
                 queue.append(dependency)
 
+    completed = complete_library_sets(selected, args.root)
+    if completed:
+        print(f"[+] completed shared-library sets: {completed} file(s) copied")
+
     selected, dropped = installed_packages(selected, args.root)
 
     destination = args.root / "var/lib/pacman/local"
@@ -344,11 +404,14 @@ def main() -> int:
     if db_version.is_file():
         shutil.copy2(db_version, destination / "ALPM_DB_VERSION")
 
+    udev_pruned = prune_unowned_udev_data(args.root)
+
     print(f"[+] pacman DB seeded with {len(selected)} packages"
           f" ({len(missing)} dependencies not installed on the host,"
           f" {len(dropped)} not present in the rootfs)")
     print(f"[+] pacman ownership matches the image: {kept_paths} path(s) recorded,"
           f" {pruned_paths} host-only path(s) pruned")
+    print(f"[+] removed {udev_pruned} unowned udev file(s)")
     return 0
 
 

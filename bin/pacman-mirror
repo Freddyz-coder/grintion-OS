@@ -2,11 +2,15 @@
 """Select the fastest reachable official Arch Linux Archive mirror.
 
 The image is pinned to a dated ALA snapshot because the base userland is linked
-against OpenSSL 3.  Arch publishes a dedicated archive mirror in addition to
-the primary host; from many networks the primary is dramatically slower.  This
-tool probes a small range of core.db on each endpoint, then rewrites the three
-dated Server lines in pacman.conf so every package operation uses the faster
-one while keeping the snapshot date and package signatures unchanged.
+against OpenSSL 3. This tool probes a small range of core.db on each configured
+endpoint, then rewrites the three dated Server lines in pacman.conf so every
+package operation uses the fastest complete mirror while keeping the snapshot
+date and package signatures unchanged.
+
+The primary archive is the only built-in endpoint. `umea.archive.pkgbuild.com`
+serves core.db but returns 404 for package archives below /repos, so selecting
+it made pacman download no packages. Operators can still supply additional
+complete mirrors through GRINTION_ALA_MIRRORS.
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PRIMARY = "https://archive.archlinux.org"
-DEFAULT_MIRRORS = (PRIMARY, "https://umea.archive.pkgbuild.com")
+DEFAULT_MIRRORS = (PRIMARY,)
 PROBE_BYTES = 128 * 1024
 DATE_RE = re.compile(r"\d{4}/\d{2}/\d{2}")
 SNAPSHOT_RE = re.compile(r"/repos/(\d{4}/\d{2}/\d{2})/")

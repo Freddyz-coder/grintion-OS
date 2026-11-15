@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.1] - 2026-11-15
+
+### Fixed
+
+- **Fresh images install packages with both `garb` and direct pacman.** The
+  rootfs now ships the immutable `core.db`, `extra.db` and `multilib.db` from
+  the pinned `2026/11/01` snapshot, so `sudo pacman -S firefox` no longer prints
+  "database file for 'core' does not exist" followed by "target not found".
+  `garb` still repairs a missing database on a custom root.
+- **The mirror selector no longer chooses a host that cannot serve packages.**
+  `umea.archive.pkgbuild.com` served `core.db` but returned 404 for package
+  archives below `/repos`; it was selected as faster, producing a wall of
+  download errors. Only the complete primary archive is built in; operators can
+  add complete mirrors through `GRINTION_ALA_MIRRORS`.
+- **Seeded package ownership no longer causes file conflicts or missing
+  libraries.** Every package owning a path present in the image is recorded;
+  partially present packages have their complete shared-library set copied in
+  before the entry is written. Firefox no longer fails with `exists in
+  filesystem`, and pacman no longer skips a package such as `libxcb` while
+  `libxcb-render.so.0` is absent.
+- **Unowned host desktop data is removed from the base.** GLib schemas, D-Bus
+  service/policy files and udev rules/helpers from packages that are not
+  installed are pruned, so the package that ships them can install cleanly.
+- **`garb` maps command names to Arch packages.** `alsamixer` installs
+  `alsa-utils` and `nvim` installs `neovim`; direct pacman still requires the
+  Arch package name.
+
+### Changed
+
+- `make rootfs` downloads and caches the pinned pacman sync databases under
+  `build/cache/pacman-sync/<snapshot>/` and installs them into
+  `/var/lib/pacman/sync/`.
+- The rootfs completes partially present shared-library sets from the build
+  host before seeding pacman's local database, and the seed removes every
+  unowned udev file while preserving the compiled `hwdb.bin`.
+
+### Tests
+
+- `make check`: **250 passed**, 0 failures; shellcheck, Python compilation,
+  documentation links, executable bits and staged-rootfs checks passed.
+- A fresh rootfs copy installed Firefox with direct
+  `pacman -S --noconfirm firefox`: 166 packages, clean GTK hook, and
+  `firefox --version` returned `Mozilla Firefox 159.0`.
+- Direct pacman installed `btop`, `neovim`, `pipewire` and `alsa-utils` without
+  `-Sy`; the previous `exists in filesystem` failures were gone.
+- `garb install alsamixer guvcview` resolved `alsamixer` to `alsa-utils` and
+  completed after retrying one reported udev conflict.
+- The 0.17.1 rootfs build shipped `core.db`, `extra.db` and `multilib.db`,
+  completed 440 shared-library files, seeded 165 packages, and removed 249
+  unowned udev files.
+
+---
+
 ## [0.17.0] - 2026-11-15
 
 ### Added

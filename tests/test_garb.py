@@ -725,8 +725,17 @@ def test_pacman_backend_maps_common_package_names(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["GARB_BACKEND_BIN"] = str(fake)
     env["GARB_FAKE_LOG"] = str(log)
-    result = run(root, "install", "kde-plasma", "NetworkManager", backend="pacman", env=env)
+    result = run(
+        root,
+        "install",
+        "kde-plasma",
+        "NetworkManager",
+        "alsamixer",
+        "nvim",
+        backend="pacman",
+        env=env,
+    )
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == [
-        f"--root {root} -S --needed --noconfirm plasma-meta networkmanager"
+        f"--root {root} -S --needed --noconfirm plasma-meta networkmanager alsa-utils neovim"
     ]

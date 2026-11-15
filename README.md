@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.17.0 — *audit daemon fixed · AppArmor status tools · full GNU gzip suite*
+- **Version:** 0.17.1 — *package manager repaired · pinned databases · conflict-free installs*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,11 +17,13 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.17.0 is a security and user-space completeness release. The audit daemon and
-its userspace now ship with a root-only `/var/log/audit`, `aa-status` and
-`aa-unconfined` report kernel AppArmor state without extra Python modules, and
-the full GNU gzip companion set is part of the image contract. See
-[CHANGELOG.md](CHANGELOG.md).
+0.17.1 is a package-manager repair release. Fresh images ship the pinned Arch
+sync databases, so both `garb` and direct `pacman -S` resolve packages
+immediately. The broken secondary archive endpoint was removed, seeded library
+ownership now covers every shared library in the base image, and Firefox plus
+desktop installs no longer fail on file conflicts or missing `.so` files. `garb`
+also maps `alsamixer` to `alsa-utils` and `nvim` to `neovim`. The 0.17.0 audit,
+AppArmor and gzip work remains in this image. See [CHANGELOG.md](CHANGELOG.md).
 
 0.16.0 delivered three major improvements over 0.15.0:
 
@@ -39,7 +41,7 @@ the full GNU gzip companion set is part of the image contract. See
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.17.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.17.1 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -119,15 +121,19 @@ translator but is not installed. `garb` uses pacman for `install`, `remove`,
 to the running system (`--root /`); use `--backend pacman|apk|native` to choose
 explicitly. Delegation bypasses garb's signature and transaction checks.
 
-On a fresh install, the first delegated `install`, `search`, `info` or
-`upgrade` downloads missing pacman sync databases automatically; `garb update`
-refreshes them later. Package names are normalized to Arch's lowercase names,
-and `kde-plasma`/`network-manager` map to their Arch packages.
+Fresh images ship the pinned pacman sync databases, so both direct
+`sudo pacman -S firefox` and `sudo garb install firefox` resolve packages
+without a separate `-Sy`. If a custom root is missing a database, `garb`
+downloads it automatically before delegating. Package names are normalized to
+Arch's lowercase names, and `kde-plasma`/`network-manager` map to their Arch
+packages; `garb` also maps `alsamixer` to `alsa-utils` and `nvim` to `neovim`.
 
 Before a package transaction, `garb`, `grintion-desktop` and the installer
-benchmark the official Arch Linux Archive endpoints and use the faster one;
-pacman runs up to ten downloads in parallel. The snapshot date, signatures and
-package versions are unchanged.
+probe the complete Arch Linux Archive endpoints and use the faster one; pacman
+runs up to ten downloads in parallel. The primary archive is the only built-in
+endpoint because the former secondary served database indexes but returned 404
+for package archives. The snapshot date, signatures and package versions are
+unchanged.
 
 **Backend integration:** `garb` supports dual backends:
 - **Pacman backend (bundled):** Delegates to the dated Arch Linux Archive snapshot in `config/arch-snapshot` (`core`, `extra`) using the bundled `pacman` and Arch public keyrings. The snapshot matches the image's OpenSSL 3 ABI; rolling mirrors have moved to OpenSSL 4 and produce dependency conflicts.
@@ -242,7 +248,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.17.0 |
+| Feature | 0.17.1 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -255,7 +261,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
 | Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
-| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). Library-only base packages are seeded as owners so Firefox and desktop installs do not fail on unowned `.so` files. |
+| Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). The image ships the snapshot sync databases, so direct `pacman -S` works without a separate `-Sy`. Seeded packages own their complete shared-library sets and unowned udev/desktop data is pruned, so Firefox and desktop installs do not fail on file conflicts or missing `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
 | Signed release artifacts | Tooling and a tag-triggered release workflow exist. Released images are unsigned because no release key is available; verify their SHA-256. `build/sign-release.sh` signs `SHA256SUMS` and `BUILD-INFO`, verified via `grintion-release-verify` (see [docs/REPO-KEY-CEREMONY.md](docs/REPO-KEY-CEREMONY.md)) |
 
@@ -293,7 +299,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.17.0 has not undergone an independent third-party
+and atomic rollback, but 0.17.1 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

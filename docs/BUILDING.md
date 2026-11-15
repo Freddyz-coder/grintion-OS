@@ -1,11 +1,13 @@
 # Building Grintion-OS
 
-This document covers building the 0.17.0 ISO from source. Installation is in
+This document covers building the 0.17.1 ISO from source. Installation is in
 [INSTALL.md](INSTALL.md); the boot flow is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The build is **offline after the first fetch**. `make tools` and `make kernel`
 download pinned archives into `build/cache/`, verify their SHA-256, and reuse
-them on later runs.
+them on later runs. `make rootfs` also caches the immutable pacman sync
+databases under `build/cache/pacman-sync/<snapshot>/` and ships them in the
+image, so direct `pacman -S` works without a network metadata sync.
 
 ---
 
@@ -73,11 +75,14 @@ run under TCG but take much longer.
 
 The live image also carries the optional pacman backend. `build/make-rootfs.sh`
 copies `/etc/pacman.conf`, the public Arch keyring, the keyring sources and gpg
-helpers, then runs `build/seed-pacman-db.py` to seed pacman's local database
-from the build host. The seed step is what prevents `pacman -S` from trying to
-reinstall glibc over the curated rootfs. The script also creates
-`/etc/mtab` as a symlink to `/proc/self/mounts`, which pacman's `CheckSpace`
-needs to monitor available storage. See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
+helpers, downloads the three pinned sync databases, then runs
+`build/seed-pacman-db.py` to seed pacman's local database from the build host.
+The seed step records every base file owner, completes partially present
+shared-library sets, and prunes unowned udev data, so `pacman -S` neither
+reinstalls glibc over the curated rootfs nor aborts on an unowned file. The
+script also creates `/etc/mtab` as a symlink to `/proc/self/mounts`, which
+pacman's `CheckSpace` needs to monitor available storage. See
+[PACKAGE-MANAGER.md](PACKAGE-MANAGER.md).
 
 ---
 

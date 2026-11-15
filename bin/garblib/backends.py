@@ -36,8 +36,10 @@ MAX_OVERWRITE_CONFLICTS = 1024
 # provides the same thing in the pinned Arch snapshot. Arch package names are
 # lowercase, so normalization alone fixes casing such as "NetworkManager".
 PACMAN_PACKAGE_ALIASES = {
+    "alsamixer": "alsa-utils",
     "kde-plasma": "plasma-meta",
     "network-manager": "networkmanager",
+    "nvim": "neovim",
 }
 PACMAN_SYNC_DB_COMMANDS = frozenset({"install", "search", "upgrade"})
 

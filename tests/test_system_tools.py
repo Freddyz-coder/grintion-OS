@@ -127,9 +127,11 @@ def test_limine_deploy_installs_referenced_files(tmp_path: Path) -> None:
     assert "EFI/grintion/vmlinuz-grintion" in conf
 
 
-def test_seed_database_drops_packages_whose_libraries_are_absent(tmp_path: Path) -> None:
-    # pacman never reinstalls a seeded dependency. glib2 was seeded without
-    # libglib-2.0.so.0, so desktop scriptlets failed while pacman exited 0.
+def test_seed_database_keeps_ownership_for_every_present_path(tmp_path: Path) -> None:
+    # pacman never reinstalls a seeded dependency, and its local DB is the only
+    # file-ownership map. A package with one present library must stay seeded
+    # even when a companion binary or library is absent; otherwise the next
+    # transaction aborts with "exists in filesystem" for the present path.
     seed = load_seed_module()
     root = tmp_path / "root"
     (root / "usr/lib").mkdir(parents=True)
@@ -149,11 +151,69 @@ def test_seed_database_drops_packages_whose_libraries_are_absent(tmp_path: Path)
     binary_ok = entry(
         "binaryok", ["usr/bin/binaryok", "usr/lib/libabsent.so.1"]
     )
-    chosen, dropped = seed.installed_packages(
-        {"present": present, "ghost": ghost, "binaryok": binary_ok}, root
+    partial = entry(
+        "partial", ["usr/lib/libpresent.so.1", "usr/lib/libmissing.so.1"]
     )
-    assert set(chosen) == {"present", "binaryok"}
+    chosen, dropped = seed.installed_packages(
+        {"present": present, "ghost": ghost, "binaryok": binary_ok, "partial": partial},
+        root,
+    )
+    assert set(chosen) == {"present", "binaryok", "partial"}
     assert dropped == ["ghost"]
+
+
+def test_seed_completes_partial_library_sets(tmp_path: Path) -> None:
+    # libxcb was seeded with libxcb.so.1 but not libxcb-render.so.0, so pacman
+    # skipped libxcb and Firefox failed at runtime. A seeded package must not
+    # be missing a declared shared library.
+    seed = load_seed_module()
+    root = tmp_path / "root"
+    source = tmp_path / "host"
+    (root / "usr/lib").mkdir(parents=True)
+    (source / "usr/lib").mkdir(parents=True)
+    (root / "usr/lib/libfoo.so.1").write_bytes(b"old")
+    (source / "usr/lib/libfoo.so.1.2").write_bytes(b"new")
+    (source / "usr/lib/libbar.so.2").write_bytes(b"bar")
+    entry = tmp_path / "db" / "libfoo-1-1"
+    entry.mkdir(parents=True)
+    (entry / "desc").write_text("%NAME%\nlibfoo\n")
+    (entry / "files").write_text(
+        "%FILES%\nusr/lib/libfoo.so.1\nusr/lib/libfoo.so.1.2\nusr/lib/libbar.so.2\n"
+    )
+    copied = seed.complete_library_sets({"libfoo": entry}, root, source=source)
+    assert copied == 2
+    assert (root / "usr/lib/libfoo.so.1.2").read_bytes() == b"new"
+    assert (root / "usr/lib/libbar.so.2").read_bytes() == b"bar"
+
+
+def test_rootfs_prunes_unowned_desktop_data() -> None:
+    script = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    for path in (
+        "usr/share/glib-2.0/schemas",
+        "usr/share/dbus-1/services",
+    ):
+        assert path in script
+
+
+def test_seed_prunes_unowned_udev_data(tmp_path: Path) -> None:
+    seed = load_seed_module()
+    root = tmp_path / "root"
+    local = root / "var/lib/pacman/local/systemd-1-1"
+    local.mkdir(parents=True)
+    (local / "desc").write_text("%NAME%\nsystemd\n")
+    (local / "files").write_text(
+        "%FILES%\nusr/lib/udev/rules.d/50-udev-default.rules\n"
+    )
+    rules = root / "usr/lib/udev/rules.d"
+    rules.mkdir(parents=True)
+    (rules / "50-udev-default.rules").write_text("owned\n")
+    (rules / "90-alsa-restore.rules").write_text("host-only\n")
+    (root / "usr/lib/udev/hwdb.bin").write_bytes(b"compiled")
+    removed = seed.prune_unowned_udev_data(root)
+    assert removed == 1
+    assert (rules / "50-udev-default.rules").exists()
+    assert not (rules / "90-alsa-restore.rules").exists()
+    assert (root / "usr/lib/udev/hwdb.bin").read_bytes() == b"compiled"
 
 
 def test_rootfs_seeds_pacman_after_library_resolution() -> None:
@@ -361,6 +421,24 @@ def test_pacman_mirror_selector_rewrites_all_dated_servers(tmp_path: Path) -> No
     selected = f"Server = {mirror}/repos/{snapshot}/$repo/os/$arch"
     assert updated.count(selected) == 3
     assert "archive.archlinux.org" not in updated
+
+
+def test_pacman_mirror_default_is_a_complete_package_archive() -> None:
+    # umea.archive.pkgbuild.com serves core.db but returns 404 below /repos for
+    # package archives. Selecting it made every transaction fail downloads.
+    text = (get_bin("pacman-mirror")).read_text()
+    assert "DEFAULT_MIRRORS = (PRIMARY,)" in text
+    assert 'DEFAULT_MIRRORS = (PRIMARY, "https://umea' not in text
+
+
+def test_rootfs_ships_the_pinned_pacman_sync_databases() -> None:
+    # Direct `pacman -S` bypasses garb's auto-sync. A fresh image must already
+    # have the immutable snapshot databases, or every target is "not found".
+    script = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert "var/lib/pacman/sync" in script
+    assert "for repo in core extra multilib" in script
+    assert "gzip -t" in script
+    assert "build/cache/pacman-sync" in script
 
 
 def test_every_pacman_install_path_uses_the_mirror_selector() -> None:

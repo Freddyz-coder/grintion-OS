@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.17.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.17.1 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -73,14 +73,23 @@ image ships **pacman**; `apk` is supported by the translator but is not
 installed. When the backend is present, `garb` executes it with the mapped
 arguments and returns its exit status. No Grintion-hosted repository is needed.
 
-**Backend status:** The bundled pacman backend is fully operational with the
-dated Arch Linux Archive snapshot. Before a mutating transaction, `garb`
-repairs `/etc/mtab` to point at `/proc/self/mounts`; this prevents pacman's
-`CheckSpace` from aborting with `could not open file: /etc/mtab: Permission
-denied`. Automated non-interactive transactions pass `--noconfirm` by default.
-The image build also seeds pacman's local database with library-only packages
-whose complete `.so` set is present (for example `libxss`), so a later Firefox
-install does not fail with `exists in filesystem`. See
+**Backend status:** The bundled pacman backend works with the dated Arch Linux
+Archive snapshot. The image ships `core.db`, `extra.db` and `multilib.db` from
+that immutable snapshot, so direct `sudo pacman -S firefox` resolves without a
+separate `-Sy`. Before a mutating `garb` transaction, `garb` repairs `/etc/mtab`
+to point at `/proc/self/mounts`; this prevents pacman's `CheckSpace` from
+aborting with `could not open file: /etc/mtab: Permission denied`. Automated
+non-interactive transactions pass `--noconfirm` by default.
+
+The local pacman database is seeded from the build host by
+`build/seed-pacman-db.py`. Every package that owns a path present in the image
+is recorded with that path, and partially present packages have their complete
+shared-library set copied in before the entry is written. This prevents both
+`exists in filesystem` conflicts and pacman skipping a package that still has
+a missing `.so`. Unowned udev rules/helpers and the host's GLib schema and
+D-Bus service trees are removed so later desktop packages install their own.
+`garb` still retries a transaction with `--overwrite` limited to the exact
+conflict paths it reports; security-sensitive paths are refused. See
 [VERIFICATION.md](VERIFICATION.md).
 
 Package changes to `/` require root. Run `garb install firefox` as `sudo garb
@@ -93,12 +102,15 @@ service link to `/var/service/NetworkManager`, which is what the desktop network
 applets use. On an existing desktop install, repair the link with
 `sudo grintion-desktop network`.
 
-The first delegated operation on a freshly installed system downloads the
-missing pacman sync databases automatically; `garb update` remains the explicit
-way to refresh them. Package names are normalized to Arch's lowercase names,
-and a few familiar aliases are mapped (`kde-plasma` to `plasma-meta`,
-`network-manager` to `networkmanager`). A target pacman cannot find produces a
-hint pointing at `garb search` and `grintion-desktop install`.
+Fresh images already contain the snapshot sync databases. If a custom root is
+missing one, the first delegated operation downloads it automatically;
+`garb update` remains the explicit way to refresh them. Package names are
+normalized to Arch's lowercase names, and familiar aliases are mapped:
+`kde-plasma` to `plasma-meta`, `network-manager` to `networkmanager`,
+`alsamixer` to `alsa-utils`, and `nvim` to `neovim`. A target pacman cannot find
+produces a hint pointing at `garb search` and `grintion-desktop install`.
+Direct pacman needs the Arch package name, so use `pacman -S alsa-utils`; the
+`alsamixer` alias is a `garb` convenience.
 
 ```sh
 garb --backend auto install htop     # delegate if pacman/apk is installed
@@ -140,9 +152,10 @@ Rules and limits:
 - The image ships `/etc/pacman.conf`, the Arch public keyring, gpg helpers and a
   local package database seeded from the build host by
   `build/seed-pacman-db.py`. The seed records commands, their dependency
-  closure, backend packages, and library-only owners such as `libxss` so
-  unowned base libraries do not collide with a package install. `apk` is not
-  included.
+  closure, backend packages, every package path present in the image, and the
+  complete shared-library set of each partially present package. It also
+  removes unowned udev data, so a later install neither collides with a base
+  file nor skips a package that is missing a library. `apk` is not included.
 - pacman uses the dated Arch Linux Archive snapshot in
   `config/arch-snapshot` rather than the rolling mirrors. The image's
   `cryptsetup`, `curl`, `pacman` and `sudo` are linked against
@@ -151,10 +164,14 @@ Rules and limits:
   dependency 'libcrypto.so=3-64'`. The snapshot contains OpenSSL 3.6.5 and
   matches the seeded base. Before a transaction, `garb`, `grintion-desktop`,
   the installer, `grintion-apps`, `grintion-kernel` and `grintion-driver-select`
-  run `grintion-pacman-mirror`. It probes the official ALA endpoints and
-  rewrites the three dated `Server` lines to the faster one while preserving
-  the snapshot date and signatures. `ParallelDownloads = 10` keeps large
-  desktop transactions moving; the helper leaves the primary as a fallback.
+  run `grintion-pacman-mirror`. It probes complete ALA endpoints and rewrites
+  the three dated `Server` lines to the faster one while preserving the
+  snapshot date and signatures. The primary `archive.archlinux.org` is the only
+  built-in endpoint: `umea.archive.pkgbuild.com` serves `core.db` but returns
+  404 for package archives under `/repos`, so it is not selectable by default.
+  Operators can add complete mirrors through `GRINTION_ALA_MIRRORS`.
+  `ParallelDownloads = 10` keeps large desktop transactions moving; the helper
+  leaves the primary as a fallback.
 - `/etc/pacman.conf` sets `DisableDownloadTimeout` because the archive can move
   a large package below pacman's default low-speed cutoff. A slow but
   progressing KDE transaction therefore continues instead of aborting and

@@ -1,8 +1,38 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.17.0,
-0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.17.1,
+0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.17.1 package manager repair (2026-11-15)
+
+The 0.17.1 patch fixes the shared failure behind `garb` and direct pacman
+installs. On a fresh 0.17.0 rootfs, direct `pacman -S fastfetch` printed
+`database file for 'core' does not exist` and then `target not found`. `garb`
+auto-synchronized, but the mirror selector chose
+`umea.archive.pkgbuild.com`, which served `core.db` and returned 404 for package
+archives. Installing Firefox then exposed unowned library and desktop-data file
+conflicts.
+
+### Fix checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **250 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits and staged-rootfs checks passed |
+| Rootfs build | 0.17.1 assembled with `core.db`, `extra.db` and `multilib.db`; 440 shared-library files completed; 165 packages seeded; 249 unowned udev files removed |
+| Sync databases | `/var/lib/pacman/sync/{core,extra,multilib}.db` present from the pinned `2026/11/01` snapshot |
+| Direct pacman, no `-Sy` | `pacman -S --noconfirm firefox` installed 166 packages; GTK input-method hook succeeded; `firefox --version` returned `Mozilla Firefox 159.0` |
+| Direct pacman packages | `btop`, `neovim`, `pipewire` and `alsa-utils` installed without `-Sy`; no `exists in filesystem` errors |
+| Direct pacman on final rootfs | `pacman -S --noconfirm alsa-utils` installed 8 packages with no conflict; `pacman -Sp firefox` resolved to the primary archive |
+| `garb` alias and retry | `garb install alsamixer guvcview` mapped `alsamixer` to `alsa-utils`, retried one reported udev conflict with a path-limited overwrite, and installed both packages |
+| Mirror selector | Selected `https://archive.archlinux.org` and rewrote all three `Server` lines without the incomplete `umea` endpoint |
+| Seed ownership | `readline`, `libgcrypt`, `libgpg-error`, `lz4`, `zstd`, `systemd-libs` and `libxcb` recorded as owners; `libxcb-render.so.0` present |
+| Udev prune | `/usr/lib/udev/rules.d/90-alsa-restore.rules` removed; `/usr/lib/udev/rules.d/50-udev-default.rules` and `hwdb.bin` retained |
+| BIOS/UEFI live boot | Not rerun for 0.17.1 |
+| Installer / installed reboot | Not rerun for 0.17.1 |
+| Bare-metal hardware | Not tested |
+
+---
 
 ## 0.17.0 audit daemon and AppArmor user-space completion (2026-11-15)
 

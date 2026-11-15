@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.17.0 installs from the live ISO to a target disk or existing
+Grintion-OS 0.17.1 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.17.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.17.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.17.1 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.17.1 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -280,11 +280,14 @@ sudo garb install firefox networkmanager plasma-meta
 sudo garb update
 ```
 
-The first `garb install` synchronizes missing package databases automatically
-(`pacman -Sy`), so a fresh console install needs no separate setup step.
-`garb update` remains available to refresh them later. `garb` also accepts the
-names people commonly use from other distributions: `NetworkManager` becomes
-`networkmanager`, and `kde-plasma` becomes `plasma-meta`.
+Fresh images ship the pinned Arch sync databases, so both `sudo pacman -S
+firefox` and `sudo garb install firefox` resolve packages without a separate
+`pacman -Sy`. If the databases are missing from a custom root, `garb` repairs
+them automatically before delegating. `garb` also accepts the names people
+commonly use from other distributions: `NetworkManager` becomes `networkmanager`,
+`kde-plasma` becomes `plasma-meta`, `alsamixer` becomes `alsa-utils`, and `nvim`
+becomes `neovim`. Direct pacman still needs the Arch package name, so use
+`sudo pacman -S alsa-utils` there.
 
 The databases come from the dated Arch Linux Archive snapshot in
 `config/arch-snapshot`. Keeping that date matched to the image matters: the
