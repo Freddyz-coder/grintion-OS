@@ -25,11 +25,13 @@ EXPECTED_SYSCTLS = {
     "kernel.unprivileged_bpf_disabled": "1",
     "kernel.kexec_load_disabled": "1",
     "vm.mmap_min_addr": "65536",
+    "vm.unprivileged_userfaultfd": "0",
     "fs.protected_symlinks": "1",
     "fs.protected_hardlinks": "1",
     "fs.protected_fifos": "2",
     "fs.protected_regular": "2",
     "fs.suid_dumpable": "0",
+    "net.core.bpf_jit_harden": "2",
 }
 
 
@@ -166,6 +168,42 @@ def x11_state() -> dict:
     }
 
 
+def kernel_cmdline() -> str:
+    return read_text("/proc/cmdline").strip()
+
+
+def lockdown_state() -> str:
+    text = read_text("/sys/kernel/security/lockdown").strip()
+    for level in ("confidentiality", "integrity", "none"):
+        if f"[{level}]" in text:
+            return level
+    return "unknown"
+
+
+def mount_options(path: str) -> str:
+    for line in read_text("/proc/self/mountinfo").splitlines():
+        left = line.split(" - ", 1)[0]
+        fields = left.split()
+        if len(fields) >= 6 and fields[4] == path:
+            return fields[5]
+    return ""
+
+
+def ssh_host_keys() -> dict:
+    keys = sorted(Path("/etc/ssh").glob("ssh_host_*_key"))
+    modes: dict[str, str] = {}
+    unsafe: list[str] = []
+    for key in keys:
+        try:
+            mode = key.stat().st_mode & 0o777
+            modes[str(key)] = f"{mode:04o}"
+            if mode & 0o077:
+                unsafe.append(str(key))
+        except OSError:
+            unsafe.append(str(key))
+    return {"keys": [str(key) for key in keys], "modes": modes, "unsafe": unsafe}
+
+
 def collect() -> dict:
     checks: list[dict] = []
     version = read_text("/etc/grintion/version").strip()
@@ -174,6 +212,72 @@ def collect() -> dict:
     else:
         add(checks, "image", "warn", "/etc/grintion/version is missing",
             "This may not be a Grintion-OS image; the report still inspects the host.")
+
+    cmdline = kernel_cmdline()
+    required_cmdline = ["security=apparmor", "apparmor=1", "module.sig_enforce=1", "rd.shell=0"]
+    missing_cmdline = [token for token in required_cmdline if token not in cmdline]
+    if not any(token in cmdline for token in ("lockdown=confidentiality", "lockdown=integrity")):
+        missing_cmdline.append("lockdown=confidentiality|integrity")
+    if not cmdline:
+        add(checks, "boot-command-line", "warn", "kernel command line is unavailable")
+    elif missing_cmdline:
+        add(checks, "boot-command-line", "warn",
+            "boot command line is missing hardening parameters",
+            ", ".join(missing_cmdline))
+    else:
+        add(checks, "boot-command-line", "ok", "kernel command line carries LSM, module-signing and fail-closed parameters")
+
+    lockdown = lockdown_state()
+    if lockdown in ("integrity", "confidentiality"):
+        add(checks, "lockdown", "ok", f"kernel lockdown is {lockdown}")
+    elif lockdown == "none":
+        add(checks, "lockdown", "warn", "kernel lockdown is disabled",
+            "Boot with lockdown=confidentiality and enable CONFIG_SECURITY_LOCKDOWN_LSM.")
+    else:
+        add(checks, "lockdown", "warn", "kernel lockdown state is unknown",
+            "Check /sys/kernel/security/lockdown and the kernel configuration.")
+
+    mount_failures: list[str] = []
+    for mount, required in (
+        ("/tmp", ("nosuid", "nodev", "noexec")),
+        ("/var/tmp", ("nosuid", "nodev", "noexec")),
+        ("/dev/shm", ("nosuid", "nodev", "noexec")),
+    ):
+        options = mount_options(mount)
+        missing = [flag for flag in required if flag not in options.split(",")]
+        if not options or missing:
+            mount_failures.append(f"{mount}: {options or 'not mounted'}" + (f" (missing {','.join(missing)})" if missing else ""))
+    if mount_failures:
+        add(checks, "mount-hardening", "warn", "temporary filesystems are not fully hardened",
+            "; ".join(mount_failures))
+    else:
+        add(checks, "mount-hardening", "ok", "/tmp, /var/tmp and /dev/shm are nosuid,nodev,noexec")
+
+    host_keys = ssh_host_keys()
+    sshd_installed = shutil.which("sshd") is not None
+    if host_keys["unsafe"]:
+        add(checks, "ssh-host-keys", "fail", "SSH host private keys are readable by group/other",
+            ", ".join(host_keys["unsafe"]))
+    elif host_keys["keys"]:
+        add(checks, "ssh-host-keys", "ok",
+            f"{len(host_keys['keys'])} SSH host key(s) present with private modes")
+    elif sshd_installed:
+        add(checks, "ssh-host-keys", "fail", "sshd is installed but no SSH host keys exist",
+            "Run 'ssh-keygen -A' as root.")
+    else:
+        add(checks, "ssh-host-keys", "info", "sshd is not installed; host keys are not required")
+
+    audit_rules = read_text("/etc/audit/rules.d/grintion.rules")
+    required_audit = ("-k identity", "-k privilege", "-k modules", "-k mount",
+                      "-k ptrace", "-k audit-config", "-k package-db")
+    missing_audit = [token for token in required_audit if token not in audit_rules]
+    if not audit_rules:
+        add(checks, "audit-rules", "warn", "audit rules are missing")
+    elif missing_audit:
+        add(checks, "audit-rules", "warn", "audit rules do not cover privileged surfaces",
+            ", ".join(missing_audit))
+    else:
+        add(checks, "audit-rules", "ok", "audit rules cover identity, privilege, modules, mounts and policy")
 
     secure_boot = secure_boot_state()
     if secure_boot == "enabled":
@@ -203,7 +307,7 @@ def collect() -> dict:
             ", ".join(encrypted))
     else:
         add(checks, "disk-encryption", "warn", "no LUKS/crypto block device detected",
-            "Installed roots are not encrypted in 0.9.x.")
+            "Use 'grintion-install --encrypt' for an encrypted root; the live session is RAM-only.")
 
     nft = shutil.which("nft")
     if nft is None:

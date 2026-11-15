@@ -19,6 +19,18 @@
 -w /etc/ssh/sshd_config -p wa -k sshd
 -w /etc/apparmor.d -p wa -k mac-policy
 -w /etc/grintion -p wa -k grintion-config
+-w /etc/audit -p wa -k audit-config
+-w /etc/audit/rules.d -p wa -k audit-config
+-w /etc/pam.d -p wa -k pam-config
+-w /etc/security -p wa -k security-config
+-w /etc/sysctl.d -p wa -k sysctl-config
+-w /etc/nftables.conf -p wa -k firewall-config
+-w /etc/usbguard -p wa -k usbguard-config
+-w /etc/ssh -p wa -k sshd
+-w /etc/pacman.d/gnupg -p wa -k package-trust
+-w /var/lib/garb -p wa -k package-db
+-w /var/lib/pacman/local -p wa -k package-db
+-w /boot -p wa -k boot
 -w /boot/efi/limine.conf -p wa -k boot-config
 
 -a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
@@ -27,3 +39,13 @@
 -a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
 -a always,exit -F arch=b64 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege
 -a always,exit -F arch=b32 -S setuid,setgid,setreuid,setregid -F auid>=1000 -F auid!=4294967295 -k privilege
+-a always,exit -F arch=b64 -S mount,umount2 -k mount
+-a always,exit -F arch=b32 -S mount,umount2 -k mount
+-a always,exit -F arch=b64 -S ptrace -k ptrace
+-a always,exit -F arch=b32 -S ptrace -k ptrace
+-a always,exit -F arch=b64 -S bpf -k bpf
+-a always,exit -F arch=b32 -S bpf -k bpf
+-a always,exit -F arch=b64 -S open_by_handle_at,name_to_handle_at -k file-handle
+-a always,exit -F arch=b32 -S open_by_handle_at,name_to_handle_at -k file-handle
+-a always,exit -F arch=b64 -S setns,unshare -k namespace
+-a always,exit -F arch=b32 -S setns,unshare -k namespace

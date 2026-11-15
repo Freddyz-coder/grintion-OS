@@ -34,7 +34,8 @@ verification checks the daemon and `auditctl -s` state.
 ## 2. Mandatory Access Control (AppArmor)
 
 AppArmor is compiled into the kernel (`CONFIG_SECURITY_APPARMOR=y`), the boot
-command line selects it (`security=apparmor apparmor=1`), `/etc/runit/1` mounts
+command line selects it (`security=apparmor apparmor=1`) and also requests
+kernel lockdown (`lockdown=confidentiality`). `/etc/runit/1` mounts
 securityfs, and the `apparmor` runit service loads every profile at boot. A
 profile file that is not loaded confines nothing, so do not treat the files in
 `/etc/apparmor.d/` as enforcement evidence by themselves.
@@ -83,8 +84,9 @@ same package, and `cmp` is required for `zcmp`.
 
 ## 4. Audit Logging & Privileged Tracing
 
-- `/etc/audit/audit.rules` and `/etc/sv/auditd/run` monitor `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, privilege escalation and MAC policy changes. The image ships `auditd`, `auditctl`, `ausearch` and `aureport`, and the service starts at boot. Records land in `/var/log/audit/audit.log`; `/var/log/audit` is mode 0750 and the service runs with umask 0077 so its diagnostics are root-only.
+- `/etc/audit/rules.d/grintion.rules` and `/etc/sv/auditd/run` monitor identity files, PAM and security policy, sudoers, SSH and AppArmor configuration, kernel modules, mounts, ptrace, BPF, namespaces, file-handle syscalls, firewall and USBGuard policy, package trust and the package database. The image ships `auditd`, `auditctl`, `ausearch` and `aureport`, and the service starts at boot. Records land in `/var/log/audit/audit.log`; `/var/log/audit` is mode 0750 and the service runs with umask 0077 so its diagnostics are root-only.
 - Rules naming binaries or paths absent from the minimal image are filtered during the rootfs build; `auditd` fails closed on a malformed rule, so the build validates the resulting file before enabling the service.
+- The service is not considered healthy merely because the daemon process exists. It runs `auditctl -s` and requires the kernel audit subsystem to report `enabled 1` or `enabled 2`; otherwise it logs the status and enters a failed supervision state.
 - Sudo I/O logging is configured separately via `/etc/sudoers.d/audit-log` and does not depend on auditd.
 - Inspect available logs with `grintion-audit-log` or `grintion-audit-log --sudo` when the relevant daemon or sudo I/O files exist.
 
@@ -143,7 +145,31 @@ same package, and `cmp` is required for `zcmp`.
   compromised X11 client from the rest of the session. Use the Wayland
   profiles or `grintion-sandbox` when client isolation is required.
 
-## 12. Boot Health and Auto-Revert (`grintion-boot-health`)
+## 12. Fail-Closed Boot and Kernel Lockdown
+
+- `init/recovery.sh` is shared by the live and installed initramfs. A failure
+  halts by default. A recovery shell is opened only when the kernel command
+  line contains the exact token `grintion.recovery=1`; the flag is parsed with
+  whitespace anchors so a substring in another parameter cannot enable it.
+- The normal live entry, installed entry and UKI command lines carry
+  `rd.shell=0`. The installed recovery entry carries
+  `grintion.recovery=1`; `init/install-init` checks that opt-in before the
+  `rd.shell=0` halt branch, so an explicit recovery selection still reaches the
+  shell while ordinary LUKS exhaustion powers off.
+- A missing `/recovery.sh` from either initramfs halts instead of executing
+  `/bin/sh`. If `runsvdir` is missing, stage 2 opens a shell only in explicit
+  recovery mode and otherwise halts.
+- The kernel enables `CONFIG_SECURITY_LOCKDOWN_LSM=y` and
+  `CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`. Every shipped boot entry requests
+  `lockdown=confidentiality`; the forced integrity floor prevents a later or
+  hand-edited entry from silently disabling lockdown.
+- `grintion-security-report` checks the effective `/proc/cmdline` for the LSM,
+  module-signing and fail-closed parameters, reads the active lockdown level
+  from `/sys/kernel/security/lockdown`, verifies `nosuid,nodev,noexec` on the
+  temporary filesystems, checks audit rule coverage and validates SSH host-key
+  permissions.
+
+## 13. Boot Health and Auto-Revert (`grintion-boot-health`)
 
 - The `boot-health` service records one attempt at boot and marks the boot good
   after a session is confirmed or a stable window passes.

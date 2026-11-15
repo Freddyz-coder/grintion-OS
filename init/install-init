@@ -11,7 +11,7 @@ set -eu
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-[ -r /recovery.sh ] || { echo "[-] /recovery.sh is missing from the initramfs" >&2; exec /bin/sh -i; }
+[ -r /recovery.sh ] || { echo "[-] /recovery.sh is missing from the initramfs; halting" >&2; sleep 3; poweroff -f 2>/dev/null || reboot -f 2>/dev/null || exec /bin/sh; }
 . /recovery.sh
 trap 'rescue "fatal error during early boot (line $LINENO)"' EXIT
 
@@ -27,7 +27,7 @@ if ! mountpoint -q /dev; then
 fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
-mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec
 mountpoint -q /run || mount -t tmpfs -o mode=0755 tmpfs /run
 
 ROOTARG=""
@@ -92,7 +92,11 @@ if [ -n "$CRYPTARG" ]; then
         tries=$((tries - 1))
     done
     [ -n "$ROOTDEV" ] || {
-        if grep -q -E '\brd\.shell=0\b|\bpanic\b' /proc/cmdline 2>/dev/null; then
+        # The explicit recovery entry also carries rd.shell=0 so ordinary
+        # failures stay closed. Check the opt-in first: rescue() opens a shell
+        # only for grintion.recovery=1 and fails closed for every other entry.
+        if ! grep -q -E '(^| )grintion\.recovery=1( |$)' /proc/cmdline 2>/dev/null \
+            && grep -q -E '\brd\.shell=0\b|\bpanic\b' /proc/cmdline 2>/dev/null; then
             msg "LUKS device could not be unlocked after maximum attempts; halting"
             sleep 3
             poweroff -f 2>/dev/null || reboot -f 2>/dev/null || exit 1

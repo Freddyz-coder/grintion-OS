@@ -3,12 +3,13 @@
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 current source tree provides; the most recent image built from this tree is
-0.17.1. It also records the limits of that protection and how to report a problem.
+0.18.0. It also records the limits of that protection and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
+| 0.18.x | Security fixes on a best-effort basis |
 | 0.17.x | Security fixes on a best-effort basis |
 | 0.16.x | Security fixes on a best-effort basis |
 | 0.15.x | Security fixes on a best-effort basis |
@@ -53,6 +54,18 @@ bounty and no formal disclosure deadline.
   if a required symbol is dropped.
 - Every loadable module is signed by the build; `CONFIG_MODULE_SIG_FORCE=y`
   rejects unsigned modules. Third-party out-of-tree modules will not load.
+  Every shipped command line also carries `module.sig_enforce=1`.
+- Kernel lockdown is compiled in (`CONFIG_SECURITY_LOCKDOWN_LSM=y`) with a
+  forced integrity floor (`CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`). Live,
+  installed, recovery and UKI command lines request
+  `lockdown=confidentiality`; an entry that omits the parameter still cannot
+  fall below integrity mode.
+- Early boot fails closed. The initramfs recovery shell exists only when the
+  command line carries `grintion.recovery=1`; a missing recovery helper, a
+  missing `runsvdir`, or three failed LUKS passphrases powers off instead of
+  handing an unauthenticated shell to the console. Only the installed recovery
+  entry sets the opt-in flag, and that entry is distinct from the normal boot
+  entry.
 - The live ISO boots an unsigned kernel and initramfs through Limine for broad
   hardware compatibility. On installed systems, Unified Kernel Images (UKI)
   and Secure Boot with user-enrolled Machine Owner Keys (MOK) are supported via
@@ -74,6 +87,8 @@ include:
 | `kernel.unprivileged_bpf_disabled` | 1 |
 | `kernel.kexec_load_disabled` | 1 |
 | `vm.mmap_min_addr` | 65536 |
+| `vm.unprivileged_userfaultfd` | 0 |
+| `net.core.bpf_jit_harden` | 2 |
 | io_uring | Disabled at runtime (`kernel.io_uring_disabled=2`) |
 | binfmt_misc | Compiled out (`CONFIG_BINFMT_MISC=n`) |
 | `fs.protected_symlinks`, `fs.protected_hardlinks` | 1 |
@@ -112,9 +127,19 @@ profile update does not leave the system with no ruleset.
 `auditctl`, `ausearch`, `aureport`), focused rules and the `auditd` runit
 service. `auditd` creates `/var/log/audit/audit.log` when the service starts;
 `/var/log/audit` is mode 0750 and service diagnostics are written root-only to
-`/var/log/audit/auditd.log`. If the userspace is removed from a custom image,
-the service refuses to fake success and the security profile reports auditd as
-unavailable rather than claiming a running trail.
+`/var/log/audit/auditd.log`. The service also queries `auditctl -s` and refuses
+to report healthy unless the kernel audit subsystem is enabled. If the userspace
+is removed from a custom image, the service refuses to fake success and the
+security profile reports auditd as unavailable rather than claiming a running
+trail. Rules cover identity and PAM changes, privilege transitions, kernel
+modules, mounts, ptrace, BPF, namespaces, file-handle syscalls, firewall and
+USBGuard policy, package trust and the package database.
+
+SSH host keys are machine identity. The image build removes any inherited
+`ssh_host_*` files, and the installer runs `ssh-keygen -A` in the target and
+enforces mode `0600` on the private keys. `grintion-security-report` fails if
+`sshd` is present without host keys or if a private key is readable by group or
+other.
 
 ### Accounts and access
 

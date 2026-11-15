@@ -1027,6 +1027,17 @@ rm -f "$TARGET/etc/grintion/live"
 tr -d '-' < /proc/sys/kernel/random/uuid > "$TARGET/etc/machine-id"
 chmod 0444 "$TARGET/etc/machine-id"
 
+# SSH host keys are machine identity, not image identity. Never inherit a
+# baked key; generate a fresh set inside the target when ssh-keygen exists.
+rm -f "$TARGET"/etc/ssh/ssh_host_* 2>/dev/null || true
+if [ -x "$TARGET/usr/bin/ssh-keygen" ]; then
+    if chroot "$TARGET" /usr/bin/ssh-keygen -A >/dev/null 2>&1; then
+        chmod 0600 "$TARGET"/etc/ssh/ssh_host_*_key 2>/dev/null || true
+    else
+        warn "SSH host keys were not generated; sshd will refuse to start"
+    fi
+fi
+
 mkdir -p "$TARGET/etc/grintion"
 printf '%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security-profile"
 printf 'PROFILE=%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security.conf"
@@ -1301,7 +1312,7 @@ if [ "$NO_BOOTLOADER" -eq 0 ]; then
     install -D -m 0644 /usr/share/limine/BOOTX64.EFI \
         "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
 
-    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 security=apparmor apparmor=1"
+    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 security=apparmor apparmor=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10"
     if [ "$FILESYSTEM" = "btrfs" ]; then
         ROOT_CMDLINE="$ROOT_CMDLINE rootflags=subvol=@"
     fi

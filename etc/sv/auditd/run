@@ -43,11 +43,36 @@ if [ -f /etc/audit/audit.rules ]; then
         printf '%s\n' "$line" >> "$filtered"
     done < /etc/audit/audit.rules
     if ! auditctl -R "$filtered"; then
-        # Keep the daemon running even if one rule is rejected: stopping it
-        # sends every audit record back to the kernel console instead of the
-        # audit log, which is both noisy and worse for accountability.
-        echo "auditd: failed to load $filtered; continuing without those rules"
+        # A single incompatible rule must not hide every rule after it. Keep
+        # the daemon running, but reload the file one rule at a time so the
+        # compatible watches are still active and the rejected line is named.
+        echo "auditd: bulk rule load failed; retrying rules individually"
+        auditctl -D >/dev/null 2>&1 || true
+        while IFS= read -r line; do
+            case "$line" in
+                ''|'#'*) continue ;;
+                -D) auditctl -D >/dev/null 2>&1 || true; continue ;;
+            esac
+            # Rules are simple argument lists split by the shell, not shell code.
+            # shellcheck disable=SC2086
+            if ! auditctl $line; then
+                echo "auditd: kernel rejected audit rule: $line"
+            fi
+        done < "$filtered"
     fi
+fi
+
+# Loading rules is not enough: verify the kernel audit subsystem is actually
+# enabled. A daemon running against a disabled audit subsystem would look
+# healthy while retaining nothing.
+if ! auditctl -s > /run/audit/status 2>&1; then
+    echo "auditd: cannot query kernel audit state; refusing to report healthy"
+    exec sleep 60
+fi
+if ! grep -qE '^enabled[[:space:]]+[12]$' /run/audit/status; then
+    echo "auditd: kernel audit is not enabled; refusing to report healthy"
+    cat /run/audit/status >&2 || true
+    exec sleep 60
 fi
 
 echo "auditd: starting"

@@ -595,6 +595,12 @@ done
 
 # ---------------------------------------------------------------- modes
 log "applying ownership-sensitive modes"
+# The rootfs is copied from the build host. Drop every inherited set-ID bit
+# before applying the explicit allowlist below, so a host package or an
+# unrelated staging step cannot introduce a privileged binary silently.
+find "$ROOTFS" -xdev -type f -perm /6000 -exec chmod u-s,g-s {} +
+# Host keys are never valid image identity. They are generated per install.
+rm -f "$ROOTFS"/etc/ssh/ssh_host_* 2>/dev/null || true
 chmod 0600 "$ROOTFS/etc/shadow"
 chmod 0600 "$ROOTFS/etc/gshadow" 2>/dev/null || true
 chmod 0440 "$ROOTFS/etc/sudoers"

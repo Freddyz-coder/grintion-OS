@@ -308,3 +308,40 @@ def test_kernel_manager_and_module_signing(tmp_path: Path) -> None:
     r4 = subprocess.run([str(MODULE_SIGN), "verify", str(mod)], capture_output=True, text=True, check=False)
     assert r4.returncode == 0
 
+
+def test_boot_failures_are_closed_and_recovery_requires_opt_in() -> None:
+    recovery = (REPO_ROOT / "init" / "recovery.sh").read_text()
+    assert "grintion.recovery=1" in recovery
+    assert "recovery shell is disabled; halting the system" in recovery
+    assert "poweroff -f" in recovery
+
+    for rel in ("init/live-init", "init/install-init"):
+        text = (REPO_ROOT / rel).read_text()
+        assert "exec /bin/sh -i" not in text, rel
+        assert "halting" in text, rel
+
+    stage2 = (REPO_ROOT / "etc" / "runit" / "2").read_text()
+    assert r"grintion\.recovery=1" in stage2
+    assert "recovery shell is disabled; halting the system" in stage2
+    assert "exec /bin/bash --login" in stage2  # only the explicit recovery path
+
+    installed_init = (REPO_ROOT / "init" / "install-init").read_text()
+    assert r"grintion\.recovery=1" in installed_init
+    recovery_check = installed_init.index(r"grintion\.recovery=1")
+    shell_lockout = installed_init.index(r"rd\.shell=0")
+    assert recovery_check < shell_lockout, "recovery opt-in must be checked before rd.shell=0"
+
+
+def test_lockdown_and_module_signing_are_in_every_boot_path() -> None:
+    for rel in ("build/build-iso.sh", "bin/install", "bin/limine-deploy", "bin/uki"):
+        text = (REPO_ROOT / rel).read_text()
+        for token in ("security=apparmor", "apparmor=1", "module.sig_enforce=1",
+                      "lockdown=confidentiality", "rd.shell=0"):
+            assert token in text, (rel, token)
+
+    installer = (REPO_ROOT / "bin" / "install").read_text()
+    assert "grintion.recovery=1" in installer
+    fragment = (REPO_ROOT / "config" / "kernel-hardened.config").read_text()
+    assert "CONFIG_SECURITY_LOCKDOWN_LSM=y" in fragment
+    assert "CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y" in fragment
+

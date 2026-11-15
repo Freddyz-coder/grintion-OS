@@ -121,7 +121,17 @@ def test_security_report_json_contract() -> None:
     assert payload["schema"] == 1
     assert set(payload["summary"]) == {"ok", "warn", "fail", "info"}
     identifiers = {check["id"] for check in payload["checks"]}
-    assert {"secure-boot", "firewall", "listeners", "sysctls"} <= identifiers
+    assert {
+        "secure-boot",
+        "firewall",
+        "listeners",
+        "sysctls",
+        "boot-command-line",
+        "lockdown",
+        "mount-hardening",
+        "ssh-host-keys",
+        "audit-rules",
+    } <= identifiers
     assert all(check["status"] in {"ok", "warn", "fail", "info"}
                for check in payload["checks"])
 

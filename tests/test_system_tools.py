@@ -745,6 +745,8 @@ def test_kernel_contract_covers_framebuffer_and_module_signing() -> None:
         "CONFIG_MODULE_SIG_ALL=y",
         "CONFIG_MODULE_SIG_FORCE=y",
         "CONFIG_BINFMT_MISC=n",
+        "CONFIG_SECURITY_LOCKDOWN_LSM=y",
+        "CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y",
         "CONFIG_SND_HDA_INTEL=y",
         "CONFIG_SND_HDA_CODEC_REALTEK=y",
         "CONFIG_SND_USB_AUDIO=y",
@@ -1045,7 +1047,7 @@ def test_auditd_writes_to_a_log_and_survives_a_bad_rule_file() -> None:
     # auditd's records and diagnostics used to land on the login prompt.
     service = (REPO_ROOT / "etc" / "sv" / "auditd" / "run").read_text()
     assert "exec >>/var/log/audit/auditd.log 2>&1" in service
-    assert "continuing without those rules" in service
+    assert "retrying rules individually" in service
     assert "exit 1" not in service
     assert "umask 0077" in service
 
@@ -1086,4 +1088,47 @@ def test_rootfs_explains_pacstrap_and_points_at_supported_commands() -> None:
     assert "sudo garb install <package>" in motd
     assert "first install syncs automatically" in motd
     assert "sudo grintion-desktop list" in motd
+
+
+def test_audit_rules_cover_privileged_surfaces_and_service_checks_enabled() -> None:
+    rules = (REPO_ROOT / "etc" / "audit" / "rules.d" / "grintion.rules").read_text()
+    for token in (
+        "-k identity",
+        "-k privilege",
+        "-k modules",
+        "-k mount",
+        "-k ptrace",
+        "-k audit-config",
+        "-k package-db",
+        "-w /etc/pam.d",
+        "-w /etc/security",
+        "-w /etc/nftables.conf",
+        "-w /var/lib/pacman/local",
+        "-S open_by_handle_at,name_to_handle_at",
+        "-S setns,unshare",
+    ):
+        assert token in rules, token
+
+    service = (REPO_ROOT / "etc" / "sv" / "auditd" / "run").read_text()
+    assert "auditctl -s" in service
+    assert "kernel audit is not enabled" in service
+    assert "retrying rules individually" in service
+    assert "kernel rejected audit rule" in service
+    assert "auditctl -D" in service
+
+    installed_init = (REPO_ROOT / "init" / "install-init").read_text()
+    shm_mount = next(line for line in installed_init.splitlines() if "/dev/shm" in line and "mount" in line)
+    for flag in ("nosuid", "nodev", "noexec"):
+        assert flag in shm_mount, flag
+
+
+def test_rootfs_strips_inherited_setid_and_ssh_host_keys() -> None:
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert 'find "$ROOTFS" -xdev -type f -perm /6000 -exec chmod u-s,g-s {} +' in rootfs
+    assert 'rm -f "$ROOTFS"/etc/ssh/ssh_host_*' in rootfs
+
+    installer = (REPO_ROOT / "bin" / "install").read_text()
+    assert 'rm -f "$TARGET"/etc/ssh/ssh_host_*' in installer
+    assert 'chroot "$TARGET" /usr/bin/ssh-keygen -A' in installer
+    assert 'chmod 0600 "$TARGET"/etc/ssh/ssh_host_*_key' in installer
 

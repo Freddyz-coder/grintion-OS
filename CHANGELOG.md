@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.0] - 2026-11-15
+
+### Security
+
+- **Early boot now fails closed.** The shared initramfs rescue path halts by
+default and opens a shell only when the kernel command line contains the exact
+token `grintion.recovery=1`. A missing `recovery.sh`, a missing `runsvdir`, or
+exhausted LUKS attempts power off instead of leaving an unauthenticated root
+shell on the console. The installed recovery entry carries the opt-in flag and
+is checked before its `rd.shell=0` halt branch.
+- **Kernel lockdown is part of every boot path.** The kernel enables
+`CONFIG_SECURITY_LOCKDOWN_LSM=y` with a forced integrity floor,
+`CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`. Live, installed, recovery and UKI
+command lines request `lockdown=confidentiality`, AppArmor and signed-module
+enforcement.
+- **Audit coverage now includes the privileged surface.** Rules watch PAM,
+security policy, sysctl, firewall, USBGuard, SSH, package trust and the package
+database, and record mount, ptrace, BPF, namespace and file-handle syscalls.
+The audit service queries `auditctl -s` and refuses to report healthy unless
+the kernel audit subsystem is enabled.
+- **Set-ID and SSH identity are no longer inherited.** The rootfs strips every
+inherited setuid/setgid bit before applying the explicit allowlist, removes
+baked SSH host keys, and the installer generates fresh host keys with
+`ssh-keygen -A` and mode `0600` private keys.
+- **Runtime hardening adds `vm.unprivileged_userfaultfd=0` and
+`net.core.bpf_jit_harden=2`.**
+
+### Changed
+
+- `grintion-security-report` now checks the effective boot command line, kernel
+lockdown level, temporary-filesystem mount flags, audit rule coverage and SSH
+host-key permissions in addition to the existing posture checks.
+- Version metadata and current-facing documentation moved to 0.18.0.
+
+### Tests
+
+- `make check`: **254 passed**, 0 failures; shellcheck, Python compilation,
+  documentation links, executable bits and staged-rootfs checks passed.
+- Focused boot, system-tool and release-tool suites: **78 passed**.
+- New regression coverage checks fail-closed recovery, the recovery/LUKS
+  ordering, lockdown command lines, kernel lockdown symbols, expanded audit
+  rules, set-ID stripping, SSH host-key provisioning and the new report IDs.
+
+---
+
 ## [0.17.1] - 2026-11-15
 
 ### Fixed

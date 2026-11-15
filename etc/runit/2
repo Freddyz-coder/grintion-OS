@@ -11,5 +11,12 @@ if [ -x /usr/sbin/runsvdir ]; then
     exec env - PATH="$PATH" /usr/sbin/runsvdir -P /var/service
 fi
 
-echo "[-] runsvdir is missing; starting a rescue shell" >&2
-exec /bin/bash --login
+if grep -q -E '(^| )grintion\.recovery=1( |$)' /proc/cmdline 2>/dev/null; then
+    echo "[-] runsvdir is missing; explicit recovery mode requested" >&2
+    exec /bin/bash --login
+fi
+
+echo "[-] runsvdir is missing; service supervision cannot start" >&2
+echo "[-] recovery shell is disabled; halting the system" >&2
+sleep 3
+poweroff -f 2>/dev/null || reboot -f 2>/dev/null || exit 1

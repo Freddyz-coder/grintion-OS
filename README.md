@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.17.1 — *package manager repaired · pinned databases · conflict-free installs*
+- **Version:** 0.18.0 — *fail-closed boot · kernel lockdown · per-install SSH identity*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,13 +17,17 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.17.1 is a package-manager repair release. Fresh images ship the pinned Arch
-sync databases, so both `garb` and direct `pacman -S` resolve packages
-immediately. The broken secondary archive endpoint was removed, seeded library
-ownership now covers every shared library in the base image, and Firefox plus
-desktop installs no longer fail on file conflicts or missing `.so` files. `garb`
-also maps `alsamixer` to `alsa-utils` and `nvim` to `neovim`. The 0.17.0 audit,
-AppArmor and gzip work remains in this image. See [CHANGELOG.md](CHANGELOG.md).
+0.18.0 is a security-hardening release. Boot failures now halt instead of
+dropping to an unauthenticated root shell; recovery requires an explicit
+`grintion.recovery=1` entry. Every shipped boot path selects AppArmor, enforces
+signed modules and requests kernel lockdown in confidentiality mode, with an
+integrity floor compiled into the kernel. Audit coverage now includes PAM,
+firewall, package-trust, mount, namespace, BPF and file-handle activity, and the
+service verifies that kernel audit is actually enabled. Image builds strip
+inherited set-ID bits before applying the allowlist and remove baked SSH host
+keys; the installer generates a fresh identity per machine. The 0.17.1 package
+manager repairs and database pinning remain in this image. See
+[CHANGELOG.md](CHANGELOG.md).
 
 0.16.0 delivered three major improvements over 0.15.0:
 
@@ -41,7 +45,7 @@ AppArmor and gzip work remains in this image. See [CHANGELOG.md](CHANGELOG.md).
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.17.1 is built from this tree. Release ISO images are published on
+Grintion-OS 0.18.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -248,7 +252,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.17.1 |
+| Feature | 0.18.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -299,7 +303,7 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.17.1 has not undergone an independent third-party
+and atomic rollback, but 0.18.0 has not undergone an independent third-party
 security audit.
 
 Report vulnerabilities privately as described in `SECURITY.md`.

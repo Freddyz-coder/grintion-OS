@@ -36,12 +36,19 @@ Two menu entries share the same kernel and initramfs:
 
 | Entry | Command line | Purpose |
 | --- | --- | --- |
-| live | `rdinit=/init quiet ...` | normal live boot |
-| recovery shell | `rdinit=/bin/sh quiet` | shell before any overlay or service starts |
+| live | `rdinit=/init ... lockdown=confidentiality rd.shell=0 ...` | normal live boot |
+| recovery shell | `rdinit=/bin/sh ... lockdown=confidentiality` | explicit shell before any overlay or service starts |
 
 Both add `console=ttyS0,115200 console=tty0` so the display screen (`tty0`)
 is the primary console with active keyboard input, while logs are also mirrored
-to serial (`ttyS0`) for headless virtualization.
+to serial (`ttyS0`) for headless virtualization. The live entry enforces
+AppArmor, signed modules and fail-closed recovery; the recovery entry is
+selected deliberately and does not run the overlay or service startup.
+
+Installed Limine entries and UKIs use the same hardening parameters. The normal
+installed entry carries `rd.shell=0`; only the separate recovery entry carries
+`grintion.recovery=1`. Early boot halts on failure unless that exact opt-in is
+present.
 
 ---
 
@@ -300,8 +307,8 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 
 | Boundary | Implementation |
 | --- | --- |
-| Boot chain | Live ISO boots via Limine. Installed systems support Unified Kernel Images (UKI) and Secure Boot with locally enrolled MOK keys (`grintion-secureboot`), plus TPM 2.0 PCR attestation (`grintion-attest`). |
-| Kernel | BPF syscall, kexec, hibernation, binfmt_misc and `/dev/mem` are disabled at build time; io_uring is disabled at runtime by sysctl; only build-signed modules load. |
+| Boot chain | Live ISO boots via Limine. Installed systems support Unified Kernel Images (UKI) and Secure Boot with locally enrolled MOK keys (`grintion-secureboot`), plus TPM 2.0 PCR attestation (`grintion-attest`). All shipped command lines request confidentiality lockdown and fail-closed recovery. |
+| Kernel | BPF syscall, kexec, hibernation, binfmt_misc and `/dev/mem` are disabled at build time; io_uring is disabled at runtime by sysctl; only build-signed modules load; lockdown has a forced integrity floor and the shipped entries request confidentiality. |
 | Runtime | sysctls in `/etc/sysctl.d/99-grintion.conf`, Yama ptrace scope 2, `dmesg_restrict`, `kptr_restrict=2`, protected links/FIFOs, `suid_dumpable=0`, core dumps to `/dev/null`. AppArmor profiles enforce daemon isolation; Bubblewrap sandboxing (`grintion-sandbox`) isolates applications. |
 | Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set; auditd trails and sudo I/O logging active (`grintion-audit-log`). |
 | Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default; `grintion-network` manages roaming, enterprise 802.1X, and MAC randomization. |
