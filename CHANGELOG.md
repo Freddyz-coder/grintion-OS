@@ -58,6 +58,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completed 440 shared-library files, seeded 165 packages, and removed 249
   unowned udev files.
 
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.17.1:
+  `output/grintion-os-x86_64.iso`, 148,103,168 bytes (141 MiB), SHA-256
+  `188b30920f0818ee24f8df6cd9e34c6afbc653781ca97c462f4bacae99fa8677`.
+- `output/BUILD-INFO` records source commit `da1f661`. The embedded live
+  initramfs is 130,894,111 bytes with SHA-256
+  `4ec917a460c026aab2b8e1a63fdaf31a1eb6fc0c54f3646ed2d588b2fee6f00a`,
+  reports `Grintion-OS 0.17.1`, and carries the pinned sync databases
+  (`core.db` 131,645 bytes, `extra.db` 8,955,316 bytes, `multilib.db` 85,174
+  bytes). Limine offers live and recovery entries for 0.17.1.
+- Live BIOS/UEFI boot, the installer and an installed reboot were not rerun for
+  0.17.1.
+
 ---
 
 ## [0.17.0] - 2026-11-15

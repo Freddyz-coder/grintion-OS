@@ -14,6 +14,19 @@ auto-synchronized, but the mirror selector chose
 archives. Installing Firefox then exposed unowned library and desktop-data file
 conflicts.
 
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 148,103,168 bytes (141 MiB) |
+| SHA-256 | `188b30920f0818ee24f8df6cd9e34c6afbc653781ca97c462f4bacae99fa8677` |
+| `BUILD-INFO` source commit | `da1f661` |
+| Kernel | `6.12.114-grintion`, SHA-256 `cca0f3a402f7cf281a6841663404751dc35b8254f7d4557dd53f4df114e41e91` |
+| Live initramfs | 130,894,111 bytes, SHA-256 `4ec917a460c026aab2b8e1a63fdaf31a1eb6fc0c54f3646ed2d588b2fee6f00a`; `/etc/grintion/version` = `0.17.1`; `/etc/issue` reports `Grintion-OS 0.17.1 (x86_64)` |
+| Installed initramfs | 5,966,705 bytes, SHA-256 `0b1070ee9e4bf551fabb74a8d75b6f3643fe9ac6896016313d612390c69b289f`; minimal pre-root image with no `/etc/grintion/version`, so the installed root identity comes from the live rootfs |
+| Limine entries | `Grintion-OS 0.17.1 (live, RAM)` and `Grintion-OS 0.17.1 (recovery shell)` |
+| Sync databases | `core.db` 131,645 bytes, `extra.db` 8,955,316 bytes, `multilib.db` 85,174 bytes; archive hashes match the built rootfs |
+
 ### Fix checks
 
 | Check | Result |
@@ -21,6 +34,9 @@ conflicts.
 | `make check` | **250 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits and staged-rootfs checks passed |
 | Rootfs build | 0.17.1 assembled with `core.db`, `extra.db` and `multilib.db`; 440 shared-library files completed; 165 packages seeded; 249 unowned udev files removed |
 | Sync databases | `/var/lib/pacman/sync/{core,extra,multilib}.db` present from the pinned `2026/11/01` snapshot |
+| ISO checksum | `sha256sum -c grintion-os-x86_64.iso.sha256` passed from `output/` |
+| ISO contents | Extracted artifact records `git_commit=da1f661`, both Limine entries report 0.17.1, and the embedded `initramfs.img` hash matches `output/initramfs.img` |
+| Initramfs identity | `/etc/grintion/version` = `0.17.1`; `/etc/os-release` reports `Grintion-OS 0.17.1` |
 | Direct pacman, no `-Sy` | `pacman -S --noconfirm firefox` installed 166 packages; GTK input-method hook succeeded; `firefox --version` returned `Mozilla Firefox 159.0` |
 | Direct pacman packages | `btop`, `neovim`, `pipewire` and `alsa-utils` installed without `-Sy`; no `exists in filesystem` errors |
 | Direct pacman on final rootfs | `pacman -S --noconfirm alsa-utils` installed 8 packages with no conflict; `pacman -Sp firefox` resolved to the primary archive |
