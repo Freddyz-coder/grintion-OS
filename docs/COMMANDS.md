@@ -70,6 +70,20 @@ mount fails the entry is rolled back. `remove` refuses critical mountpoints and
 live mounts unless `--force` is given. `umount` names the processes holding the
 mount when the kernel refuses.
 
+### `grintion-persist`
+
+```sh
+grintion-persist /dev/sdX3
+printf 'change-me\n' | grintion-persist --passphrase-stdin -y /dev/sdX3
+grintion-persist --no-encrypt /dev/sdX3   # legacy plain ext4, not recommended
+```
+
+Creates the live overlay partition. The default is LUKS2 with AES-XTS-512 and
+Argon2id; the inner ext4 filesystem holds `upper/` and `work/`. The passphrase
+is read through stdin, never as an argument. The live init asks for it at boot
+and falls back to a RAM overlay after three failed attempts. `--no-encrypt`
+keeps the old plain-ext4 behaviour.
+
 ### `grintion-swap`
 
 ```sh

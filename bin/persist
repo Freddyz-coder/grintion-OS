@@ -1,32 +1,61 @@
 #!/bin/sh
-# grintion-persist - create a persistent overlay partition for the live image.
-# The live init looks for LABEL=GRINTION_PERSIST and mounts upper/work there.
+# grintion-persist - create an encrypted persistent overlay partition for the
+# live image. The live init unlocks the LUKS2 container with a passphrase and
+# mounts the inner ext4 filesystem as the overlay upper layer.
 
 set -eu
 
+PROG=$(basename "$0")
+FORCE=0
+ENCRYPT=1
+PASSPHRASE_STDIN=0
+TARGET_PART=""
+PASSPHRASE=""
+MAPPER_OPEN=0
+TEMP_MOUNT=/mnt/persist_tmp
+
+usage() {
+    echo "Usage: $PROG [OPTIONS] [PARTITION]"
+    echo "Create an encrypted persistent overlay partition labelled GRINTION_PERSIST."
+    echo ""
+    echo "Options:"
+    echo "  -y, --yes, --force      Skip confirmation prompts"
+    echo "      --no-encrypt        Use plain ext4 instead of LUKS2 (not recommended)"
+    echo "      --passphrase-stdin  Read the new passphrase from the first stdin line"
+    echo "  -h, --help              Show this help"
+}
+
+die() { echo "[-] $*" >&2; exit 1; }
+
 case "${1:-}" in
-    -h|--help)
-        prog=$(basename "$0")
-        echo "Usage: $prog [OPTIONS] [PARTITION]"
-        echo "Create a persistent overlay partition with LABEL=GRINTION_PERSIST for live media."
-        echo ""
-        echo "Options:"
-        echo "  -y, --yes, --force    Skip confirmation prompts"
-        echo "  -h, --help            Show this help"
-        exit 0
-        ;;
+    -h|--help) usage; exit 0 ;;
 esac
 
-FORCE=0
-TARGET_PART=""
 for arg in "$@"; do
     case "$arg" in
         -y|--yes|--force) FORCE=1 ;;
-        *) [ -z "$TARGET_PART" ] && TARGET_PART="$arg" ;;
+        --no-encrypt|--plain) ENCRYPT=0 ;;
+        --passphrase-stdin) PASSPHRASE_STDIN=1 ;;
+        -h|--help) usage; exit 0 ;;
+        -*) die "unknown option: $arg" ;;
+        *)
+            [ -z "$TARGET_PART" ] || die "only one partition may be specified"
+            TARGET_PART=$arg
+            ;;
     esac
 done
 
-[ "$(id -u)" -eq 0 ] || { echo "[-] $(basename "$0") must run as root" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "$PROG must run as root"
+
+cleanup() {
+    umount "$TEMP_MOUNT" 2>/dev/null || true
+    rmdir "$TEMP_MOUNT" 2>/dev/null || true
+    if [ "$MAPPER_OPEN" -eq 1 ]; then
+        cryptsetup close grintion-persist >/dev/null 2>&1 || true
+    fi
+    PASSPHRASE=""
+}
+trap cleanup EXIT HUP INT TERM
 
 cat <<'EOF'
         █
@@ -36,8 +65,8 @@ cat <<'EOF'
     █▓▒@@@▒▓█
    █▓▒@+-+@▒▓█
   █▓▒@+---+@▒▓█
- █▓▒@+-/-\-+@▒▓█
-█▓▒@+-/   \-+@▒▓█
+ █▓▒@+-/-\\-+@▒▓█
+█▓▒@+-/   \\-+@▒▓█
     ▓▒@   @▒▓
    ▓▒@     @▒▓
   ▓▒@       @▒▓
@@ -47,13 +76,14 @@ cat <<'EOF'
 
 
 ==============================================================
-       Grintion-OS Persistent Live Storage Creator
+   Grintion-OS Encrypted Persistent Live Storage Creator
 ==============================================================
 EOF
 
 echo ""
-echo "This tool formats a partition as the live overlay upper layer."
+echo "This tool creates the live overlay upper layer."
 echo "Changes to the entire live root survive reboots when it is present."
+echo "Encryption is enabled by default; the passphrase is requested at boot."
 echo ""
 echo "Available storage partitions:"
 lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT | grep -E 'part|disk' || true
@@ -64,7 +94,7 @@ if [ -z "$TARGET_PART" ]; then
     read -r TARGET_PART
 fi
 
-[ -b "$TARGET_PART" ] || { echo "[-] not a block device: $TARGET_PART" >&2; exit 1; }
+[ -b "$TARGET_PART" ] || die "not a block device: $TARGET_PART"
 
 PART_SIZE="$(blockdev --getsize64 "$TARGET_PART" 2>/dev/null || echo 0)"
 if [ "$PART_SIZE" -lt 1073741824 ] && [ "$FORCE" -ne 1 ]; then
@@ -83,27 +113,87 @@ if [ "$FORCE" -ne 1 ]; then
     [ "$CONFIRM" = "YES" ] || { echo "aborted"; exit 0; }
 fi
 
-echo "[1/3] formatting $TARGET_PART"
-mkfs.ext4 -F -L GRINTION_PERSIST "$TARGET_PART"
+read_passphrase() {
+    if [ "$PASSPHRASE_STDIN" -eq 1 ]; then
+        IFS= read -r PASSPHRASE || die "no passphrase on stdin"
+    else
+        [ -t 0 ] || die "stdin is not a terminal; use --passphrase-stdin"
+        printf 'Enter new persistence passphrase: '
+        stty -echo
+        IFS= read -r PASSPHRASE
+        stty echo
+        printf '\n'
+        printf 'Repeat passphrase: '
+        stty -echo
+        IFS= read -r CONFIRM_PASS
+        stty echo
+        printf '\n'
+        [ "$PASSPHRASE" = "$CONFIRM_PASS" ] || die "passphrases do not match"
+        CONFIRM_PASS=""
+    fi
+    [ -n "$PASSPHRASE" ] || die "passphrase must not be empty"
+}
 
-echo "[2/3] creating the overlay upper and work directories"
-TEMP_MOUNT=/mnt/persist_tmp
+DEVICE=$TARGET_PART
+if [ "$ENCRYPT" -eq 1 ]; then
+    command -v cryptsetup >/dev/null 2>&1 || die "cryptsetup is required for encrypted persistence"
+    read_passphrase
+
+    echo "[1/4] creating a LUKS2 container on $TARGET_PART"
+    mkdir -p /dev/mapper /run/cryptsetup /run/lock
+    if [ ! -e /dev/mapper/control ]; then
+        mknod /dev/mapper/control c 10 236 || die "cannot create /dev/mapper/control"
+    fi
+    # The passphrase is fed through stdin; it never appears in the process
+    # list or in shell history.
+    printf '%s' "$PASSPHRASE" | cryptsetup luksFormat \
+        --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha256 \
+        --pbkdf argon2id --label GRINTION_PERSIST --batch-mode \
+        --key-file - "$TARGET_PART" || die "LUKS2 format failed"
+
+    echo "[2/4] opening the encrypted container"
+    printf '%s' "$PASSPHRASE" | cryptsetup open --type luks2 --key-file - \
+        "$TARGET_PART" grintion-persist || die "cannot open the LUKS2 container"
+    MAPPER_OPEN=1
+    PASSPHRASE=""
+    DEVICE=/dev/mapper/grintion-persist
+    echo "[3/4] formatting the encrypted overlay filesystem"
+    mkfs.ext4 -F -L GRINTION_PERSIST_DATA "$DEVICE"
+else
+    echo "[1/3] formatting $TARGET_PART as plain ext4"
+    mkfs.ext4 -F -L GRINTION_PERSIST "$TARGET_PART"
+fi
+
+step="[3/4]"
+if [ "$ENCRYPT" -eq 0 ]; then
+    step="[2/3]"
+fi
+echo "$step creating the overlay upper and work directories"
 mkdir -p "$TEMP_MOUNT"
-cleanup() { umount "$TEMP_MOUNT" 2>/dev/null || true; rmdir "$TEMP_MOUNT" 2>/dev/null || true; }
-trap cleanup EXIT
-mount "$TARGET_PART" "$TEMP_MOUNT"
+mount "$DEVICE" "$TEMP_MOUNT"
 mkdir -p "$TEMP_MOUNT/upper" "$TEMP_MOUNT/work"
 chmod 0700 "$TEMP_MOUNT/upper" "$TEMP_MOUNT/work"
 sync
 umount "$TEMP_MOUNT"
 rmdir "$TEMP_MOUNT" 2>/dev/null || true
-trap - EXIT
+trap - EXIT HUP INT TERM
 
-echo "[3/3] done"
+if [ "$ENCRYPT" -eq 1 ]; then
+    cryptsetup close grintion-persist
+    MAPPER_OPEN=0
+    echo "[4/4] done"
+else
+    echo "[3/3] done"
+fi
 echo ""
 echo "=============================================================="
-echo "[+] Persistence enabled on $TARGET_PART"
-echo "=============================================================="
-echo "Grintion-OS will detect LABEL=GRINTION_PERSIST at boot and keep"
-echo "all changes to the live root across reboots."
+if [ "$ENCRYPT" -eq 1 ]; then
+    echo "[+] Encrypted persistence enabled on $TARGET_PART (LUKS2)"
+    echo "The live init will ask for the passphrase at boot."
+else
+    echo "[+] Plain persistence enabled on $TARGET_PART"
+    echo "WARNING: the overlay contents are not encrypted at rest."
+fi
+echo "Grintion-OS will detect GRINTION_PERSIST at boot and keep all"
+echo "changes to the live root across reboots."
 echo "=============================================================="

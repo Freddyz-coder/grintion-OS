@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.18.0 — *fail-closed boot · kernel lockdown · per-install SSH identity*
+- **Version:** 0.19.0 — *encrypted live persistence · independent release audit · fail-closed boot*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,17 +17,18 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.18.0 is a security-hardening release. Boot failures now halt instead of
-dropping to an unauthenticated root shell; recovery requires an explicit
-`grintion.recovery=1` entry. Every shipped boot path selects AppArmor, enforces
-signed modules and requests kernel lockdown in confidentiality mode, with an
-integrity floor compiled into the kernel. Audit coverage now includes PAM,
-firewall, package-trust, mount, namespace, BPF and file-handle activity, and the
-service verifies that kernel audit is actually enabled. Image builds strip
-inherited set-ID bits before applying the allowlist and remove baked SSH host
-keys; the installer generates a fresh identity per machine. The 0.17.1 package
-manager repairs and database pinning remain in this image. See
-[CHANGELOG.md](CHANGELOG.md).
+0.19.0 adds encrypted live persistence and an independent release audit.
+`grintion-persist` creates a LUKS2 container by default, the live init unlocks
+it with a passphrase at boot, and the overlay upper layer is never stored in
+plaintext. `grintion-release-audit artifact` re-derives the released ISO's
+hashes, boot policy, set-ID allowlist, SSH host-key hygiene and audit coverage
+from the artifact itself; `grintion-release-audit runtime` checks the running
+system. The release retains the 0.18.0 security model: boot failures halt
+instead of dropping to an unauthenticated root shell, recovery requires an
+explicit `grintion.recovery=1` entry, every shipped boot path selects AppArmor,
+enforces signed modules and requests kernel lockdown, and auditd verifies that
+kernel auditing is enabled. The 0.17.1 package manager repairs and database
+pinning remain in this image. See [CHANGELOG.md](CHANGELOG.md).
 
 0.16.0 delivered three major improvements over 0.15.0:
 
@@ -48,7 +49,7 @@ manager repairs and database pinning remain in this image. See
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.18.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.19.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -68,13 +69,14 @@ with `make sign-release` and verified with `bin/release-verify` (see
 | Services | runit supervises two local gettys, a serial getty, networking (dhcpcd or NetworkManager), the nftables firewall, syslogd, optional display manager, and a local hook. |
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
-| Persistence | `grintion-persist` formats a partition labelled `GRINTION_PERSIST`; the live init mounts it as the overlay upper layer, so changes survive reboot. |
+| Persistence | `grintion-persist` creates a LUKS2-encrypted partition labelled `GRINTION_PERSIST` (plain ext4 only with `--no-encrypt`); the live init unlocks it with a passphrase and mounts the inner ext4 filesystem as the overlay upper layer. |
 | Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), read-only `aa-status`/`aa-unconfined` reporting, Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
 Documentation:
 - [Command Reference](docs/COMMANDS.md) (every tool and subcommand — clean and legacy names)
+- [Independent Release Audit](docs/INDEPENDENT-AUDIT.md) (artifact and runtime audit)
 - [Handbook](docs/HANDBOOK.md) (Full 10-chapter manual)
 - [Guía Rápida en Español](docs/HANDBOOK-ES.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -255,7 +257,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.18.0 |
+| Feature | 0.19.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -266,7 +268,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | Kernel flavors | LTS (`6.12.114-grintion`) is the default source-built kernel. The installer and `grintion-kernel` can optionally add `hwe` (Arch current kernel + headers) or `dkms` (HWE headers + module builds) from the pinned snapshot as separate Limine entries. HWE/DKMS require network access and are not boot-verified in this tree. |
 | Audio | PipeWire playback verified end-to-end on XFCE (QEMU WAV capture) with a dynamically enumerated sink; all ALSA cards are unmuted. Direct ALSA playback requires suspending PipeWire first. PipeWire 1.6.11 is the current Arch stable version and includes the upstream `pipewire-alsa` drain fix |
 | Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
-| Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home` (`--encrypt-home`) via `grintion-install` |
+| Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), encrypted `/home` (`--encrypt-home`) via `grintion-install`, and LUKS2 live persistence via `grintion-persist` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). The image ships the snapshot sync databases, so direct `pacman -S` works without a separate `-Sy`. Seeded packages own their complete shared-library sets and unowned udev/desktop data is pruned, so Firefox and desktop installs do not fail on file conflicts or missing `.so` files. |
 | Hosted binary repository | **No repository is hosted.** Release channels, delta updates and signed index metadata exist as tooling; the README does not claim a public server. |
@@ -306,8 +308,10 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.18.0 has not undergone an independent third-party
-security audit.
+and atomic rollback, but 0.19.0 has not undergone an independent third-party
+security audit. The automated `grintion-release-audit` checks are documented in
+[docs/INDEPENDENT-AUDIT.md](docs/INDEPENDENT-AUDIT.md); they are not a
+substitute for external review.
 
 Report vulnerabilities privately as described in `SECURITY.md`.
 

@@ -113,6 +113,14 @@ def boot(
             detail = run("cat /tmp/doctor.log")
             raise AssertionError(f"runtime doctor failed:\n{detail}")
 
+        output = run(
+            "grintion-release-audit runtime >/tmp/release-audit.log 2>&1; "
+            "echo AUDIT_RC=$?"
+        )
+        if "AUDIT_RC=0" not in output:
+            detail = run("cat /tmp/release-audit.log")
+            raise AssertionError(f"independent runtime audit failed:\n{detail}")
+
         # The live screen used to go black once bochs-drm deactivated vgacon:
         # fbdev emulation was compiled out, so fbcon never bound and only the
         # dummy console remained (ProblemsWhenInstalling.txt #3).

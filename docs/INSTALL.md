@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.18.0 installs from the live ISO to a target disk or existing
+Grintion-OS 0.19.0 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.18.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.18.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.19.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.19.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -338,9 +338,11 @@ See [docs/DESKTOP-GUI.md](DESKTOP-GUI.md) for detailed configuration, display ma
 
 ## Persistent live storage
 
-Persistence keeps changes to the live root across reboots. The live init looks
-for a filesystem labelled `GRINTION_PERSIST`, mounts it read-write, and uses
-`upper/` and `work/` inside it as the overlay upper layer.
+Persistence keeps changes to the live root across reboots. The default format
+is a LUKS2 container whose label is `GRINTION_PERSIST`; the live init asks for
+the passphrase, opens it, and uses `upper/` and `work/` inside the inner ext4
+filesystem as the overlay upper layer. Existing plain-ext4 persistence is still
+recognised, and `--no-encrypt` creates it for compatibility.
 
 1. Boot the live image.
 2. Create a partition on the live USB. It can be any size; 4 GiB is a practical
@@ -352,17 +354,32 @@ for a filesystem labelled `GRINTION_PERSIST`, mounts it read-write, and uses
    ```
 
    The tool lists block devices, asks for a partition, requires you to type
-   `YES`, formats it ext4 with the right label and creates the overlay
-   directories.
+   `YES`, creates a LUKS2 container (AES-XTS-512, Argon2id), formats the inner
+   ext4 filesystem and creates the overlay directories. The passphrase is read
+   through stdin, never as an argument. For unattended creation:
 
-4. Reboot. The live init prints `persistence enabled on ...`.
+   ```sh
+   printf 'change-me\n' | grintion-persist --passphrase-stdin -y /dev/sdX3
+   ```
+
+   Use `--no-encrypt` only for compatibility; it writes the overlay upper layer
+   to plain ext4.
+
+4. Reboot. The live init prints `persistence device ... is LUKS2-encrypted`,
+   asks `Enter persistence passphrase:`, and then reports
+   `encrypted persistence unlocked`.
 
 Things to know:
 
 - The persistence partition stores the **entire** upper layer, including
-  passwords, SSH keys and package state. It is not encrypted. Anyone who can
-  read the USB stick can read those files. The live init mounts it
-  `nosuid,nodev` so it cannot inject setuid binaries or device nodes.
+  passwords, SSH keys and package state. It is encrypted by default with a
+  passphrase that is never stored on disk. Losing the passphrase loses the
+  overlay.
+- Three failed unlock attempts fall back to a RAM overlay; the live init never
+  mounts ciphertext as plain ext4 and never silently writes to an unencrypted
+  partition.
+- The live init mounts persistence `nosuid,nodev` so it cannot inject setuid
+  binaries or device nodes.
 - A full partition makes the overlay fail; the live init falls back to RAM only
   if the mount itself fails, not when the filesystem fills later.
 - To reset persistence, reformat the partition or delete `upper/` and `work/`

@@ -27,9 +27,11 @@ configuration file alone.
 **Auditd is shipped and enabled in the base image.** The image includes
 `auditd`, `auditctl`, `ausearch` and `aureport` with their library closure,
 focused rules under `/etc/audit`, and a runit service that starts the daemon at
-boot. Rules for binaries and paths absent from a minimal image are filtered
-during the rootfs build instead of making `auditd` fail to start. Profile
-verification checks the daemon and `auditctl -s` state.
+boot. Rules for binaries and paths absent from a minimal image are filtered by
+the auditd service at boot instead of making `auditd` fail to start; the rootfs
+generates `/etc/audit/audit.rules` from `rules.d` so the loaded policy cannot
+drift from the source rules. Profile verification checks the daemon and
+`auditctl -s` state.
 
 ## 2. Mandatory Access Control (AppArmor)
 
@@ -90,6 +92,12 @@ same package, and `cmp` is required for `zcmp`.
 - The service is not considered healthy merely because the daemon process exists. It runs `auditctl -s` and requires the kernel audit subsystem to report `enabled 1` or `enabled 2`; otherwise it logs the status and enters a failed supervision state.
 - Sudo I/O logging is configured separately via `/etc/sudoers.d/audit-log` and does not depend on auditd.
 - Inspect available logs with `grintion-audit-log` or `grintion-audit-log --sudo` when the relevant daemon or sudo I/O files exist.
+- `grintion-release-audit artifact` independently re-derives the released ISO's
+  checksum, `BUILD-INFO` hashes, boot command lines, set-ID allowlist, SSH
+  host-key hygiene, AppArmor profiles and audit policy from the artifact.
+  `grintion-release-audit runtime` checks the running system. It is an
+  automated audit, not a third-party review; see
+  [INDEPENDENT-AUDIT.md](INDEPENDENT-AUDIT.md).
 
 ## 5. File Integrity Baseline (`grintion-integrity`)
 

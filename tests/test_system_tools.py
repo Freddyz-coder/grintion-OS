@@ -1122,6 +1122,31 @@ def test_audit_rules_cover_privileged_surfaces_and_service_checks_enabled() -> N
         assert flag in shm_mount, flag
 
 
+def test_persistence_is_luks2_and_live_init_unlocks_it() -> None:
+    persist = (REPO_ROOT / "bin" / "persist").read_text()
+    for token in (
+        "--type luks2",
+        "--label GRINTION_PERSIST",
+        "cryptsetup luksFormat",
+        "cryptsetup open",
+        "cryptsetup close",
+        "--passphrase-stdin",
+        "--no-encrypt",
+    ):
+        assert token in persist, token
+
+    live_init = (REPO_ROOT / "init" / "live-init").read_text()
+    for token in (
+        "crypto_LUKS",
+        "luksOpen",
+        "Enter persistence passphrase",
+        "grintion-persist",
+        "using RAM",
+    ):
+        assert token in live_init, token
+    assert "noatime,nosuid,nodev" in live_init
+
+
 def test_rootfs_generates_audit_rules_from_rules_d() -> None:
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert 'cat "$ROOTFS"/etc/audit/rules.d/*.rules' in rootfs

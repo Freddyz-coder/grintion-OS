@@ -69,6 +69,12 @@ jobs:
       - name: Boot tests (BIOS + UEFI)
         run: make test-boot
 
+      - name: Independent release audit
+        run: make audit-release
+
+      - name: Encrypted persistence test
+        run: make test-persist
+
       - name: Install test (BIOS)
         run: make test-install
 

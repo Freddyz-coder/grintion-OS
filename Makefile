@@ -9,7 +9,8 @@ VERSION := $(shell cat VERSION)
 ISO := output/grintion-os-x86_64.iso
 
 .PHONY: all help tools kernel install-initramfs rootfs rootfs-pinned iso iso-pinned check test test-garb \
-        test-boot test-display test-network test-install test-install-uefi test-all packages clean distclean release \
+        test-boot test-display test-network test-install test-install-uefi test-persist audit-release \
+        test-all packages clean distclean release \
         sign-release verify-release check-upstream
 
 all: iso
@@ -34,7 +35,9 @@ help:
 	@echo "  make test-network      boot with e1000, e1000e, virtio-net, rtl8139 and pcnet"
 	@echo "  make test-install      install to a QEMU disk and reboot from it"
 	@echo "  make test-install-uefi install under UEFI/OVMF and reboot from it"
-	@echo "  make test-all          check + boot tests + install test"
+	@echo "  make test-persist      create encrypted persistence, reboot and verify it"
+	@echo "  make audit-release     independently audit the built ISO and its initramfs"
+	@echo "  make test-all          check + boot + install + persistence tests"
 	@echo "  make packages          build the local demo repository"
 	@echo "  make clean             remove build/work and generated output"
 	@echo "  make distclean         also remove downloaded sources and caches"
@@ -93,7 +96,14 @@ test-install: iso
 test-install-uefi: iso
 	@./build/test-install.sh --uefi
 
-test-all: check test-boot test-install
+test-persist: iso
+	@python3 tests/persist_test.py --iso $(ISO)
+
+audit-release:
+	@test -f $(ISO) || { echo "ISO missing: run make iso" >&2; exit 1; }
+	@./bin/release-audit artifact $(ISO) --expected-version $(VERSION)
+
+test-all: check test-boot test-install test-persist audit-release
 
 packages:
 	@./bin/garb repo-build packages output/packages

@@ -3,12 +3,13 @@
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 current source tree provides; the most recent image built from this tree is
-0.18.0. It also records the limits of that protection and how to report a problem.
+0.19.0. It also records the limits of that protection and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
+| 0.19.x | Security fixes on a best-effort basis |
 | 0.18.x | Security fixes on a best-effort basis |
 | 0.17.x | Security fixes on a best-effort basis |
 | 0.16.x | Security fixes on a best-effort basis |
@@ -222,9 +223,11 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
 - **Secure Boot & verified boot out of the box.** The default installation media does not
   include a third-party (e.g. Microsoft-signed) shim. Secure Boot requires enrolling
   local MOK keys via `grintion-secureboot` and building signed UKIs.
-- **Disk encryption on live persistence.** While the installer provides LUKS2 full-disk
-  encryption for installed roots, encrypted `/home`, and encrypted swap, live
-  sessions with persistence (`GRINTION_PERSIST`) remain plain unencrypted ext4.
+- **Live persistence passphrase is the only key.** `grintion-persist` creates
+  LUKS2 by default and never stores the passphrase. Plain ext4 remains
+  available with `--no-encrypt`; it is not the default. Losing the passphrase
+  loses the overlay, and an attacker at an unlocked live console can still read
+  the mounted overlay.
 - **Mandatory access control scope.** The kernel is built with AppArmor,
   securityfs is mounted at boot, and the `apparmor` runit service loads every
   profile in `/etc/apparmor.d`. Profiles confine the network manager, `garb`
@@ -257,8 +260,9 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
   on failure, but a power loss between loading rules and writing state can
   leave the running firewall and the on-disk profile out of sync. Re-run
   `grintion-security set` or `apply-firewall` after an interrupted change.
-- **No independent security audit.** The code has not been independently reviewed
-  by a third-party security firm.
+- **No third-party security audit.** The code has not been independently
+  reviewed by a third-party security firm. `grintion-release-audit` is an
+  automated artifact and runtime audit, not a substitute for external review.
 - **Physical access without encryption defeats the model.** When LUKS2 encryption is not
   enabled at install time, physical access permits root access.
 - **The live medium is not private.** Console root is passwordless by design,

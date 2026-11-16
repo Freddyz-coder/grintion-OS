@@ -58,15 +58,20 @@ present.
 
 1. Mount `proc`, `sys`, `devtmpfs`, `devpts`, `shm`, `/run`, cgroup v2 and
    `efivarfs` when present.
-2. Look for a filesystem labelled `GRINTION_PERSIST`:
+2. Look for a persistence partition. Plain ext4 is found by filesystem label;
+   an encrypted container is a LUKS2 device whose label is
+   `GRINTION_PERSIST`:
 
    ```sh
    PERSIST_DEV="$(blkid -L GRINTION_PERSIST)"
    ```
 
-   If it mounts read-write, its `upper/` and `work/` directories become the
-   overlay upper layer. Otherwise a tmpfs under `/run/overlay` is used and the
-   session is discarded on poweroff.
+   For LUKS2, the live init opens the container with a passphrase read from
+   the console (`Enter persistence passphrase:`). If it mounts read-write, its
+   `upper/` and `work/` directories become the overlay upper layer. Otherwise a
+   tmpfs under `/run/overlay` is used and the session is discarded on poweroff.
+   Three failed unlock attempts fall back to the RAM overlay rather than
+   mounting ciphertext as plain ext4.
 3. Bind-mount the initramfs root on `/lower` and mount an overlay on `/newroot`:
 
    ```text
@@ -313,7 +318,7 @@ See [PACKAGE-MANAGER.md](PACKAGE-MANAGER.md) for the format and limits.
 | Users | PAM with `pam_faillock` and yescrypt; `su` and `sudo` restricted to `wheel`; root locked on installed systems unless a root password is set; auditd trails and sudo I/O logging active (`grintion-audit-log`). |
 | Network | `nftables` rules loaded at boot; DHCP client only, no listening services by default; `grintion-network` manages roaming, enterprise 802.1X, and MAC randomization. |
 | Packages | Native `garb` uses Ed25519-signed, expiring indexes, atomic generations, and rollback. The bundled `pacman` backend trusts the pinned Arch keyring with `SigLevel = Required DatabaseOptional` (Arch publishes no database signatures) and `/etc/mtab` tracking `/proc/self/mounts`. |
-| Storage | Installed systems support LUKS2 full-disk root encryption, encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home`. TPM sealing (`grintion-tpm-luks`) and file integrity checks (`grintion-integrity`) are built in. The live persistence partition remains plain ext4. |
+| Storage | Installed systems support LUKS2 full-disk root encryption, encrypted swap (`/etc/sv/cryptswap`), and encrypted `/home`. Live persistence is LUKS2-encrypted by default (`grintion-persist`); plain ext4 requires `--no-encrypt`. TPM sealing (`grintion-tpm-luks`) and file integrity checks (`grintion-integrity`) are built in. |
 
 The live image intentionally grants passwordless root on the console. That is a
 property of the medium, not of installed systems.

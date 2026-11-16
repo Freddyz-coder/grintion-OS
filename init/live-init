@@ -41,9 +41,80 @@ fi
 
 mkdir -p /run/overlay /run/persist /lower /newroot
 
+# The persistence partition can be plain ext4 (legacy) or a LUKS2 container
+# with the GRINTION_PERSIST label. blkid does not return LUKS2 labels through
+# `blkid -L`, so inspect crypto_LUKS devices when the plain lookup misses.
+PERSIST_DEV="$(blkid -L GRINTION_PERSIST 2>/dev/null || true)"
+if [ -z "$PERSIST_DEV" ]; then
+    PERSIST_DEV=$(for candidate in $(blkid -t TYPE=crypto_LUKS -o device 2>/dev/null || true); do
+        if cryptsetup luksDump "$candidate" 2>/dev/null | grep -q -E '^Label:[[:space:]]*GRINTION_PERSIST[[:space:]]*$'; then
+            printf '%s\n' "$candidate"
+            break
+        fi
+    done)
+fi
+
+CRYPT_CONSOLE=""
+SERIAL_CONSOLE=0
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        grintion.cryptconsole=*) CRYPT_CONSOLE=${arg#*=} ;;
+        grintion.serial=1)       SERIAL_CONSOLE=1 ;;
+    esac
+done
+
+if [ -n "$PERSIST_DEV" ] && [ "$(blkid -o value -s TYPE "$PERSIST_DEV" 2>/dev/null || true)" = "crypto_LUKS" ]; then
+    # devtmpfs does not create the device-mapper control node; cryptsetup
+    # needs it before the first ioctl.
+    mkdir -p /dev/mapper /run/cryptsetup /run/lock
+    if [ ! -e /dev/mapper/control ]; then
+        mknod /dev/mapper/control c 10 236 || true
+    fi
+
+    CONSOLE=${CRYPT_CONSOLE:-/dev/console}
+    if [ -n "$CRYPT_CONSOLE" ] && [ -c "$CONSOLE" ]; then
+        :
+    elif [ "$SERIAL_CONSOLE" -eq 1 ] && [ -c /dev/ttyS0 ]; then
+        CONSOLE=/dev/ttyS0
+    elif [ ! -c "$CONSOLE" ]; then
+        CONSOLE=/dev/console
+    fi
+
+    msg "persistence device $PERSIST_DEV is LUKS2-encrypted"
+    PERSIST_UNLOCKED=0
+    tries=3
+    while [ "$tries" -gt 0 ]; do
+        stty -echo <"$CONSOLE" 2>/dev/null || true
+        printf 'Enter persistence passphrase: ' >"$CONSOLE"
+        if IFS= read -r passphrase <"$CONSOLE"; then
+            stty echo <"$CONSOLE" 2>/dev/null || true
+            printf '\n' >"$CONSOLE"
+            if printf '%s' "$passphrase" | cryptsetup luksOpen --key-file - \
+                "$PERSIST_DEV" grintion-persist >"$CONSOLE" 2>&1; then
+                passphrase=""
+                PERSIST_UNLOCKED=1
+                break
+            fi
+            passphrase=""
+            msg "the persistence passphrase was not accepted ($tries attempts left)"
+        else
+            stty echo <"$CONSOLE" 2>/dev/null || true
+            msg "could not read the persistence passphrase"
+            break
+        fi
+        tries=$((tries - 1))
+    done
+    if [ "$PERSIST_UNLOCKED" -eq 1 ]; then
+        PERSIST_DEV=/dev/mapper/grintion-persist
+        msg "encrypted persistence unlocked"
+    else
+        msg "encrypted persistence could not be unlocked; using RAM"
+        PERSIST_DEV=""
+    fi
+fi
+
 UPPER=""
 WORK=""
-PERSIST_DEV="$(blkid -L GRINTION_PERSIST 2>/dev/null || true)"
 if [ -n "$PERSIST_DEV" ]; then
     mkdir -p /run/persist
     # The persistence partition is an overlay upper layer. It must never be

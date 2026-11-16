@@ -151,7 +151,7 @@ mkdir -p output
 if [ "$PYTEST_READY" -eq 1 ]; then
     "$PYTHON_BIN" -m pytest -q --junitxml=output/junit.xml \
         tests/test_accounts.py tests/test_garb.py tests/test_garblib.py tests/test_system_tools.py \
-        tests/test_release_tools.py tests/test_network.py tests/test_desktop_profiles.py \
+        tests/test_release_tools.py tests/test_release_audit.py tests/test_network.py tests/test_desktop_profiles.py \
         tests/test_phase5_hardware_config.py tests/test_phase6_boot_security.py \
         tests/test_phase7_package_ecosystem.py tests/test_phase8_security_hardening.py \
         tests/test_phase9_validation.py tests/test_phase10_performance_polish.py \

@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""grintion-release-audit - independent audit of a Grintion-OS release.
+
+Artifact mode reads the published ISO, verifies its checksum and BUILD-INFO,
+extracts the live initramfs, and checks identity, boot policy, set-ID hygiene,
+SSH host keys, encrypted persistence support and audit coverage without
+trusting the build tree.
+
+Runtime mode audits the running system's effective boot policy, kernel
+lockdown, AppArmor, auditd, set-ID files, SSH host key modes and temporary
+mount flags.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SCHEMA = 1
+LIVE_TOKENS = ("security=apparmor", "apparmor=1", "audit=1",
+               "module.sig_enforce=1", "lockdown=confidentiality", "rd.shell=0")
+RECOVERY_TOKENS = ("audit=1", "module.sig_enforce=1", "lockdown=confidentiality")
+ALLOWED_SETUID = frozenset({
+    "usr/bin/chfn", "usr/bin/chsh", "usr/bin/gpasswd", "usr/bin/login",
+    "usr/bin/mount", "usr/bin/newgrp", "usr/bin/passwd", "usr/bin/ping",
+    "usr/bin/su", "usr/bin/sudo", "usr/bin/umount", "usr/bin/unix_chkpwd",
+})
+AUDIT_RULE_TOKENS = (
+    "-k identity", "-k privilege", "-k modules", "-k mount", "-k ptrace",
+    "-k bpf", "-k namespace", "-k file-handle", "-w /etc/pam.d",
+    "-w /etc/nftables.conf", "-w /var/lib/pacman/local",
+)
+SYSTEM_BINARIES = ("mount", "chroot", "install", "reset", "ssh")
+WRAPPER_FILES = ("grintion-mount", "grintion-chroot", "grintion-install",
+                 "grintion-reset", "grintion-ssh")
+STAGED_FILES = (
+    "etc/grintion/version", "etc/issue", "etc/grintion/live",
+    "etc/audit/audit.rules", "etc/audit/rules.d/grintion.rules",
+    "usr/bin/release-audit", "init",
+)
+CPIO_RE = re.compile(
+    r"^(?P<mode>[-dlbcps][rwxStTs-]{9})\s+\d+\s+\S+\s+\S+\s+\d+\s+"
+    r"\S+\s+\d+\s+(?:\d{2}:\d{2}|\d{4})\s+(?P<path>.+)$"
+)
+
+
+class Report:
+    def __init__(self, mode: str, target: str) -> None:
+        self.mode = mode
+        self.target = target
+        self.checks: list[dict[str, str]] = []
+
+    def add(self, check: str, status: str, detail: str = "") -> None:
+        self.checks.append({"check": check, "status": status, "detail": detail})
+
+    def ok(self, check: str, detail: str = "") -> None:
+        self.add(check, "ok", detail)
+
+    def warn(self, check: str, detail: str = "") -> None:
+        self.add(check, "warn", detail)
+
+    def fail(self, check: str, detail: str = "") -> None:
+        self.add(check, "fail", detail)
+
+    def info(self, check: str, detail: str = "") -> None:
+        self.add(check, "info", detail)
+
+    def summary(self) -> dict[str, int]:
+        counts = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
+        for item in self.checks:
+            counts[item["status"]] += 1
+        return counts
+
+    def as_dict(self) -> dict:
+        return {
+            "schema": SCHEMA,
+            "mode": self.mode,
+            "target": self.target,
+            "checks": self.checks,
+            "summary": self.summary(),
+        }
+
+    def emit(self, as_json: bool) -> int:
+        data = self.as_dict()
+        if as_json:
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Grintion-OS independent audit ({self.mode}): {self.target}")
+            for item in self.checks:
+                label = {"ok": "[ok]", "warn": "[warn]",
+                         "fail": "[FAIL]", "info": "[info]"}[item["status"]]
+                print(f"{label:7} {item['check']}: {item['detail']}")
+            s = data["summary"]
+            print(f"summary: {s['ok']} ok, {s['warn']} warn, "
+                  f"{s['fail']} fail, {s['info']} info")
+        return 0 if data["summary"]["fail"] == 0 else 1
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def expected_sha256(checksum_file: Path) -> str | None:
+    try:
+        tokens = checksum_file.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if not tokens:
+        return None
+    return tokens[0].lower() if re.fullmatch(r"[0-9a-fA-F]{64}", tokens[0]) else None
+
+
+def is_semver(value: str) -> bool:
+    return re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", value) is not None
+
+
+def parse_kv(text: str) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip()
+    return data
+
+
+def parse_limine_entries(text: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("/"):
+            current = {"name": line.lstrip("/"), "cmdline": ""}
+            entries.append(current)
+        elif current is not None and line.startswith("cmdline:"):
+            current["cmdline"] = line.split(":", 1)[1].strip()
+    return entries
+
+
+def cpio_verbose(initrd: Path) -> list[tuple[str, str]]:
+    zstd = subprocess.Popen(["zstd", "-dc", str(initrd)], stdout=subprocess.PIPE)
+    assert zstd.stdout is not None
+    cpio = subprocess.run(["cpio", "-itv"], stdin=zstd.stdout,
+                          capture_output=True, text=True, check=False)
+    zstd.stdout.close()
+    zstd.wait()
+    entries: list[tuple[str, str]] = []
+    for line in cpio.stdout.splitlines():
+        match = CPIO_RE.match(line)
+        if match:
+            entries.append((match.group("mode"), match.group("path").lstrip("./")))
+    return entries
+
+
+def cpio_extract(initrd: Path, member: str) -> bytes:
+    zstd = subprocess.Popen(["zstd", "-dc", str(initrd)], stdout=subprocess.PIPE)
+    assert zstd.stdout is not None
+    cpio = subprocess.run(["cpio", "-i", "--to-stdout", member],
+                          stdin=zstd.stdout, capture_output=True, check=False)
+    zstd.stdout.close()
+    zstd.wait()
+    return cpio.stdout
+
+
+def setuid_paths(entries: list[tuple[str, str]]) -> set[str]:
+    paths = set()
+    for mode, path in entries:
+        if len(mode) == 10 and (mode[3] in "sS" or mode[6] in "sS"):
+            paths.add(path)
+    return paths
+
+
+def check_artifact(iso: Path, checksum_file: Path | None,
+                   expected_version: str | None) -> Report:
+    report = Report("artifact", str(iso))
+    if not iso.is_file():
+        report.fail("iso-present", f"not found: {iso}")
+        return report
+    report.ok("iso-present", f"{iso.stat().st_size} bytes")
+
+    actual = sha256_file(iso)
+    report.info("iso-sha256", actual)
+    checksum_file = checksum_file or Path(str(iso) + ".sha256")
+    expected = expected_sha256(checksum_file)
+    if expected is None:
+        report.fail("iso-checksum", f"no usable checksum in {checksum_file}")
+    elif expected == actual:
+        report.ok("iso-checksum", f"matches {checksum_file.name}")
+    else:
+        report.fail("iso-checksum", f"expected {expected}, got {actual}")
+
+    if expected_version and not is_semver(expected_version):
+        report.fail("expected-version", f"not a semantic version: {expected_version}")
+
+    with tempfile.TemporaryDirectory(prefix="grintion-audit-") as temp:
+        root = Path(temp)
+        extract = run(["xorriso", "-osirrox", "on", "-indev", str(iso),
+                       "-extract", "/", str(root)])
+        if extract.returncode != 0:
+            report.fail("iso-extract", extract.stderr.strip() or "xorriso failed")
+            return report
+        report.ok("iso-extract", "ISO tree extracted")
+
+        build_info_path = root / "BUILD-INFO"
+        if not build_info_path.is_file():
+            report.fail("build-info", "BUILD-INFO is missing from the ISO")
+            return report
+        build = parse_kv(build_info_path.read_text(encoding="utf-8"))
+        commit = build.get("git_commit", "")
+        if re.fullmatch(r"[0-9a-f]{7,40}", commit):
+            report.ok("build-info-commit", commit)
+        else:
+            report.fail("build-info-commit", f"invalid git_commit: {commit!r}")
+
+        for key, filename in (("kernel", "vmlinuz-grintion"),
+                              ("initramfs_live", "initramfs.img")):
+            path = root / filename
+            if not path.is_file():
+                report.fail(key, f"missing {filename}")
+            elif path.stat().st_size < 1024 * 1024:
+                report.fail(key, f"{filename} is unexpectedly small")
+            elif sha256_file(path) != build.get(key):
+                report.fail(key, f"{filename} hash does not match BUILD-INFO")
+            else:
+                report.ok(key, sha256_file(path))
+
+        for asset in ("limine-bios.sys", "limine-bios-cd.bin",
+                      "limine-uefi-cd.bin", "EFI/BOOT/BOOTX64.EFI"):
+            if (root / asset).is_file():
+                report.ok("boot-asset", asset)
+            else:
+                report.fail("boot-asset", f"missing {asset}")
+
+        limine_path = root / "limine.conf"
+        if not limine_path.is_file():
+            report.fail("limine-config", "limine.conf is missing")
+        else:
+            entries = parse_limine_entries(limine_path.read_text(encoding="utf-8"))
+            live = next((e for e in entries if "live" in e["name"].lower()), None)
+            recovery = next((e for e in entries if "recovery" in e["name"].lower()), None)
+            if live is None:
+                report.fail("limine-live", "no live entry")
+            else:
+                missing = [t for t in LIVE_TOKENS if t not in live["cmdline"]]
+                if missing:
+                    report.fail("limine-live", f"missing tokens: {', '.join(missing)}")
+                else:
+                    report.ok("limine-live", live["name"])
+            if recovery is None:
+                report.fail("limine-recovery", "no recovery entry")
+            else:
+                missing = [t for t in RECOVERY_TOKENS if t not in recovery["cmdline"]]
+                if missing:
+                    report.fail("limine-recovery", f"missing tokens: {', '.join(missing)}")
+                else:
+                    report.ok("limine-recovery", recovery["name"])
+
+        initrd = root / "initramfs.img"
+        if not initrd.is_file():
+            return report
+
+        installed = cpio_extract(
+            initrd, "usr/lib/grintion/boot/initramfs-install.img")
+        if not installed:
+            report.fail("initramfs_install", "missing from the live rootfs")
+        elif len(installed) < 1024 * 1024:
+            report.fail("initramfs_install", "unexpectedly small")
+        elif hashlib.sha256(installed).hexdigest() != build.get("initramfs_install"):
+            report.fail("initramfs_install", "hash does not match BUILD-INFO")
+        else:
+            report.ok("initramfs_install", hashlib.sha256(installed).hexdigest())
+
+        entries = cpio_verbose(initrd)
+        if not entries:
+            report.fail("initramfs-list", "cannot list the live initramfs")
+            return report
+        names = {path for _, path in entries}
+        report.ok("initramfs-list", f"{len(names)} entries")
+
+        for member in STAGED_FILES:
+            if member in names:
+                report.ok("initramfs-file", member)
+            else:
+                report.fail("initramfs-file", f"missing {member}")
+
+        version_text = cpio_extract(initrd, "etc/grintion/version").decode(
+            "utf-8", errors="replace").strip()
+        if not is_semver(version_text):
+            report.fail("version", f"invalid /etc/grintion/version: {version_text!r}")
+        elif expected_version and version_text != expected_version:
+            report.fail("version", f"expected {expected_version}, got {version_text}")
+        else:
+            report.ok("version", version_text)
+
+        issue = cpio_extract(initrd, "etc/issue").decode("utf-8", errors="replace")
+        if version_text and f"Grintion-OS {version_text}" in issue:
+            report.ok("issue", "matches /etc/grintion/version")
+        else:
+            report.fail("issue", "does not identify the release version")
+
+        observed_setuid = setuid_paths(entries)
+        if observed_setuid == set(ALLOWED_SETUID):
+            report.ok("setuid", f"{len(observed_setuid)} paths match the allowlist")
+        else:
+            extra = sorted(observed_setuid - ALLOWED_SETUID)
+            missing = sorted(set(ALLOWED_SETUID) - observed_setuid)
+            report.fail("setuid", f"extra={extra or '-'} missing={missing or '-'}")
+
+        host_keys = sorted(p for p in names if p.startswith("etc/ssh/ssh_host_"))
+        if host_keys:
+            report.fail("ssh-host-keys", f"baked host keys present: {host_keys}")
+        else:
+            report.ok("ssh-host-keys", "no baked host keys")
+
+        for binary in SYSTEM_BINARIES:
+            payload = cpio_extract(initrd, f"usr/bin/{binary}")
+            if payload[:4] == b"\x7fELF":
+                report.ok("system-binary", f"/usr/bin/{binary} is ELF")
+            else:
+                report.fail("system-binary", f"/usr/bin/{binary} is not an ELF binary")
+
+        for wrapper in WRAPPER_FILES:
+            payload = cpio_extract(initrd, f"usr/bin/{wrapper}")
+            if payload.startswith(b"#!"):
+                report.ok("wrapper", f"/usr/bin/{wrapper} is a wrapper script")
+            else:
+                report.fail("wrapper", f"/usr/bin/{wrapper} is missing or not a script")
+
+        rules = cpio_extract(initrd, "etc/audit/audit.rules").decode(
+            "utf-8", errors="replace")
+        rule_count = sum(1 for line in rules.splitlines() if line.startswith("-"))
+        missing = [token for token in AUDIT_RULE_TOKENS if token not in rules]
+        if rule_count < 20 or missing:
+            report.fail("audit-rules",
+                        f"{rule_count} rules; missing {', '.join(missing) or 'none'}")
+        else:
+            report.ok("audit-rules", f"{rule_count} rules cover privileged surfaces")
+
+        live_init = cpio_extract(initrd, "init").decode("utf-8", errors="replace")
+        for token in ("crypto_LUKS", "luksOpen", "Enter persistence passphrase",
+                      "GRINTION_PERSIST"):
+            if token not in live_init:
+                report.fail("persistence-unlock", f"missing {token!r} in /init")
+                break
+        else:
+            report.ok("persistence-unlock", "LUKS2 live persistence unlock present")
+
+        profiles = [p for p in names if p.startswith("etc/apparmor.d/")
+                    and not p.endswith("/")]
+        if len(profiles) >= 3:
+            report.ok("apparmor-profiles", f"{len(profiles)} files")
+        else:
+            report.fail("apparmor-profiles", f"only {len(profiles)} profile files")
+
+    return report
+
+
+def read_text(root: Path, path: str) -> str:
+    try:
+        return (root / path.lstrip("/")).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def process_running(root: Path, name: str) -> bool:
+    proc = root / "proc"
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if (entry / "comm").read_text(encoding="utf-8").strip() == name:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def check_runtime(root: Path, expected_version: str | None,
+                  strict_setuid: bool) -> Report:
+    report = Report("runtime", str(root))
+    live = (root / "etc/grintion/live").exists()
+    cmdline = read_text(root, "/proc/cmdline").strip()
+    if not cmdline:
+        report.fail("cmdline", "cannot read /proc/cmdline")
+    else:
+        required = ["security=apparmor", "apparmor=1", "audit=1",
+                    "module.sig_enforce=1"]
+        if live:
+            required.append("rd.shell=0")
+        missing = [token for token in required if token not in cmdline]
+        if not any(token in cmdline for token in
+                   ("lockdown=confidentiality", "lockdown=integrity")):
+            missing.append("lockdown=confidentiality|integrity")
+        if missing:
+            report.fail("cmdline", f"missing: {', '.join(missing)}")
+        else:
+            report.ok("cmdline", "AppArmor, audit, module signing and lockdown")
+
+    lockdown = read_text(root, "/sys/kernel/security/lockdown")
+    if "[confidentiality]" in lockdown or "[integrity]" in lockdown:
+        report.ok("kernel-lockdown", lockdown.strip())
+    else:
+        report.fail("kernel-lockdown", lockdown.strip() or "not available")
+
+    apparmor = read_text(root, "/sys/module/apparmor/parameters/enabled").strip()
+    profiles = read_text(root, "/sys/kernel/security/apparmor/profiles")
+    loaded = sum(1 for line in profiles.splitlines() if line.strip())
+    if apparmor == "Y" and loaded >= 3:
+        report.ok("apparmor", f"enabled, {loaded} profiles loaded")
+    else:
+        report.fail("apparmor", f"enabled={apparmor or '?'}, profiles={loaded}")
+
+    if process_running(root, "auditd"):
+        report.ok("auditd", "daemon is running")
+    else:
+        report.fail("auditd", "daemon is not running")
+
+    auditctl = subprocess.run(["auditctl", "-s"], capture_output=True,
+                             text=True, check=False)
+    status = auditctl.stdout + auditctl.stderr
+    if re.search(r"^enabled\s+[12]$", status, re.MULTILINE):
+        report.ok("audit-enabled", status.splitlines()[0])
+    else:
+        report.fail("audit-enabled", status.strip() or "auditctl -s failed")
+
+    rules = read_text(root, "/etc/audit/audit.rules")
+    rule_count = sum(1 for line in rules.splitlines() if line.startswith("-"))
+    missing = [token for token in AUDIT_RULE_TOKENS if token not in rules]
+    if rule_count < 20 or missing:
+        report.fail("audit-rules",
+                    f"{rule_count} rules; missing {', '.join(missing) or 'none'}")
+    else:
+        report.ok("audit-rules", f"{rule_count} rules")
+
+    observed: set[str] = set()
+    for rel in ("usr/bin", "usr/sbin"):
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for dirpath, _, filenames in os.walk(base):
+            for filename in filenames:
+                path = Path(dirpath) / filename
+                try:
+                    mode = path.lstat().st_mode
+                except OSError:
+                    continue
+                if mode & 0o6000:
+                    observed.add(str(path.relative_to(root)))
+    if live:
+        if observed == set(ALLOWED_SETUID):
+            report.ok("setuid", f"{len(observed)} paths match the allowlist")
+        else:
+            report.fail("setuid",
+                        f"extra={sorted(observed - ALLOWED_SETUID) or '-'} "
+                        f"missing={sorted(set(ALLOWED_SETUID) - observed) or '-'}")
+    elif observed - ALLOWED_SETUID and strict_setuid:
+        report.fail("setuid", f"extras: {sorted(observed - ALLOWED_SETUID)}")
+    elif observed - ALLOWED_SETUID:
+        report.warn("setuid", f"extras: {sorted(observed - ALLOWED_SETUID)}")
+    else:
+        report.ok("setuid", f"{len(observed)} allowlisted paths")
+
+    keys = sorted((root / "etc/ssh").glob("ssh_host_*")) \
+        if (root / "etc/ssh").is_dir() else []
+    unsafe = [str(k.relative_to(root)) for k in keys
+              if k.stat().st_mode & 0o077]
+    if live and keys:
+        report.fail("ssh-host-keys", f"live image carries {len(keys)} host key(s)")
+    elif unsafe:
+        report.fail("ssh-host-keys", f"unsafe modes: {unsafe}")
+    elif keys:
+        report.ok("ssh-host-keys", f"{len(keys)} per-machine keys with 0600")
+    else:
+        report.info("ssh-host-keys", "none present")
+
+    mounts: dict[str, str] = {}
+    for line in read_text(root, "/proc/mounts").splitlines():
+        fields = line.split()
+        if len(fields) >= 4:
+            mounts[fields[1]] = fields[3]
+    for mount in ("/tmp", "/var/tmp", "/dev/shm"):
+        options = mounts.get(mount)
+        if options is None:
+            report.warn("mount-hardening", f"{mount} is not mounted")
+        else:
+            missing = [flag for flag in ("nosuid", "nodev", "noexec")
+                       if flag not in options.split(",")]
+            if missing:
+                report.fail("mount-hardening",
+                            f"{mount} missing {', '.join(missing)}")
+            else:
+                report.ok("mount-hardening", mount)
+
+    version = read_text(root, "/etc/grintion/version").strip()
+    if not is_semver(version):
+        report.fail("version", f"invalid: {version!r}")
+    elif expected_version and version != expected_version:
+        report.fail("version", f"expected {expected_version}, got {version}")
+    else:
+        report.ok("version", version)
+
+    if "/run/persist" in mounts:
+        source = ""
+        for line in read_text(root, "/proc/mounts").splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[1] == "/run/persist":
+                source = fields[0]
+                break
+        if source.startswith("/dev/mapper/grintion-persist"):
+            report.ok("persistence", "encrypted LUKS2 persistence is active")
+        else:
+            report.warn("persistence", f"mounted from {source or 'unknown'}")
+    else:
+        report.info("persistence", "not in use (RAM overlay)")
+
+    secure = self_secure_boot(root)
+    if secure is True:
+        report.warn("secure-boot", "enabled; the shipped chain is unsigned")
+    elif secure is False:
+        report.ok("secure-boot", "disabled")
+    else:
+        report.info("secure-boot", "not available")
+
+    return report
+
+
+def self_secure_boot(root: Path) -> bool | None:
+    efivars = root / "sys/firmware/efi/efivars"
+    if not efivars.is_dir():
+        return None
+    for entry in efivars.glob("SecureBoot-*"):
+        try:
+            data = entry.read_bytes()
+        except OSError:
+            continue
+        if len(data) >= 5:
+            return data[4] != 0
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Independent audit of a Grintion-OS release and runtime")
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    artifact = sub.add_parser("artifact", help="audit an ISO without trusting the build tree")
+    artifact.add_argument("iso", type=Path)
+    artifact.add_argument("--checksum", type=Path,
+                          help="checksum file (default: <iso>.sha256)")
+    artifact.add_argument("--expected-version")
+    artifact.add_argument("--json", action="store_true")
+
+    runtime = sub.add_parser("runtime", help="audit the running Grintion-OS system")
+    runtime.add_argument("--root", type=Path, default=Path("/"))
+    runtime.add_argument("--expected-version")
+    runtime.add_argument("--strict-setuid", action="store_true")
+    runtime.add_argument("--json", action="store_true")
+
+    args = parser.parse_args()
+    if args.mode == "artifact":
+        report = check_artifact(args.iso, args.checksum, args.expected_version)
+    else:
+        report = check_runtime(args.root, args.expected_version, args.strict_setuid)
+    return report.emit(args.json)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

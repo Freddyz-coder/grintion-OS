@@ -74,3 +74,17 @@ grintion-release-verify output/grintion-os-x86_64.iso \
 Reproducible builds and signed `BUILD-INFO` are Phase 7 work. Until then, a
 signature authenticates the artifact that was signed, not the process that
 produced it.
+
+## Independent artifact audit
+
+After verifying the checksum and signature, run the artifact-first audit:
+
+```sh
+grintion-release-audit artifact output/grintion-os-x86_64.iso \
+    --expected-version 0.19.0
+```
+
+It re-derives the `BUILD-INFO` hashes, boot command lines, set-ID allowlist,
+SSH host-key hygiene, AppArmor profiles, audit policy and encrypted-persistence
+init code from the released ISO. It is an automated audit, not a third-party
+review; see [INDEPENDENT-AUDIT.md](INDEPENDENT-AUDIT.md).

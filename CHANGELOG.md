@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.19.0] - 2026-11-16
+
+### Added
+
+- **Encrypted live persistence is the default.** `grintion-persist` creates a
+LUKS2 container (AES-XTS-512, Argon2id) labelled `GRINTION_PERSIST` with an
+inner ext4 overlay filesystem. The live init prompts for the passphrase, opens
+the container, and mounts it `nosuid,nodev`; three failed attempts fall back to
+a RAM overlay instead of mounting ciphertext. `--no-encrypt` preserves plain
+ext4 for existing media.
+- **Independent release audit.** `grintion-release-audit artifact` re-derives
+the ISO checksum, `BUILD-INFO` hashes, boot command lines, set-ID allowlist,
+SSH host-key hygiene, AppArmor profiles, audit policy and encrypted-persistence
+init code from the released ISO. `grintion-release-audit runtime` audits the
+running system. It is an automated audit, not a third-party review.
+- `make test-persist` creates encrypted persistence, reboots, unlocks it and
+verifies a marker survives; `make audit-release` runs the artifact audit. The
+QEMU CI job runs both.
+
+### Changed
+
+- Version metadata and current-facing documentation moved to 0.19.0.
+- `grintion-persist` reads the passphrase through stdin and never accepts it as
+a command-line argument. Plain ext4 persistence is now opt-in.
+
+### Fixed
+
+- `init/live-init` detects LUKS2 labels that `blkid -L` does not return, creates
+`/dev/mapper/control` before `cryptsetup`, prompts on the serial or configured
+console, and falls back to a RAM overlay when the passphrase is rejected.
+- The static gate now includes the independent-audit tests.
+
+### Security
+
+- Live persistence no longer stores the overlay upper layer in plaintext by
+default. Losing the passphrase loses the overlay, and the live init never
+mounts ciphertext as plain ext4.
+- `grintion-release-audit` checks the released artifact rather than trusting
+the build tree, and the boot test runs its runtime mode before `poweroff`.
+
+### Tests
+
+- `make check`: **263 passed**, 0 failures; shellcheck, Python compilation,
+  documentation links, executable bits and staged-rootfs checks passed.
+- New regression coverage checks the LUKS2 persistence path, live-init unlock,
+  the audit helper parsers and the set-ID allowlist contract.
+
+---
+
 ## [0.18.0] - 2026-11-16
 
 ### Security
