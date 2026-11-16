@@ -33,11 +33,12 @@ baked SSH host keys, and the installer generates fresh host keys with
 `ssh-keygen -A` and mode `0600` private keys.
 - **Runtime hardening adds `vm.unprivileged_userfaultfd=0` and
 `net.core.bpf_jit_harden=2`.**
-- **The system `mount` binary is no longer shadowed.** The advanced wrapper is
-installed only as `grintion-mount`, leaving util-linux `mount` available to
-initramfs init, runit stage 1, the installer and chroot. This fixed a live-boot
-failure where `mount -t proc` invoked the Python wrapper and the fail-closed
-path powered off.
+- **System command names are no longer shadowed.** The advanced wrappers for
+`mount`, `chroot`, `install`, `reset` and `ssh` are installed only under their
+`grintion-*` names. Util-linux `mount`, coreutils `chroot`/`install`, ncurses
+`reset` and OpenSSH `ssh` remain available to early boot, the installer and
+package scripts. This fixed a live-boot failure where `mount -t proc` invoked
+the Python wrapper and PID 1 executed the `chroot` wrapper instead of `chroot(1)`.
 
 ### Changed
 

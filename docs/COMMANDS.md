@@ -51,7 +51,10 @@ only targets real block-device mounts.
 
 The advanced wrapper is installed as `grintion-mount`; `/usr/bin/mount` remains
 util-linux so initramfs init, runit stage 1, the installer and chroot can use
-standard mount(8) syntax. Use the standard `mount` for ordinary mounts and
+standard mount(8) syntax. The same rule applies to `chroot`, `install`, `reset`
+and `ssh`: their system binaries are preserved, and the advanced tools are
+available as `grintion-chroot`, `grintion-install`, `grintion-reset` and
+`grintion-ssh`. Use the standard `mount` for ordinary mounts and
 `grintion-mount` for fstab-aware operations.
 
 ```sh

@@ -31,10 +31,13 @@ manager repairs and database pinning remain in this image. See
 
 0.16.0 delivered three major improvements over 0.15.0:
 
-1. **Clean command names** — all 75+ tools in `bin/` drop the redundant
-   `grintion-` prefix (e.g. `install`, `desktop`, `apparmor`). The rootfs
-   build automatically plants backward-compatible symlinks
-   (`/usr/bin/grintion-<tool> → <tool>`) so existing scripts continue to work.
+1. **Clean command names** — most tools in `bin/` drop the redundant
+   `grintion-` prefix (e.g. `desktop`, `apparmor`, `doctor`). The rootfs build
+   plants backward-compatible symlinks (`/usr/bin/grintion-<tool> → <tool>`).
+   The exceptions are `mount`, `chroot`, `install`, `reset` and `ssh`, whose
+   system binaries must not be shadowed; the advanced wrappers are available as
+   `grintion-mount`, `grintion-chroot`, `grintion-install`, `grintion-reset`
+   and `grintion-ssh`.
 2. **AppArmor 2.0** — the `apparmor` tool gains AST-level brace-depth parsing,
    multi-line header support, fail-closed atomic rollback, securityfs
    cross-checking, and full flag preservation.

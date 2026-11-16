@@ -2,10 +2,10 @@ Grintion-OS @VERSION@
 Minimalist - Independent - Secure - Stable
 
 Useful commands:
-  install --help            install to a disk (alias: grintion-install)
+  grintion-install --help   install to a disk
   desktop --help            install/setup GUI & desktop (XFCE, KDE, Sway, LXQt, i3)
   persist                   create persistent live storage
-  chroot /mnt               enter an installed system
+  grintion-chroot /mnt      enter an installed system
   doctor                    system health checks
   garb --help               package manager
   sv status /var/service/*  service status

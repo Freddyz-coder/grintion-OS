@@ -2,9 +2,9 @@ Grintion-OS 0.18.0
 Minimal - Independent - Secure - Stable
 
 Useful commands:
-  install --help           install to a disk (alias: grintion-install)
+  grintion-install --help  install to a disk
   persist                  create persistent live storage
-  chroot /mnt              enter an installed system
+  grintion-chroot /mnt     enter an installed system
   doctor                   run system diagnostic checks
   garb --help              package manager
   sv status /var/service/* service status
