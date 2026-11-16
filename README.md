@@ -283,7 +283,8 @@ this release builds and tests.
 
 ```text
 bin/            install, config, desktop, persist, chroot, garb, limine-deploy,
-                doctor, security-report, hwinfo, release-verify, secureboot, uki,
+                doctor, security-report, hwinfo, release-verify, release-audit,
+                secureboot, uki,
                 attest, tpm-luks, snapshot, boot-health, backup, reset, network,
                 session, audit, integrity, audit-log, sandbox, shield, vault, usb,
                 watchdog, tour, help, report, welcome, apparmor, aa-status,

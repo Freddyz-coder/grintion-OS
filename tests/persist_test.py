@@ -60,9 +60,13 @@ class VM:
             pass
 
 
-def boot(iso: str, disk: str) -> VM:
+def boot(iso: str, disk: str, encrypted: bool = False) -> VM:
     vm = VM(iso, disk)
-    vm.prompt(timeout=300)
+    if encrypted:
+        # The initramfs blocks before the shell until the passphrase is sent.
+        vm.unlock()
+    else:
+        vm.prompt(timeout=300)
     return vm
 
 
@@ -107,8 +111,7 @@ def main() -> int:
         vm = None
 
         print("[*] boot 2: unlocking persistence and writing /root/persist-marker")
-        vm = boot(args.iso, args.disk)
-        vm.unlock()
+        vm = boot(args.iso, args.disk, encrypted=True)
         output = vm.run(
             "mountpoint -q /run/persist && echo PERSIST_MOUNTED; "
             "test -b /dev/mapper/grintion-persist && echo MAPPER_OK"
@@ -122,8 +125,7 @@ def main() -> int:
         vm = None
 
         print("[*] boot 3: verifying the marker survived the reboot")
-        vm = boot(args.iso, args.disk)
-        vm.unlock()
+        vm = boot(args.iso, args.disk, encrypted=True)
         output = vm.run("cat /root/persist-marker 2>/dev/null || echo MISSING")
         if "persisted" not in output:
             raise AssertionError(f"persistence marker did not survive:\n{output}")

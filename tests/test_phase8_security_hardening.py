@@ -111,11 +111,33 @@ def test_grintion_integrity_baseline_and_tamper_detection(tmp_path: Path):
 
 
 def test_grintion_scan_rogue_suid_detection(tmp_path: Path):
-    # Standard clean scan
-    res = run_bin("grintion-scan", "--json")
-    assert res.returncode == 0
+    # Point the scan at a controlled path so host temporary directories do not
+    # change the result, and verify it actually finds a setuid file.
+    rogue_dir = tmp_path / "rogue"
+    rogue_dir.mkdir()
+    rogue = rogue_dir / "suid-helper"
+    rogue.write_text("#!/bin/sh\n")
+    rogue.chmod(0o4755)
+
+    res = run_bin(
+        "grintion-scan", "--json", env={"GRINTION_SCAN_PATHS": str(rogue_dir)}
+    )
+    assert res.returncode == 1
     data = json.loads(res.stdout)
-    assert "status" in data
+    assert str(rogue) in data["rogue_suid"]
+
+    # A host interface can legitimately be in promiscuous mode (for example a
+    # container veth). The clean-path assertion checks report consistency, not
+    # the host's network state.
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    res = run_bin(
+        "grintion-scan", "--json", env={"GRINTION_SCAN_PATHS": str(empty_dir)}
+    )
+    data = json.loads(res.stdout)
+    assert data["rogue_suid"] == []
+    host_findings = bool(data["promiscuous_interfaces"] or data["hidden_suspicious_files"])
+    assert res.returncode == (1 if host_findings else 0)
 
 
 def test_grintion_usb_data_block_and_authorization(tmp_path: Path):

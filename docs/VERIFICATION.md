@@ -1,9 +1,51 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.18.0,
-0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1,
-0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.19.0,
+0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0,
+0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.19.0 encrypted persistence and independent audit (2026-11-16)
+
+0.19.0 makes encrypted live persistence the default and adds an artifact-first
+release audit. The ISO was rebuilt from commit `ec3c3ab`. The first
+persistence run exposed a test-harness defect: boot 2 waited for a shell prompt
+before sending the passphrase. The harness was fixed to unlock before the
+prompt, and the full three-boot test was rerun.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 148,439,040 bytes (142 MiB) |
+| SHA-256 | `43874b837a1bfafae3661ebfd9476f1d51ea0c5a15f64ef2b9e8b1cf87339aa6` |
+| `BUILD-INFO` source commit | `ec3c3ab` |
+| Kernel | `6.12.114-grintion`, 13,358,080 bytes, SHA-256 `92565cb16bfa65bde804ebea36bf1f3b5451c70d5c2201e3f6ba5e4f7f858928` |
+| Live initramfs | 131,222,137 bytes, SHA-256 `a4881e79a8d3a73844de4bcb13663b165a7a237329c4a8ad84bc19f5b9d65308`; `/etc/grintion/version` = `0.19.0`; generated audit policy is 42 lines |
+| Installed initramfs | 5,966,152 bytes, SHA-256 `d18c11b84b8bd2e7542eb447d093337f8ec37eec8c342121de15866793f041fc`; minimal pre-root image with no `/etc/grintion/version`, so the installed root identity comes from the live rootfs |
+| Limine entries | `Grintion-OS 0.19.0 (live, RAM)` and `Grintion-OS 0.19.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **263 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| `make iso` | Passed; required commands installed, AppArmor profiles parsed, live rootfs and 142 MiB ISO produced |
+| ISO checksum | `sha256sum -c grintion-os-x86_64.iso.sha256` passed from `output/` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO`, boot entries, set-ID allowlist, SSH keys, system binaries, audit rules, persistence unlock and AppArmor profiles verified |
+| BIOS live boot | `tests/boot_test.py` passed with `e1000`/`pc`: root prompt, kernel release, DHCP, network service, live marker, firewall, AppArmor, auditd, sudo, `grintion-doctor` (`DOCTOR_RC=0`), framebuffer console, runtime audit (`AUDIT_RC=0`) and `poweroff` |
+| UEFI live boot | The same test passed with OVMF: `DOCTOR_RC=0`, `AUDIT_RC=0`, framebuffer console and `poweroff` |
+| Encrypted persistence | `tests/persist_test.py` passed across three boots: created a LUKS2 container labelled `GRINTION_PERSIST`; unlocked it at the early-boot prompt; mounted `/run/persist` from `/dev/mapper/grintion-persist` with `nosuid,nodev,noatime`; `/root/persist-marker` survived the next reboot |
+| BIOS installer / installed reboot | Passed: `Grintion-OS 0.19.0 installed`, `[ ok ] installed marker`, `[ ok ] installed: amd-ucode`, Limine BIOS stages installed, rebooted from the disk, logged in, obtained DHCP, confirmed `INSTALLED`, yescrypt shadow entry, sudo, and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Bare-metal hardware | Not tested; this host cannot be repartitioned without destroying its disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+The installer test's final `poweroff -f` is issued as the unprivileged test user
+and is denied; the harness closes QEMU after the installed-system assertions
+pass. No release signing key was available, so verify the SHA-256 before use.
+
+---
 
 ## 0.18.0 security hardening (2026-11-16)
 

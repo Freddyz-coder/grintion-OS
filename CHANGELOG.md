@@ -51,8 +51,34 @@ the build tree, and the boot test runs its runtime mode before `poweroff`.
 
 - `make check`: **263 passed**, 0 failures; shellcheck, Python compilation,
   documentation links, executable bits and staged-rootfs checks passed.
+- `make iso`: passed; required commands installed, AppArmor profiles parsed,
+  and a 148,439,040-byte ISO produced.
+- `bin/release-audit artifact`: **38 ok, 0 warn, 0 fail, 1 info** on the
+  released ISO, covering the checksum, `BUILD-INFO`, boot entries, set-ID
+  allowlist, SSH keys, system binaries, audit rules and persistence unlock.
+- BIOS and UEFI live boot passed; `grintion-release-audit runtime` returned
+  `AUDIT_RC=0` in both modes.
+- Encrypted persistence passed across three boots: LUKS2 creation, early-boot
+  unlock, overlay mount from `/dev/mapper/grintion-persist`, and a marker that
+  survived the next reboot.
+- BIOS and UEFI installer/installed reboot passed: 0.19.0 installed, booted
+  from the target disk, logged in, obtained DHCP and verified the installed
+  marker.
 - New regression coverage checks the LUKS2 persistence path, live-init unlock,
   the audit helper parsers and the set-ID allowlist contract.
+- No bare-metal hardware test and no independent third-party audit were
+  performed.
+
+### Release artifact
+
+- ISO: `grintion-os-x86_64.iso`, 148,439,040 bytes (142 MiB), SHA-256
+  `43874b837a1bfafae3661ebfd9476f1d51ea0c5a15f64ef2b9e8b1cf87339aa6`.
+- `BUILD-INFO` source commit: `ec3c3ab`.
+- Live initramfs: 131,222,137 bytes, SHA-256
+  `a4881e79a8d3a73844de4bcb13663b165a7a237329c4a8ad84bc19f5b9d65308`.
+- Installed initramfs: 5,966,152 bytes, SHA-256
+  `d18c11b84b8bd2e7542eb447d093337f8ec37eec8c342121de15866793f041fc`.
+- No release signing key was available; verify the SHA-256 before use.
 
 ---
 
