@@ -335,8 +335,8 @@ def test_boot_failures_are_closed_and_recovery_requires_opt_in() -> None:
 def test_lockdown_and_module_signing_are_in_every_boot_path() -> None:
     for rel in ("build/build-iso.sh", "bin/install", "bin/limine-deploy", "bin/uki"):
         text = (REPO_ROOT / rel).read_text()
-        for token in ("security=apparmor", "apparmor=1", "module.sig_enforce=1",
-                      "lockdown=confidentiality", "rd.shell=0"):
+        for token in ("security=apparmor", "apparmor=1", "audit=1",
+                      "module.sig_enforce=1", "lockdown=confidentiality", "rd.shell=0"):
             assert token in text, (rel, token)
 
     installer = (REPO_ROOT / "bin" / "install").read_text()

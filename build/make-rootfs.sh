@@ -436,6 +436,14 @@ chmod 0755 "$ROOTFS/usr/share/limine/limine"
 log "deploying /etc configuration"
 cp -a "$GRINTION_REPO_ROOT/etc/." "$ROOTFS/etc/"
 
+# Policy is authored in /etc/audit/rules.d, but auditd and the runit service
+# load /etc/audit/audit.rules. Regenerate the loaded file from the source rules
+# so a rule added to rules.d cannot be silently ignored.
+{
+    printf '%s\n' '## Generated from rules.d/*.rules by build/make-rootfs.sh.'
+    cat "$ROOTFS"/etc/audit/rules.d/*.rules
+} > "$ROOTFS/etc/audit/audit.rules"
+
 # The tracked profiles include the AppArmor policy language abstractions,
 # tunables and ABI declarations. Those files ship with the apparmor package on
 # the build host, not with this repository, so copy the matching support tree

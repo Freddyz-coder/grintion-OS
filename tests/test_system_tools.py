@@ -1122,6 +1122,12 @@ def test_audit_rules_cover_privileged_surfaces_and_service_checks_enabled() -> N
         assert flag in shm_mount, flag
 
 
+def test_rootfs_generates_audit_rules_from_rules_d() -> None:
+    rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
+    assert 'cat "$ROOTFS"/etc/audit/rules.d/*.rules' in rootfs
+    assert '> "$ROOTFS/etc/audit/audit.rules"' in rootfs
+
+
 def test_rootfs_keeps_system_commands_and_names_the_wrappers() -> None:
     rootfs = (REPO_ROOT / "build" / "make-rootfs.sh").read_text()
     assert "mount|chroot|install|reset|ssh)" in rootfs

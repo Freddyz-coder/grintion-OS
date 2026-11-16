@@ -214,7 +214,7 @@ def collect() -> dict:
             "This may not be a Grintion-OS image; the report still inspects the host.")
 
     cmdline = kernel_cmdline()
-    required_cmdline = ["security=apparmor", "apparmor=1", "module.sig_enforce=1", "rd.shell=0"]
+    required_cmdline = ["security=apparmor", "apparmor=1", "audit=1", "module.sig_enforce=1", "rd.shell=0"]
     missing_cmdline = [token for token in required_cmdline if token not in cmdline]
     if not any(token in cmdline for token in ("lockdown=confidentiality", "lockdown=integrity")):
         missing_cmdline.append("lockdown=confidentiality|integrity")

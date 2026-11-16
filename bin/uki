@@ -29,7 +29,7 @@ def build_uki(
     kernel: Path,
     initrd: Path,
     output: Path,
-    cmdline: str = "quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10",
+    cmdline: str = "quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1 audit=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10",
     ucode: Path | None = None,
     os_release: Path | None = None,
     stub_efi: Path | None = None,
@@ -162,7 +162,7 @@ def main() -> None:
     build_p.add_argument("--kernel", required=True, type=Path)
     build_p.add_argument("--initrd", required=True, type=Path)
     build_p.add_argument("--output", required=True, type=Path)
-    build_p.add_argument("--cmdline", default="quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10")
+    build_p.add_argument("--cmdline", default="quiet loglevel=3 root=LABEL=GRINTION_ROOT rw security=apparmor apparmor=1 audit=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10")
     build_p.add_argument("--ucode", type=Path)
     build_p.add_argument("--os-release", type=Path)
 

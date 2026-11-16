@@ -1312,7 +1312,7 @@ if [ "$NO_BOOTLOADER" -eq 0 ]; then
     install -D -m 0644 /usr/share/limine/BOOTX64.EFI \
         "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
 
-    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 security=apparmor apparmor=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10"
+    ROOT_CMDLINE="root=UUID=$ROOT_UUID rw quiet loglevel=3 security=apparmor apparmor=1 audit=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0 panic=10"
     if [ "$FILESYSTEM" = "btrfs" ]; then
         ROOT_CMDLINE="$ROOT_CMDLINE rootflags=subvol=@"
     fi
