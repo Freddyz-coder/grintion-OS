@@ -34,8 +34,9 @@ verification checks the daemon and `auditctl -s` state.
 ## 2. Mandatory Access Control (AppArmor)
 
 AppArmor is compiled into the kernel (`CONFIG_SECURITY_APPARMOR=y`), the boot
-command line selects it (`security=apparmor apparmor=1`) and also requests
-kernel lockdown (`lockdown=confidentiality`). `/etc/runit/1` mounts
+command line selects it (`security=apparmor apparmor=1`), enables kernel
+auditing (`audit=1`) and requests kernel lockdown
+(`lockdown=confidentiality`). `/etc/runit/1` mounts
 securityfs, and the `apparmor` runit service loads every profile at boot. A
 profile file that is not loaded confines nothing, so do not treat the files in
 `/etc/apparmor.d/` as enforcement evidence by themselves.

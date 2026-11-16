@@ -1,8 +1,52 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.17.1,
-0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.18.0,
+0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0, 0.13.1,
+0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.18.0 security hardening (2026-11-16)
+
+The 0.18.0 release fail-closes early boot, forces kernel lockdown and module
+signature enforcement, expands audit coverage, and removes inherited set-ID and
+SSH identity from image builds. The ISO was rebuilt from commit `6b76a24`.
+Earlier rebuilds in this cycle exposed and fixed three boot defects: the rootfs
+shadowed system command names, the audit service checked `auditctl -s` before
+kernel auditing was enabled, and `/etc/audit/audit.rules` had not been
+regenerated from the expanded `rules.d` policy.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 148,422,656 bytes (142 MiB) |
+| SHA-256 | `bd05acd2ae72d628a904f2bc66dd94a99b0c172094eedb2978d4577d04897ff0` |
+| `BUILD-INFO` source commit | `6b76a24` |
+| Kernel | `6.12.114-grintion`, 13,358,080 bytes, SHA-256 `92565cb16bfa65bde804ebea36bf1f3b5451c70d5c2201e3f6ba5e4f7f858928` |
+| Live initramfs | 131,206,137 bytes, SHA-256 `67b9bd5b78ceae9038675849a73901dbcb48b2acb29822b1fa1e657f644def23`; `/etc/grintion/version` = `0.18.0`; generated audit policy is 42 lines |
+| Installed initramfs | 5,966,152 bytes, SHA-256 `d18c11b84b8bd2e7542eb447d093337f8ec37eec8c342121de15866793f041fc`; minimal pre-root image with no `/etc/grintion/version`, so the installed root identity comes from the live rootfs |
+| Limine entries | `Grintion-OS 0.18.0 (live, RAM)` and `Grintion-OS 0.18.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **256 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| `make iso` | Passed; required commands installed, AppArmor profiles parsed, live rootfs and 142 MiB ISO produced |
+| ISO checksum | `sha256sum -c grintion-os-x86_64.iso.sha256` passed from `output/` |
+| BIOS live boot | `tests/boot_test.py` passed with `e1000`/`pc`: root prompt, kernel release, DHCP, network service, live marker, firewall, AppArmor profiles, sudo, `grintion-doctor` (`DOCTOR_RC=0`), framebuffer console and `poweroff` |
+| UEFI live boot | The same test passed with OVMF: `DOCTOR_RC=0`, framebuffer console and `poweroff` |
+| System command names | `/usr/bin/{mount,chroot,install,ssh,reset}` are ELF system binaries; the advanced tools are `grintion-{mount,chroot,install,reset,ssh}` wrappers |
+| Initramfs `chroot` | `usr/bin/chroot` extracted from the live initramfs is the coreutils ELF binary |
+| Kernel lockdown | `output/config-grintion` contains `CONFIG_SECURITY_LOCKDOWN_LSM=y` and `CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y` |
+| Boot command lines | The live Limine entry carries `security=apparmor apparmor=1 audit=1 module.sig_enforce=1 lockdown=confidentiality rd.shell=0`; the recovery entry carries `audit=1 module.sig_enforce=1 lockdown=confidentiality`; installer, `limine-deploy` and UKI paths also carry `audit=1` |
+| Audit policy | `/etc/audit/audit.rules` is generated from `rules.d`; the live initramfs contains all 42 policy lines, including PAM, sysctl, firewall, USBGuard, package trust/database, namespace and file-handle coverage |
+| Set-ID files | The rootfs setuid list exactly matches `config/rootfs.setuid` (12 entries) |
+| SSH host keys | No `ssh_host_*` files under `/etc/ssh`; the installer generates them per install |
+| Installer / installed reboot | Not rerun for 0.18.0 |
+| Bare-metal hardware | Not tested |
+
+---
 
 ## 0.17.1 package manager repair (2026-11-15)
 

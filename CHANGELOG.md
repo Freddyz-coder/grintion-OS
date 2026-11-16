@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.18.0] - 2026-11-15
+## [0.18.0] - 2026-11-16
 
 ### Security
 
@@ -27,6 +27,11 @@ security policy, sysctl, firewall, USBGuard, SSH, package trust and the package
 database, and record mount, ptrace, BPF, namespace and file-handle syscalls.
 The audit service queries `auditctl -s` and refuses to report healthy unless
 the kernel audit subsystem is enabled.
+- **Kernel audit is armed before the daemon starts.** Every boot path passes
+`audit=1`, and the rootfs generates `/etc/audit/audit.rules` from
+`/etc/audit/rules.d` so the expanded policy is the file the service actually
+loads. Without this the pre-daemon `auditctl -s` guard saw `enabled 0` and
+refused to start the daemon.
 - **Set-ID and SSH identity are no longer inherited.** The rootfs strips every
 inherited setuid/setgid bit before applying the explicit allowlist, removes
 baked SSH host keys, and the installer generates fresh host keys with
@@ -49,12 +54,30 @@ host-key permissions in addition to the existing posture checks.
 
 ### Tests
 
-- `make check`: **255 passed**, 0 failures; shellcheck, Python compilation,
+- `make check`: **256 passed**, 0 failures; shellcheck, Python compilation,
   documentation links, executable bits and staged-rootfs checks passed.
 - Focused boot, system-tool and release-tool suites: **80 passed**.
 - New regression coverage checks fail-closed recovery, the recovery/LUKS
   ordering, lockdown command lines, kernel lockdown symbols, expanded audit
-  rules, set-ID stripping, SSH host-key provisioning and the new report IDs.
+  rules, generated audit policy, `audit=1` in every boot path, set-ID
+  stripping, SSH host-key provisioning and the new report IDs.
+
+### Release
+
+- Rebuilt the x86_64 BIOS/UEFI ISO as 0.18.0:
+  `output/grintion-os-x86_64.iso`, 148,422,656 bytes (142 MiB), SHA-256
+  `bd05acd2ae72d628a904f2bc66dd94a99b0c172094eedb2978d4577d04897ff0`.
+- `output/BUILD-INFO` records source commit `6b76a24`. The embedded live
+  initramfs is 131,206,137 bytes with SHA-256
+  `67b9bd5b78ceae9038675849a73901dbcb48b2acb29822b1fa1e657f644def23`,
+  reports `Grintion-OS 0.18.0`, and carries the 42-line generated audit rule
+  set. The installed initramfs is 5,966,152 bytes with SHA-256
+  `d18c11b84b8bd2e7542eb447d093337f8ec37eec8c342121de15866793f041fc`.
+- The kernel is `6.12.114-grintion`, 13,358,080 bytes, SHA-256
+  `92565cb16bfa65bde804ebea36bf1f3b5451c70d5c2201e3f6ba5e4f7f858928`.
+- Live boot was verified over the serial console with SeaBIOS and OVMF:
+  root prompt, DHCP lease, nftables rules, AppArmor profiles, `auditd`,
+  `grintion-doctor`, framebuffer console and `poweroff` all passed.
 
 ---
 
