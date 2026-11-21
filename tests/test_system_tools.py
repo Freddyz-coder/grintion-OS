@@ -338,11 +338,13 @@ def test_dbus_service_logs_off_the_console() -> None:
     assert script.index("/var/log/dbus.log") < script.index("dbus-daemon --system")
 
 
-def test_desktop_install_streams_output_and_provisions_accounts() -> None:
+def test_desktop_install_uses_progress_ui_and_provisions_accounts() -> None:
     script = (get_bin("desktop")).read_text()
-    # Streaming output replaced an all-at-once $(...) capture that hid a
-    # 7-10 minute download behind a blank screen.
-    assert "tee -a" in script
+    # The desktop transaction now uses the shared Grintion renderer. Raw pacman
+    # output still has to reach the log for conflict parsing and failed installs.
+    assert "grintion-pkg-progress" in script
+    assert '--log "$logfile"' in script
+    assert 'tee -a "$logfile"' in script  # fallback when the renderer is absent
     assert "provision_dbus_accounts" in script
     assert 'getent group "$group"' in script
 
@@ -357,6 +359,39 @@ def test_desktop_download_survives_archive_low_speed_timeouts() -> None:
     assert "ParallelDownloads = 10" in conf
     desktop = (get_bin("desktop")).read_text()
     assert "--disable-download-timeout" in desktop
+
+
+def test_desktop_preflights_a_real_package_url_with_a_deadline() -> None:
+    # A reachable DNS server and cached sync databases do not prove the archive
+    # will serve a package. Resolve one real URL from the seeded database and
+    # request its first kilobyte with a hard connect and total deadline.
+    desktop = (get_bin("desktop")).read_text()
+    assert "package_source_url" in desktop
+    assert "-Sp --print-format" in desktop
+    assert "GRINTION_MIRROR_CONNECT_TIMEOUT" in desktop
+    assert "GRINTION_MIRROR_CHECK_TIMEOUT" in desktop
+    assert "--connect-timeout" in desktop
+    assert "--max-time" in desktop
+    assert "package mirror did not answer" in desktop
+
+
+def test_desktop_bounds_a_stalled_package_download() -> None:
+    # DisableDownloadTimeout keeps a genuinely slow archive transfer alive, but
+    # a connection that stops sending bytes then waits forever. The live image
+    # spent seven hours on "Retrieving packages..." because pacman has no bound
+    # of its own. The shared renderer now stops a transaction that makes no
+    # progress for five minutes and reports the recovery command.
+    desktop = (get_bin("desktop")).read_text()
+    progress = (REPO_ROOT / "bin" / "garblib" / "progress.py").read_text()
+    assert "grintion-pkg-progress" in desktop
+    assert "GRINTION_DOWNLOAD_STALL_SECONDS" in desktop
+    assert "--stall-seconds" in desktop
+    assert "rc" in desktop and "124" in desktop
+    assert "no download or installation progress" in progress
+    assert "process.terminate()" in progress
+    assert "package download made no progress" in desktop
+    assert "download rate is" in progress
+    assert "GRINTION_ALA_MIRRORS" in progress
 
 
 def test_pacman_mirror_selector_rewrites_all_dated_servers(tmp_path: Path) -> None:

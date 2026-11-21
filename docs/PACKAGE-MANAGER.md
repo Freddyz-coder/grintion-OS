@@ -8,7 +8,7 @@ overlay, an installed disk, or a staging directory:
 garb --root /mnt install demo-hello
 ```
 
-Version 0.20.0 provides signed repository indexes, per-file SHA-256 verification,
+Version 0.21.0 provides signed repository indexes, per-file SHA-256 verification,
 runtime dependency resolution, transactional installs, a transaction lock, a
 durable journal, package generations and rollback (`garb generations`), binary delta
 updates (`garb delta-create`/`delta-apply`), package holds/pins, downgrades, mirror
@@ -80,6 +80,18 @@ separate `-Sy`. Before a mutating `garb` transaction, `garb` repairs `/etc/mtab`
 to point at `/proc/self/mounts`; this prevents pacman's `CheckSpace` from
 aborting with `could not open file: /etc/mtab: Permission denied`. Automated
 non-interactive transactions pass `--noconfirm` by default.
+
+### Progress output
+
+On a terminal, delegated `install`, `upgrade`, `remove` and `update`
+transactions use `grintion-pkg-progress` instead of pacman's `::` output. The
+renderer resolves the transaction with `pacman -Sp` first, then prints the
+operation, package count, total download size, a progress bar, downloaded
+bytes, transfer rate, ETA, percentage and the active package. The full pacman
+transcript is written to `/var/log/garb-pacman.log` so a failure can still be
+diagnosed. In captured or non-interactive output the transaction stays raw,
+unless `GRINTION_PROGRESS=1` is set; `GRINTION_PROGRESS=0` disables the UI.
+The same renderer is used by `grintion-install` and the desktop pre-install.
 
 The local pacman database is seeded from the build host by
 `build/seed-pacman-db.py`. Every package that owns a path present in the image
@@ -177,6 +189,11 @@ Rules and limits:
   progressing KDE transaction therefore continues instead of aborting and
   re-downloading the missing package. `grintion-desktop` passes the equivalent
   `--disable-download-timeout` flag and still retries a failed transaction.
+  Because that flag also removes pacman's bound on a transfer that stops
+  sending bytes, `grintion-desktop` preflights the resolved package URL with a
+  hard deadline and stops the transaction when neither the package cache nor
+  the pacman log changes for five minutes. See `docs/INSTALL.md` for the
+  timeout variables and the recovery command.
 - Older 0.12.1 images built before the ownership fix can install Firefox once
   with `sudo pacman -S --overwrite '/usr/lib/libXss.so*' firefox`. This
   overwrite is limited to the three known libXss library paths; do not use a

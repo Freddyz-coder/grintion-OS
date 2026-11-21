@@ -1,7 +1,7 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.20.0,
-0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1,
+This document records what was actually executed for Grintion-OS 0.21.0,
+0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1,
 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
 

@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .common import GarbError, log, warn
+from .progress import run_transaction
 
 PACMAN_VERSION_RE = re.compile(r"Pacman v(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
 APK_VERSION_RE = re.compile(r"apk-tools\s+(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
@@ -168,8 +169,13 @@ def sync_pacman_databases(binary: str, root: Path) -> None:
     if str(root) != "/":
         argv += ["--root", str(root)]
     argv.append("-Sy")
-    print(f"[garb] {' '.join(argv)}", file=sys.stderr)
-    if subprocess.run(argv).returncode != 0:
+    if not _progress_enabled():
+        print(f"[garb] {' '.join(argv)}", file=sys.stderr)
+    if _progress_enabled():
+        rc, _ = run_transaction(argv, root=root, log_path=_progress_log_path(root))
+    else:
+        rc = subprocess.run(argv).returncode
+    if rc != 0:
         raise GarbError(
             "could not download the package databases; connect to the network "
             "and run 'sudo garb update' before installing packages"
@@ -310,6 +316,33 @@ def protected_overwrite(path: str) -> bool:
     return False
 
 
+def _progress_enabled() -> bool:
+    """Keep scripted output stable while giving interactive users the UI.
+
+    The renderer is always available; it is opt-in when stdout is captured so
+    installer logs and test output do not acquire carriage returns. Set
+    GRINTION_PROGRESS=0 to force plain output, or =1 to force the UI.
+    """
+    setting = os.environ.get("GRINTION_PROGRESS", "").strip().lower()
+    if setting in {"0", "false", "no", "off"}:
+        return False
+    if setting in {"1", "true", "yes", "on"}:
+        return True
+    return sys.stdout.isatty()
+
+
+def _progress_log_path(root: Path) -> Path:
+    return root / "var" / "log" / "garb-pacman.log"
+
+
+def _run_pacman(argv: list[str], root: Path) -> tuple[int, str]:
+    if _progress_enabled():
+        return run_transaction(
+            argv, root=root, log_path=_progress_log_path(root)
+        )
+    return run_streaming(argv)
+
+
 def run_streaming(argv: list[str]) -> tuple[int, str]:
     process = subprocess.Popen(
         argv,
@@ -378,14 +411,22 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         sync_pacman_databases(binary, root)
     argv = external_argv(backend, binary, args)
     warn(f"using the {backend} backend; garb signature and transaction checks do not apply")
-    print(f"[garb] {' '.join(argv)}", file=sys.stderr)
+    if not _progress_enabled():
+        print(f"[garb] {' '.join(argv)}", file=sys.stderr)
 
     # Never pass a blanket --overwrite '*'. It lets an upstream package replace
     # account, sudo, SSH host-key or boot files. Retry only the exact paths the
     # transaction reported, and refuse the security-sensitive ones outright.
+    if backend == "pacman" and args.command in ("remove", "update"):
+        if _progress_enabled():
+            return run_transaction(
+                argv, root=root, log_path=_progress_log_path(root)
+            )[0]
+        return subprocess.run(argv).returncode
     if backend != "pacman" or args.command not in ("install", "upgrade"):
         return subprocess.run(argv).returncode
-    rc, output = run_streaming(argv)
+
+    rc, output = _run_pacman(argv, root)
     if rc == 0:
         if (
             backend == "pacman"
@@ -427,5 +468,5 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         "security-sensitive paths remain protected"
     )
     print(f"[garb] {' '.join(retry)}", file=sys.stderr)
-    retry_rc, _ = run_streaming(retry)
+    retry_rc, _ = _run_pacman(retry, root)
     return retry_rc

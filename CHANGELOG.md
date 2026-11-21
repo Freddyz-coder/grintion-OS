@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.21.0] - 2026-11-22
+
+### Added
+
+- **A Grintion progress UI for installs instead of pacman's output.**
+  `grintion-install`, the desktop pre-install, and delegated
+  `garb install`/`upgrade`/`remove`/`update` transactions now share
+  `grintion-pkg-progress`. It resolves the transaction first, then shows a
+  phase line (`Downloading packages...`, `Installing packages...`, `Running
+  post-transaction hooks...`), package count and total size, an ASCII progress
+  bar, downloaded bytes, transfer rate, ETA, and the active package. The full
+  pacman transcript is kept in the log for failures, but its `::` lines are no
+  longer the console output. The installer adds a target summary banner and
+  eight numbered phases, and uses an elapsed-time spinner for the root copy.
+  The UI is used automatically on a TTY; set `GRINTION_PROGRESS=1` to force it
+  for captured output and `GRINTION_PROGRESS=0` to disable it.
+
+### Fixed
+
+- **A dead package connection no longer looks like a seven-hour install.**
+  The live report showed `:: Retrieving packages...` unchanged after seven
+  hours. The image disables pacman's low-speed cutoff so a genuinely slow
+  archive transfer can finish, but that also removed the only bound on a
+  connection that stops sending bytes. `grintion-desktop` now resolves one
+  real package URL from the seeded database and requests its first kilobyte
+  with a 10-second connect and 30-second total deadline before starting the
+  transaction. The shared progress renderer streams the live download size,
+  rate, percentage and ETA, warns once when the measured rate would need hours,
+  and stops pacman when neither the package cache nor the log changes for five
+  minutes. Completed downloads stay in the cache, the
+  installer records the desktop as not installed, and the base system remains
+  bootable and can retry with `sudo grintion-desktop install kde`.
+
+### Tests
+
+- `./build/check.sh`: **277 passed**, 0 failures; shellcheck, Python
+  compilation, documentation links, executable bits and provenance checks
+  passed.
+- `tests/test_progress.py` covers byte/rate/ETA formatting, transaction
+  planning, hiding raw pacman output, the no-progress stall exit (`124`), and
+  the forced `garb` progress path.
+
 ## [0.20.0] - 2026-11-21
 
 ### Added

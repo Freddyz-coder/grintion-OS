@@ -135,6 +135,80 @@ select_pacman_mirror() {
         || warn "could not benchmark ALA mirrors; keeping the configured one"
 }
 
+package_cache_dir() {
+    printf '%s\n' "$TARGET_ROOT/var/cache/pacman/pkg"
+}
+
+# Resolve the URL pacman would use for a small package from the seeded sync
+# database. -Sp only prints; it does not download or install anything. The
+# filename and repository come from pacman, and the URL is built from the
+# matching Server line so a package already in the cache cannot turn the check
+# into a file:// read.
+package_source_url() {
+    local root_flag=() info filename repo server arch url
+    [ "$TARGET_ROOT" = "/" ] || root_flag=(--root "$TARGET_ROOT")
+    info=$(pacman "${root_flag[@]}" -Sp --print-format '%f %r' acl 2>/dev/null \
+        | awk 'NF >= 2 { print; exit }')
+    [ -n "$info" ] || return 0
+    filename=${info%% *}
+    repo=${info##* }
+    [ -n "$filename" ] && [ -n "$repo" ] || return 0
+    [ -r "$TARGET_ROOT/etc/pacman.conf" ] || return 0
+
+    server=$(awk -v repo="$repo" '
+        /^[[:space:]]*\[/ {
+            name = $0
+            gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", name)
+            section = name
+            next
+        }
+        section == repo && /^[[:space:]]*Server[[:space:]]*=/ {
+            line = $0
+            sub(/^[^=]*=[[:space:]]*/, "", line)
+            sub(/[[:space:]]*#.*$/, "", line)
+            print line
+            exit
+        }' "$TARGET_ROOT/etc/pacman.conf")
+    [ -n "$server" ] || return 0
+
+    arch=$(uname -m)
+    url=${server//\$repo/$repo}
+    url=${url//\$arch/$arch}
+    printf '%s/%s\n' "${url%/}" "$filename"
+}
+
+# DNS, the cached sync databases and the loopback interface can all look
+# healthy while the archive host accepts no connection. pacman then prints
+# "Retrieving packages..." and waits on a transfer that will never start.
+# Check one real package URL with a hard deadline before a multi-gigabyte
+# transaction, so the installer can report the network problem instead of
+# appearing to hang (ProblemsWhenInstalling.txt #1).
+verify_package_source() {
+    local url
+    url=$(package_source_url || true)
+    if [ -z "$url" ]; then
+        warn "could not resolve a package download URL; skipping the mirror preflight"
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        warn "curl is missing; skipping the package mirror preflight"
+        return 0
+    fi
+
+    local connect_timeout="${GRINTION_MIRROR_CONNECT_TIMEOUT:-10}"
+    local check_timeout="${GRINTION_MIRROR_CHECK_TIMEOUT:-30}"
+    case "$connect_timeout" in ''|*[!0-9]*) connect_timeout=10 ;; esac
+    case "$check_timeout" in ''|*[!0-9]*) check_timeout=30 ;; esac
+
+    log "Checking that the package mirror answers before downloading..."
+    if curl --fail --location --silent --show-error \
+            --connect-timeout "$connect_timeout" --max-time "$check_timeout" \
+            --range 0-1023 --output /dev/null "$url"; then
+        return 0
+    fi
+    die "package mirror did not answer within ${check_timeout}s: $url"$'\n'"        The desktop download needs working network access. The base installation is unaffected;"$'\n'"        boot the installed system, connect the network, then run: sudo grintion-desktop install ${NAME:-desktop}"$'\n'"        A slow or unreachable Arch Linux Archive host can be replaced with GRINTION_ALA_MIRRORS."
+}
+
 pkg_install() {
     local pkgs=("$@")
     if [ ${#pkgs[@]} -eq 0 ]; then
@@ -150,8 +224,9 @@ pkg_install() {
     # faster official endpoint once, before the transaction begins.
     select_pacman_mirror
 
-    local manager=()
+    local manager=() use_pacman=0
     if command -v pacman >/dev/null 2>&1; then
+        use_pacman=1
         local noconfirm=()
         if [ "$NO_CONFIRM" -eq 1 ]; then
             noconfirm=("--noconfirm")
@@ -172,15 +247,19 @@ pkg_install() {
         die "Neither pacman nor garb package manager found"
     fi
 
-    # Stream the package manager output instead of capturing it. The old
-    # $(...) capture showed nothing for the entire download+install, so a
-    # working 7-10 minute XFCE install looked like a hang and users pressed
-    # Ctrl+C (ProblemsWhenInstalling.txt #3, #4 and #9).
+    if [ "$use_pacman" -eq 1 ]; then
+        verify_package_source
+    fi
+
+    # The complete pacman transcript is kept in the log; the operator sees the
+    # shared Grintion progress UI instead of pacman's own output. The renderer
+    # also owns the no-progress watchdog, so a dead mirror cannot sit on
+    # "Retrieving packages..." forever (ProblemsWhenInstalling.txt #1).
     local logfile="$TARGET_ROOT/var/log/grintion-desktop.log"
     mkdir -p "$(dirname "$logfile")"
     : > "$logfile"
 
-    log "This downloads from Arch mirrors and can take several minutes. Package manager output follows (also saved to $logfile)."
+    log "This downloads from Arch mirrors and can take several minutes. Raw package manager output is saved to $logfile."
     # A single slow mirror used to abort the whole desktop install, and the
     # seeded pacman database can contain files that the first transaction
     # reports as conflicts. Retry up to three times: pacman keeps completed
@@ -190,12 +269,35 @@ pkg_install() {
     # code stopped after one retry and left e.g. gtk4 conflicts unresolved).
     local rc=0 attempt
     local overwrite=() seen_conflicts=" " conflict_total=0
+    local stall_seconds="${GRINTION_DOWNLOAD_STALL_SECONDS:-300}"
+    case "$stall_seconds" in ''|*[!0-9]*) stall_seconds=300 ;; esac
+    local cache_dir progress_tool="" desktop_dir
+    cache_dir=$(package_cache_dir)
+    if [ "$use_pacman" -eq 1 ]; then
+        progress_tool=$(command -v grintion-pkg-progress 2>/dev/null || true)
+        if [ -z "$progress_tool" ]; then
+            desktop_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+            if [ -x "$desktop_dir/pkg-progress" ]; then
+                progress_tool="$desktop_dir/pkg-progress"
+            fi
+        fi
+        if [ -z "$progress_tool" ]; then
+            warn "package progress UI is missing; falling back to raw pacman output"
+        fi
+    fi
     for attempt in 1 2 3; do
         : > "$logfile"
         log "Installing packages (attempt $attempt/3): ${pkgs[*]}"
         set +e
-        "${manager[@]}" "${overwrite[@]}" "${pkgs[@]}" 2>&1 | tee -a "$logfile"
-        rc=${PIPESTATUS[0]}
+        if [ -n "$progress_tool" ]; then
+            "$progress_tool" --root "$TARGET_ROOT" --cache-dir "$cache_dir" \
+                --log "$logfile" --stall-seconds "$stall_seconds" \
+                -- "${manager[@]}" "${overwrite[@]}" "${pkgs[@]}"
+            rc=$?
+        else
+            "${manager[@]}" "${overwrite[@]}" "${pkgs[@]}" 2>&1 | tee -a "$logfile"
+            rc=${PIPESTATUS[0]}
+        fi
         set -e
         if [ "$rc" -eq 0 ]; then
             break
@@ -254,6 +356,9 @@ pkg_install() {
         warn "package installation failed (exit $rc); retrying with the packages already downloaded"
         sleep 5
     done
+    if [ "$rc" -eq 124 ]; then
+        die "package download made no progress for ${stall_seconds}s (attempt $attempt/3)"$'\n'"        Check the live network with 'ip addr' and 'ping', or set GRINTION_ALA_MIRRORS to a reachable complete mirror."$'\n'"        The installed base is unaffected; after booting it run: sudo grintion-desktop install ${NAME:-desktop}"$'\n'"        Completed downloads are kept in $cache_dir; full log: $logfile"
+    fi
     [ "$rc" -eq 0 ] || die "package installation failed (exit $rc); full log: $logfile"
 
     # pacman returns 0 even when a package's .INSTALL script fails, so a

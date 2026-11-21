@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.20.0 — *seven-vendor laptop support · expanded hardware drivers · automatic firmware selection*
+- **Version:** 0.21.0 — *custom install progress UI · live speed/size/ETA · numbered installer phases*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,7 +17,15 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.20.0 adds family-level laptop hardware support for Lenovo, HP, Dell, Acer,
+0.21.0 replaces pacman-style output with the Grintion installer and package
+progress UI. `grintion-install` now shows a target banner and eight numbered
+phases; installs through `grintion-desktop` and interactive `garb install`,
+`upgrade`, `remove` and `update` transactions show the download size, speed,
+percentage, ETA and active package instead of pacman's `::` lines. Raw package
+manager output is retained in the transaction log. See
+[CHANGELOG.md](CHANGELOG.md).
+
+0.20.0 added family-level laptop hardware support for Lenovo, HP, Dell, Acer,
 Asus, MSI and Samsung machines. `grintion-driver-select` matches DMI vendor
 profiles and product families, loads the available ACPI/WMI/EC platform
 drivers, resolves Wi-Fi, storage, audio and port firmware from each device
@@ -51,7 +59,7 @@ the default. See [CHANGELOG.md](CHANGELOG.md) and
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.20.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.21.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -139,7 +147,9 @@ explicitly. Delegation bypasses garb's signature and transaction checks.
 
 Fresh images ship the pinned pacman sync databases, so both direct
 `sudo pacman -S firefox` and `sudo garb install firefox` resolve packages
-without a separate `-Sy`. If a custom root is missing a database, `garb`
+without a separate `-Sy`. On a terminal, delegated transactions use the
+Grintion progress renderer; set `GRINTION_PROGRESS=1` to force it for captured
+output or `GRINTION_PROGRESS=0` to keep raw output. If a custom root is missing a database, `garb`
 downloads it automatically before delegating. Package names are normalized to
 Arch's lowercase names, and `kde-plasma`/`network-manager` map to their Arch
 packages; `garb` also maps `alsamixer` to `alsa-utils` and `nvim` to `neovim`.
@@ -303,11 +313,11 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.20.0 |
+| Feature | 0.21.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
-| Bare-metal hardware | A 0.20.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| Bare-metal hardware | A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
@@ -376,7 +386,7 @@ The public page is generated from `site/` by the `Support site` workflow; see
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.20.0 has not undergone an independent third-party
+and atomic rollback, but 0.21.0 has not undergone an independent third-party
 security audit. The automated `grintion-release-audit` checks are documented in
 [docs/INDEPENDENT-AUDIT.md](docs/INDEPENDENT-AUDIT.md); they are not a
 substitute for external review.

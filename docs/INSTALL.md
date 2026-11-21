@@ -1,6 +1,6 @@
 # Installing Grintion-OS
 
-Grintion-OS 0.20.0 installs from the live ISO to a target disk or existing
+Grintion-OS 0.21.0 installs from the live ISO to a target disk or existing
 partitions. The installer supports automatic whole-disk partitioning or custom
 pre-existing partitions (`--custom`), multi-filesystem roots (ext4, Btrfs, XFS,
 F2FS), LUKS2 encryption for root and `/home`, swap partitions and root swapfiles,
@@ -30,8 +30,8 @@ shim. (After installation, user-owned Secure Boot can be enabled via MOK enrollm
 
 The boot menu offers two entries:
 
-- **Grintion-OS 0.20.0 (live, RAM)** - normal live boot.
-- **Grintion-OS 0.20.0 (recovery shell)** - drops to `/bin/sh` before runit.
+- **Grintion-OS 0.21.0 (live, RAM)** - normal live boot.
+- **Grintion-OS 0.21.0 (recovery shell)** - drops to `/bin/sh` before runit.
 
 The live session logs in as `root` with no password. This is intentional for a
 live medium: anyone with console access has root. Do not expose a live system to
@@ -53,6 +53,33 @@ grintion-install --disk /dev/vda --desktop kde
 
 Alternatively, boot with persistence and install KDE from that writable
 partition.
+
+The installer checks the package URL pacman will use before the desktop
+transaction starts, and reports a mirror that does not answer within 30 seconds
+instead of leaving the screen on `Retrieving packages...`. The transaction then
+uses the Grintion progress renderer rather than pacman's `::` output: it shows
+the queue size, an ASCII progress bar, downloaded bytes, transfer rate, ETA,
+package percentage and the active package. If the package cache and the pacman
+log both stop changing for five minutes, the stalled pacman process is stopped.
+Downloads already in the cache are kept, the installer reports the desktop as
+`NOT installed`, and the base system is still installed and bootable. A slow but
+progressing transfer is not interrupted. The full pacman transcript is written
+to `/var/log/grintion-desktop.log` for diagnosis.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GRINTION_MIRROR_CONNECT_TIMEOUT` | `10` | Seconds allowed to open the preflight connection |
+| `GRINTION_MIRROR_CHECK_TIMEOUT` | `30` | Total seconds allowed for the preflight package request |
+| `GRINTION_DOWNLOAD_STALL_SECONDS` | `300` | No-progress time before pacman is stopped |
+
+If the Arch Linux Archive host is the problem, point the image at a complete
+mirror that serves the pinned `/repos/<snapshot>` tree before running either
+command:
+
+```sh
+GRINTION_ALA_MIRRORS=https://mirror.example.org/archlinux \
+    grintion-install --disk /dev/vda --desktop kde
+```
 
 Check that the live system came up correctly:
 
@@ -76,16 +103,21 @@ Run the installer interactively:
 grintion-install --disk /dev/vda
 ```
 
-It will:
+After the explicit erase confirmation, it prints a target summary and works
+through eight numbered phases:
 
-1. require an explicit confirmation that the disk will be erased;
-2. create a GPT with a 512 MiB FAT32 ESP and the selected root filesystem
-   (ext4 or Btrfs, optionally inside LUKS2);
-3. mount the new root and copy the live filesystem with `rsync`;
-4. create the user you specify, add it to `wheel`, and copy `/etc/skel`;
-5. write `/etc/fstab`, `/etc/hostname`, the machine ID and the initramfs;
+1. prepare the target disk (GPT, 512 MiB FAT32 ESP, optional secure erase);
+2. create the selected root filesystem (ext4, Btrfs, XFS or F2FS, optionally
+   inside LUKS2);
+3. mount the new root;
+4. copy the live filesystem with `rsync`, shown with an elapsed-time spinner
+   (rsync's output is kept and shown only on failure);
+5. configure the user (added to `wheel`, with `/etc/skel`), `/etc/fstab`,
+   `/etc/hostname`, the machine ID and the initramfs;
 6. install Limine for BIOS or UEFI, whichever the live system booted with;
-7. unmount everything, including on failure.
+7. select firmware, CPU microcode and kernel flavor for this hardware;
+8. run the post-install self-test, then unmount everything, including on
+   failure, and print the elapsed install time.
 
 ### Unattended
 
