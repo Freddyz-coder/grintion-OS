@@ -307,6 +307,7 @@ path to a from-source bootstrap later. Do not describe the image as
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| Bare-metal hardware | A 0.20.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |

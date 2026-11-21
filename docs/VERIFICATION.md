@@ -1,9 +1,71 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.19.0,
-0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1, 0.14.0,
-0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.20.0,
+0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1,
+0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.20.0 laptop hardware support (2026-11-21)
+
+0.20.0 adds a DMI-driven laptop vendor matrix for Lenovo, HP, Dell, Acer,
+Asus, MSI and Samsung, plus automatic platform, Wi-Fi, storage, audio and port
+firmware selection. The ISO was built from source commit `ddce17a`. The host
+has no system `apparmor_parser`; the rootfs was assembled with the staged Arch
+parser at `build/work/apparmor-root` through `GRINTION_APPARMOR_ROOT`, the
+documented fallback in [BUILDING.md](BUILDING.md). The kernel had already built
+successfully in the same `make iso` run when the first rootfs attempt stopped,
+so the build resumed at `make-rootfs.sh` and `build-iso.sh` instead of
+recompiling the kernel.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,870,912 bytes (146 MiB) |
+| SHA-256 | `4d329fbc74856d21674242286327cb4e15cc8fde11be330ce46658cc04903a63` |
+| `BUILD-INFO` source commit | `ddce17a` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,483,388 bytes, SHA-256 `291543adadd5f10961daebfce11eb03907035e8c163db2fec32236b31c5f8210`; `/etc/grintion/version` = `0.20.0`; 9,552 entries |
+| Installed initramfs | 5,980,658 bytes, SHA-256 `fd2f652234d2249b2e6d68fe061bf2a5ee17d64d86310781cae4c4e223ec1946` |
+| Limine entries | `Grintion-OS 0.20.0 (live, RAM)` and `Grintion-OS 0.20.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **270 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| Kernel configuration | Fragment merged over the pinned 6.12.114 `.config`; **377 options checked** and satisfied |
+| ISO checksum | `sha256sum -c grintion-os-x86_64.iso.sha256` passed from `output/` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit, kernel and initramfs hashes, 0.20.0 boot entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence unlock path verified |
+| BIOS installer / installed reboot | Passed: `Grintion-OS 0.20.0 installed`, `[ ok ] installed marker`, `[ ok ] installed: amd-ucode`, Limine BIOS stages installed, rebooted from the disk, logged in, obtained DHCP, confirmed `INSTALLED`, yescrypt shadow entry, sudo, seatd, udev and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Bare-metal hardware probe | Performed without disk changes on a Lenovo IdeaPad Flex 5 16ABR8; see below |
+| Bare-metal installation / reboot | Not performed; the host cannot be repartitioned without destroying its working disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+The installer test's final `poweroff -f` is issued as the unprivileged test user
+and is denied; the harness closes QEMU after the installed-system assertions
+pass. No release signing key was available, so verify the SHA-256 before use.
+
+### Bare-metal hardware probe
+
+The physical host was probed with the shipped tools; no partition was written
+and the machine was not rebooted. The host is a **Lenovo IdeaPad Flex 5
+16ABR8** (`LENOVO 82XY`, BIOS `L7CN26WW`, chassis type 31, AMD Ryzen 7 7730U,
+16 logical CPUs, TPM 2.0, MediaTek MT7921 Wi-Fi).
+
+| Probe | Result |
+| --- | --- |
+| `grintion-hcl --json` | `compatible`; Lenovo family `supported`; Wi-Fi, storage, audio, ports, USB and card reader `true`; Ethernet and Thunderbolt `false` on this model |
+| `grintion-hwinfo --json` | DMI form factor `laptop`, chassis type `31`; UEFI `true`, Secure Boot `disabled` |
+| `grintion-driver-select --json` | Selected `amd-ucode`, `alsa-ucm-conf` and `linux-firmware`; detected `mt7921e`, `amdgpu`, `ideapad_laptop`, `think_lmi`, `thinkpad_acpi`, `snd_pci_acp6x`, `sdhci_pci` and `nvme` |
+| Built module tree | `mt7921e`, `amdgpu`, `ideapad-laptop`, `think-lmi`, `thinkpad_acpi`, `snd-pci-acp6x` and `sdhci-pci` are present; NVMe is built into the kernel |
+
+This is detection and driver-selection evidence, not a bare-metal boot or
+install result. The QEMU installer tests exercise the same detection and
+firmware-selection path inside the release image.
+
+---
 
 ## 0.19.0 encrypted persistence and independent audit (2026-11-16)
 

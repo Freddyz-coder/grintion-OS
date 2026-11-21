@@ -56,18 +56,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
-- `tests/test_laptop_hardware_support.py`, the existing hardware/phase 11
-  suites and the kernel configuration contract were run locally. The kernel
-  fragment was merged over the pinned 6.12.114 `.config` and passed
-  `build/check-kernel-config.sh` with 377 options checked.
-- `bin/hcl --json`, `bin/driver-select --json` and `bin/hwinfo --json` were
-  smoke-tested on the build host.
+- `make check`: **270 passed**, 0 failures; shellcheck, Python compilation,
+  documentation links, executable bits, tracked-binary hashes and staged-rootfs
+  checks passed.
+- The kernel fragment was merged over the pinned 6.12.114 `.config` and passed
+  `build/check-kernel-config.sh` with **377 options checked**. The release build
+  produced a 152,870,912-byte ISO.
+- `grintion-release-audit artifact`: **38 ok, 0 warn, 0 fail, 1 info**.
+- BIOS and UEFI installer/installed-system reboot tests passed: 0.20.0
+  installed to an 8 GiB QEMU disk, booted from the target disk, and verified
+  ext4, UUID fstab, DHCP, seatd, udev, sudo, yescrypt and the installed marker.
+- A non-destructive bare-metal host probe ran on a Lenovo IdeaPad Flex 5
+  16ABR8 (DMI `LENOVO 82XY`, Ryzen 7 7730U, MT7921 Wi-Fi, TPM 2.0).
+  `grintion-hcl`, `grintion-hwinfo` and `grintion-driver-select` returned valid
+  JSON; HCL reported the Lenovo family as supported with Wi-Fi, storage, audio,
+  ports, USB and card-reader coverage. The built kernel contains `mt7921e`,
+  `amdgpu`, `ideapad-laptop`, `think-lmi`, `thinkpad_acpi`, `snd-pci-acp6x`
+  and `sdhci-pci`.
+
+### Artifact
+
+- ISO: `output/grintion-os-x86_64.iso`, 152,870,912 bytes (146 MiB)
+- SHA-256: `4d329fbc74856d21674242286327cb4e15cc8fde11be330ce46658cc04903a63`
+- `BUILD-INFO` source commit: `ddce17a`
+- Kernel: `6.12.114-grintion`, 13,530,112 bytes, SHA-256
+  `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977`
+- Live initramfs: 135,483,388 bytes, SHA-256
+  `291543adadd5f10961daebfce11eb03907035e8c163db2fec32236b31c5f8210`
+- Installed initramfs: 5,980,658 bytes, SHA-256
+  `fd2f652234d2249b2e6d68fe061bf2a5ee17d64d86310781cae4c4e223ec1946`
+- Boot: x86_64 BIOS and UEFI (Limine 8.7.0)
+- No release signing key was available; verify the SHA-256 before use.
 
 ### Limitations
 
-- The vendor matrix is driver/package support, not a per-model physical
-  verification claim; physical evidence remains tracked in
+- No bare-metal installation or reboot was performed. The physical host was
+  probed only; repartitioning and rebooting it would destroy the working
+  system. Bare-metal install evidence remains tracked in
   `docs/HARDWARE-LAB.md`.
+- The vendor matrix is driver/package support, not a per-model physical
+  verification claim.
+- `grintion-release-audit` is an automated audit, not an independent
+  third-party security review.
 
 ---
 

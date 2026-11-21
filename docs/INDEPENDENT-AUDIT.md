@@ -61,6 +61,17 @@ Use the tool together with a checksum file, an offline release key and
 `grintion-release-verify`. See [RELEASE-VERIFICATION.md](RELEASE-VERIFICATION.md)
 and [REPO-KEY-CEREMONY.md](REPO-KEY-CEREMONY.md).
 
+## 0.20.0 result
+
+The released 0.20.0 ISO (`4d329fbc74856d21674242286327cb4e15cc8fde11be330ce46658cc04903a63`)
+passed the artifact audit with **38 ok, 0 warn, 0 fail and 1 info**. The
+informational line is the ISO digest. The audit verified the checksum,
+`BUILD-INFO` commit `ddce17a`, the kernel/live/installed-initramfs hashes, the
+Limine 0.20.0 entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules,
+177 AppArmor files and the LUKS2 persistence unlock path. BIOS and UEFI
+installer/installed-system reboot tests passed. The runtime audit was not
+separately invoked for 0.20.0.
+
 ## 0.19.0 result
 
 The released 0.19.0 ISO (`43874b837a1bfafae3661ebfd9476f1d51ea0c5a15f64ef2b9e8b1cf87339aa6`)

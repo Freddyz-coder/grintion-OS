@@ -12,6 +12,14 @@ This document provides the hardware verification matrix, named test machines, fi
 > drivers and automatic firmware/package selection for those families. It is
 > not a per-model physical test result. A family entry stays "supported" until
 > the named machine and raw logs are recorded in the table below.
+>
+> **0.20.0 host probe (2026-11-21):** `grintion-hcl`, `grintion-hwinfo` and
+> `grintion-driver-select` were run on a Lenovo IdeaPad Flex 5 16ABR8
+> (`LENOVO 82XY`, Ryzen 7 7730U, MT7921 Wi-Fi, TPM 2.0). HCL reported the
+> Lenovo family as supported with Wi-Fi, storage, audio, ports, USB and card
+> reader coverage; driver selection chose `amd-ucode`, `alsa-ucm-conf` and
+> `linux-firmware`. No disk was repartitioned and the host was not rebooted,
+> so this is detection evidence only, not a bare-metal install result.
 
 ## 1. Hardware Lab Fleet
 
