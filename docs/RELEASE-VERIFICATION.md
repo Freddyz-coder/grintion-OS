@@ -81,7 +81,7 @@ After verifying the checksum and signature, run the artifact-first audit:
 
 ```sh
 grintion-release-audit artifact output/grintion-os-x86_64.iso \
-    --expected-version 0.19.0
+    --expected-version 0.20.0
 ```
 
 It re-derives the `BUILD-INFO` hashes, boot command lines, set-ID allowlist,

@@ -6,6 +6,12 @@ This document provides the hardware verification matrix, named test machines, fi
 > this repository. They are operator records, not machine-checkable CI output.
 > Attach the raw serial/JUnit logs as release assets before treating these rows
 > as verified. See [VERIFICATION.md](VERIFICATION.md).
+>
+> **Driver coverage note:** the Lenovo, HP, Dell, Acer, Asus, MSI and Samsung
+> laptop matrix in [HARDWARE-FIRMWARE.md](HARDWARE-FIRMWARE.md) adds kernel
+> drivers and automatic firmware/package selection for those families. It is
+> not a per-model physical test result. A family entry stays "supported" until
+> the named machine and raw logs are recorded in the table below.
 
 ## 1. Hardware Lab Fleet
 

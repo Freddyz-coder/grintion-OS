@@ -1,0 +1,280 @@
+<!doctype html>
+<!--
+  Grintion-OS support site.
+
+  No build step, no scripts, no external assets. Edit the links below and the
+  page is done.
+
+  Setup:
+    1. GitHub Sponsors handle is in the hero and in "Ways to give".
+    2. Ko-fi / Liberapay cards are commented out in "Ways to give"; uncomment
+       them after those accounts exist.
+    3. Publish with .github/workflows/pages.yml
+       (Settings -> Pages -> Source: GitHub Actions).
+  Full instructions: docs/SUPPORT-AND-FUNDING.md
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support Grintion-OS</title>
+<meta name="description" content="Fund the CI hardware, signing keys and hosting behind Grintion-OS, or contribute bare-metal test evidence. No ads, no telemetry, no vendor roadmap.">
+<meta name="color-scheme" content="dark">
+<style>
+  :root {
+    --bg: #0a0e12;
+    --panel: #111820;
+    --line: #1f2a36;
+    --text: #e6edf3;
+    --muted: #93a1b0;
+    --accent: #4ade80;
+    --link: #7dd3fc;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    border-bottom: 1px solid var(--line);
+    background: rgba(10, 14, 18, 0.92);
+    backdrop-filter: blur(8px);
+  }
+  .nav {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 0; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+  .nav nav { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+  .nav nav a { color: var(--muted); }
+  .nav nav a:hover { color: var(--text); }
+  main { padding: 56px 0 8px; }
+  section { padding: 40px 0; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: 0; }
+  .eyebrow {
+    margin: 0 0 14px; color: var(--accent); font-size: 13px;
+    letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600;
+  }
+  h1 { margin: 0 0 18px; font-size: clamp(30px, 5vw, 46px); line-height: 1.15; letter-spacing: -0.02em; }
+  h2 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.01em; }
+  h3 { margin: 0 0 6px; font-size: 16px; }
+  .lede { margin: 0 0 24px; max-width: 640px; color: var(--muted); font-size: 18px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .btn {
+    display: inline-block; padding: 11px 18px; border-radius: 8px;
+    border: 1px solid var(--line); color: var(--text); font-weight: 600; font-size: 15px;
+  }
+  .btn:hover { text-decoration: none; border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #06210f; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .fineprint { margin: 0; color: var(--muted); font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 24px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px;
+  }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .card .tag {
+    display: inline-block; margin-bottom: 10px; padding: 2px 8px; border-radius: 999px;
+    background: rgba(74, 222, 128, 0.12); color: var(--accent);
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .note { margin-top: 20px; color: var(--muted); font-size: 14.5px; max-width: 720px; }
+  ul.plain { margin: 16px 0 0; padding-left: 20px; color: var(--muted); }
+  ul.plain li { margin-bottom: 8px; }
+  ul.plain strong { color: var(--text); font-weight: 600; }
+  .links { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 24px; }
+  .links a.card { display: block; color: var(--text); }
+  .links a.card:hover { border-color: var(--accent); text-decoration: none; }
+  .links a.card span { display: block; color: var(--muted); font-size: 14px; margin-top: 4px; }
+  footer { padding: 32px 0 56px; color: var(--muted); font-size: 13.5px; }
+  footer p { margin: 0 0 6px; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top"><span class="dot" aria-hidden="true"></span>Grintion-OS</a>
+    <nav aria-label="Sections">
+      <a href="#funding">Funding</a>
+      <a href="#give">Ways to give</a>
+      <a href="#community">Community</a>
+      <a href="#policy">Policy</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap">
+
+    <section aria-labelledby="hero-title">
+      <p class="eyebrow">v0.20.0 &middot; x86_64 &middot; GPLv3+</p>
+      <h1 id="hero-title">A small OS, funded by the people who run it.</h1>
+      <p class="lede">
+        Grintion-OS takes no ads, ships no telemetry, and answers to no vendor
+        roadmap. Donations pay for the unglamorous parts: the machines that boot
+        every ISO, the offline signing key, and the hosting a signed package
+        repository needs.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/sponsors/Freddyz-coder">Sponsor on GitHub</a>
+        <a class="btn" href="#community">Help without money</a>
+      </div>
+      <p class="fineprint">No ads in the image. No analytics on this page. No sponsor gets roadmap control.</p>
+    </section>
+
+    <section id="funding" aria-labelledby="funding-title">
+      <h2 id="funding-title">Where the money goes</h2>
+      <p class="lede">Four line items, all tied to work this project has not finished yet.</p>
+      <div class="grid">
+        <div class="card">
+          <span class="tag">Release CI</span>
+          <h3>Machines that actually boot it</h3>
+          <p>BIOS and UEFI boot tests, install tests, encrypted persistence and the independent release audit all run on a self-hosted KVM runner.</p>
+        </div>
+        <div class="card">
+          <span class="tag">Bare metal</span>
+          <h3>Hardware that is not a VM</h3>
+          <p>Used mini PCs and laptops to run the ISO on real firmware and publish the bare-metal logs the roadmap still lists as missing.</p>
+        </div>
+        <div class="card">
+          <span class="tag">Signing</span>
+          <h3>An offline release key</h3>
+          <p>Dedicated hardware for the release signing key and the key ceremony, so a downloaded image can be verified instead of trusted.</p>
+        </div>
+        <div class="card">
+          <span class="tag">Hosting</span>
+          <h3>A signed package repository</h3>
+          <p>Bandwidth and storage for a public <code>garb</code> repository. The signed-repository tooling exists; the server does not.</p>
+        </div>
+      </div>
+      <p class="note">
+        Today nobody is paid a salary from this project. If a month raises more
+        than it costs, the balance stays with the project and appears in the
+        ledger &mdash; it is not treated as income.
+      </p>
+    </section>
+
+    <section id="give" aria-labelledby="give-title">
+      <h2 id="give-title">Ways to give</h2>
+      <div class="grid">
+        <div class="card">
+          <span class="tag">Recommended</span>
+          <h3>GitHub Sponsors</h3>
+          <p>
+            Monthly or one-time. GitHub covers payment processing for individual
+            sponsors, so the full amount reaches the project and the fee split is
+            public.
+          </p>
+          <p style="margin-top:14px">
+            <a class="btn primary" href="https://github.com/sponsors/Freddyz-coder">Sponsor @Freddyz-coder</a>
+          </p>
+        </div>
+        <div class="card">
+          <span class="tag">No cost</span>
+          <h3>Give evidence instead</h3>
+          <p>
+            Boot the ISO on real hardware, test a desktop profile, or reproduce a
+            release build on a second host. The project needs proof more than it
+            needs money.
+          </p>
+          <p style="margin-top:14px"><a href="#community">See what is missing &rarr;</a></p>
+        </div>
+        <!--
+          Additional channels. Create the account, uncomment the card, and add
+          the same handle to .github/FUNDING.yml.
+
+        <div class="card">
+          <span class="tag">One-time</span>
+          <h3>Ko-fi</h3>
+          <p>One-time donations with no account required.</p>
+          <p style="margin-top:14px"><a class="btn" href="https://ko-fi.com/YOUR-HANDLE">Buy the project a coffee</a></p>
+        </div>
+        <div class="card">
+          <span class="tag">Recurring</span>
+          <h3>Liberapay</h3>
+          <p>Recurring donations on a nonprofit platform that takes no cut.</p>
+          <p style="margin-top:14px"><a class="btn" href="https://liberapay.com/YOUR-HANDLE">Donate weekly</a></p>
+        </div>
+        -->
+      </div>
+      <p class="note">
+        Every amount received and spent is recorded in the
+        <a href="https://github.com/Freddyz-coder/grintion-OS/blob/main/docs/FUNDING-LEDGER.md">funding ledger</a>.
+        It is empty right now: the first entry appears when a payout clears, not
+        when a pledge is made.
+      </p>
+    </section>
+
+    <section id="community" aria-labelledby="community-title">
+      <h2 id="community-title">Community support</h2>
+      <p class="lede">Support is community-based and best effort. There is no paid tier and no response-time guarantee.</p>
+      <div class="links">
+        <a class="card" href="https://github.com/Freddyz-coder/grintion-OS/discussions">
+          <h3>Discussions</h3>
+          <span>Questions, setups, hardware reports, packaging help.</span>
+        </a>
+        <a class="card" href="https://github.com/Freddyz-coder/grintion-OS/issues/new/choose">
+          <h3>Issues</h3>
+          <span>Reproducible bugs and feature requests, using the templates.</span>
+        </a>
+        <a class="card" href="https://github.com/Freddyz-coder/grintion-OS/security/advisories/new">
+          <h3>Security reports</h3>
+          <span>Private advisory. Never a public issue for an unfixed flaw.</span>
+        </a>
+        <a class="card" href="https://github.com/Freddyz-coder/grintion-OS/blob/main/CONTRIBUTING.md">
+          <h3>Contributing</h3>
+          <span>Build rules, evidence rules, and how to get a patch merged.</span>
+        </a>
+      </div>
+
+      <h3 style="margin-top:32px">Help that costs nothing</h3>
+      <ul class="plain">
+        <li><strong>Bare-metal boot logs.</strong> The roadmap still has no published real-hardware evidence. One successful boot on your machine, with the log attached, closes a gap.</li>
+        <li><strong>Second-host rebuilds.</strong> Cross-host reproducibility is unproven. Building the ISO on your host and reporting the hash is a real contribution.</li>
+        <li><strong>Desktop and GPU testing.</strong> XFCE, i3, Plasma, LXQt and Sway are verified in QEMU; your hardware and drivers are not.</li>
+        <li><strong>Translations.</strong> The handbook exists in English and Spanish. Other languages do not.</li>
+        <li><strong>Packages.</strong> A working <code>.garb</code> package for a tool you rely on is more useful than a feature request.</li>
+      </ul>
+      <p class="note">
+        When you report a problem, include the version
+        (<code>cat /etc/grintion/version</code>), whether it is the live image or
+        an installed system, the exact command, and the output. The sanitized
+        bundle from <code>grintion-report</code> covers most of it.
+      </p>
+    </section>
+
+    <section id="policy" aria-labelledby="policy-title">
+      <h2 id="policy-title">Funding policy</h2>
+      <ul class="plain">
+        <li>No advertising, sponsored content, or affiliate links in the image, the documentation, or this page.</li>
+        <li>No telemetry, crash reporting, or phone-home service, funded or otherwise.</li>
+        <li>A donation buys nothing: no roadmap control, no priority support, no feature. Sponsors are acknowledged only if they ask.</li>
+        <li>Money is spent on infrastructure and hardware the release process depends on. Anything else is listed in the ledger with a reason.</li>
+        <li>Donations are not tax-deductible. The project is not a charity and does not pretend to be one.</li>
+      </ul>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Grintion-OS is free software under the GNU GPL, version 3 or later.</p>
+    <p>This page loads no scripts, fonts, or analytics. Source: <a href="https://github.com/Freddyz-coder/grintion-OS">github.com/Freddyz-coder/grintion-OS</a>.</p>
+  </div>
+</footer>
+
+</body>
+</html>

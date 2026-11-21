@@ -400,6 +400,72 @@ names (CVE-2022-1271).
 
 ---
 
+## Hardware, firmware and laptop support
+
+### `grintion-hcl`
+
+Matches DMI against the HCL and the vendor laptop matrix. Product families use
+shell globs, so `ThinkPad*` covers every ThinkPad model rather than one SKU.
+
+```sh
+grintion-hcl
+grintion-hcl --machine
+grintion-hcl --json
+grintion-hcl --database /path/to/hcl.json
+```
+
+The JSON report includes `compatibility`, `features` (Wi-Fi, storage, audio,
+ports, Ethernet), `platform` (vendor profile, family, expected modules and
+packages) and per-PCI-device status. A desktop or virtual machine is reported
+as not-a-laptop and does not receive a vendor profile.
+
+### `grintion-driver-select`
+
+Reads DMI, PCI and USB identities, resolves modaliases, checks the firmware
+that each matched module requests, and maps only the missing files to split
+`linux-firmware-*` packages. On laptops it adds the vendor platform modules and
+the audio packages (`alsa-ucm-conf`, plus `sof-firmware` on Intel audio).
+
+```sh
+grintion-driver-select --json
+grintion-driver-select --offline --root /mnt
+grintion-driver-select --initramfs-modules
+sudo grintion-driver-select --apply
+```
+
+It writes `/etc/grintion/hardware-profile.json`,
+`/etc/modules-load.d/grintion-hardware.conf` and
+`/etc/grintion/initramfs-modules`. `--apply` retries individual packages if a
+combined transaction fails, so one unavailable optional package does not block
+Wi-Fi firmware installation. The installer runs `--apply` automatically;
+`--no-auto-drivers` disables that step.
+
+### `grintion-hwinfo` / `grintion-hwreport`
+
+Redacted inventory for bug reports. `hwinfo` adds DMI chassis information and a
+per-device firmware verdict; `hwreport` is the compatibility wrapper.
+
+```sh
+grintion-hwinfo
+grintion-hwinfo --json
+grintion-hwinfo --include-identifiers
+```
+
+Serial numbers and MAC addresses are redacted by default. The command explains
+when a detected Wi-Fi card will not work until its firmware package is installed.
+
+### `grintion-firmware`
+
+Inspects EFI System Resource Table entries and stages vendor EFI capsules for
+installation by firmware on the next reboot. It does not download firmware or
+bypass vendor signatures.
+
+```sh
+grintion-firmware status
+grintion-firmware status --json
+sudo grintion-firmware apply-capsule vendor.cap
+```
+
 ## Related existing tools
 
 | Need | Tool |

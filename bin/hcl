@@ -2,16 +2,24 @@
 """grintion-hcl - Grintion-OS Hardware Compatibility List inspector and reporter.
 
 Evaluates detected system hardware (DMI, CPU, PCI, Network, Storage, TPM) against
-the Grintion Hardware Compatibility List (HCL) database.
+the Grintion Hardware Compatibility List (HCL) database and the vendor laptop
+support matrix. Product names may use shell globs, so a family entry such as
+ThinkPad* covers every ThinkPad model instead of only one tested SKU.
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
 import sys
 from pathlib import Path
+
+LAPTOP_DB = Path(
+    os.environ.get("GRINTION_LAPTOP_DB", "/etc/grintion/laptop-support.json")
+)
+LAPTOP_CHASSIS = {8, 9, 10, 14, 30, 31, 32}
 
 
 def read_text(path: Path | str, default: str = "") -> str:
@@ -19,6 +27,42 @@ def read_text(path: Path | str, default: str = "") -> str:
         return Path(path).read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         return default
+
+
+def laptop_database_paths() -> list[Path]:
+    paths: list[Path] = []
+    if os.environ.get("GRINTION_LAPTOP_DB"):
+        paths.append(Path(os.environ["GRINTION_LAPTOP_DB"]))
+    repo_root = Path(__file__).resolve().parent.parent
+    paths.extend([
+        LAPTOP_DB,
+        Path("/etc/grintion/laptop-support.json"),
+        Path("/usr/share/grintion/laptop-support.json"),
+        repo_root / "etc" / "grintion" / "laptop-support.json",
+    ])
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def load_laptop_database() -> dict:
+    for path in laptop_database_paths():
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            data.setdefault("vendors", [])
+            data.setdefault("default_packages", [])
+            return data
+    return {"schema": 0, "vendors": [], "default_packages": []}
 
 
 def load_hcl_database(db_path: str | None = None) -> dict:
@@ -146,20 +190,155 @@ def detect_tpm() -> dict:
     return {"present": present, "version": version}
 
 
-def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) -> dict:
+def detect_features(pci: list[dict], net: list[dict]) -> dict:
+    classes = {device.get("class", "") for device in pci}
+    usb = "0c03" in classes
+    thunderbolt = "0c80" in classes or any(
+        "thunderbolt" in device.get("driver", "").lower() for device in pci
+    )
+    card_reader = "0805" in classes
+    return {
+        "wifi": "0280" in classes or any(item.get("type") == "wireless" for item in net),
+        "storage": bool(classes & {"0100", "0101", "0106", "0107", "0108"}),
+        "audio": bool(classes & {"0401", "0403"}),
+        "ports": usb or thunderbolt or card_reader,
+        "ethernet": "0200" in classes,
+        "usb": usb,
+        "thunderbolt": thunderbolt,
+        "card_reader": card_reader,
+    }
+
+
+def _vendor_matches(profile: dict, vendor_text: str) -> bool:
+    vendor = vendor_text.strip().lower()
+    if not vendor:
+        return False
+    aliases = [profile.get("vendor", "")] + list(profile.get("aliases", []))
+    for alias in aliases:
+        value = str(alias).strip().lower()
+        if value and (value in vendor or vendor in value):
+            return True
+    return False
+
+
+def _family(profile: dict, product_text: str) -> str:
+    product = product_text.strip().lower()
+    for family in profile.get("families", []):
+        for pattern in family.get("patterns", []):
+            if product and fnmatch.fnmatchcase(product, str(pattern).lower()):
+                return str(family.get("name", pattern))
+    return ""
+
+
+def detect_platform(laptop_db: dict, dmi: dict) -> dict:
+    vendor = dmi.get("sys_vendor", "")
+    product = dmi.get("product_name", "")
+    chassis_raw = dmi.get("chassis_type", "")
+    try:
+        chassis = int(str(chassis_raw).split(".")[0])
+    except (TypeError, ValueError):
+        chassis = None
+
+    profile: dict | None = None
+    family = ""
+    for entry in laptop_db.get("vendors", []):
+        if isinstance(entry, dict) and _vendor_matches(entry, vendor):
+            profile = entry
+            family = _family(entry, product)
+            break
+
+    laptop = chassis in LAPTOP_CHASSIS or bool(family)
+    if not laptop:
+        return {
+            "detected": False,
+            "laptop": False,
+            "vendor": vendor,
+            "product": product,
+            "chassis_type": chassis_raw,
+            "profile": "",
+            "profile_vendor": "",
+            "family": "",
+            "supported": False,
+            "status": "",
+            "features": {},
+            "notes": "not a laptop chassis; vendor laptop profile not applied",
+            "expected_modules": [],
+            "packages": [],
+        }
+
+    packages: list[str] = []
+    if profile:
+        packages.extend(str(pkg) for pkg in profile.get("packages", []))
+    if not packages:
+        packages.extend(str(pkg) for pkg in laptop_db.get("default_packages", []))
+
+    return {
+        "detected": True,
+        "laptop": True,
+        "vendor": vendor,
+        "product": product,
+        "chassis_type": chassis_raw,
+        "profile": str(profile.get("id", "")) if profile else "",
+        "profile_vendor": str(profile.get("vendor", "")) if profile else "",
+        "family": family,
+        "supported": bool(profile),
+        "status": str(profile.get("status", "")) if profile else "",
+        "features": dict(profile.get("features", {})) if profile else {},
+        "notes": (
+            str(profile.get("notes", "")) if profile else
+            "no vendor profile matched; generic laptop drivers, firmware and audio selection still apply"
+        ),
+        "expected_modules": [
+            str(module) for module in (profile.get("platform_modules", []) if profile else [])
+        ],
+        "packages": list(dict.fromkeys(packages)),
+    }
+
+
+def evaluate_compatibility(
+    hcl_db: dict,
+    dmi: dict,
+    cpu: dict,
+    pci: list[dict],
+    net: list[dict],
+    platform: dict,
+) -> dict:
     system_entries = hcl_db.get("vendors", {}).get("system", [])
     cpu_entries = hcl_db.get("vendors", {}).get("cpu", [])
     pci_entries = {entry["device_id"].lower(): entry for entry in hcl_db.get("vendors", {}).get("pci", [])}
+    class_defaults = {
+        str(entry.get("class", "")).lower(): entry
+        for entry in hcl_db.get("class_defaults", [])
+        if entry.get("class")
+    }
 
-    # Evaluate system / platform
+    # Evaluate system / platform. Entries are checked in order, so exact
+    # verified machines stay ahead of family wildcards in the database.
     sys_status = "untested"
     sys_note = ""
+    sys_family = ""
     for entry in system_entries:
-        if entry.get("vendor", "").lower() in dmi.get("sys_vendor", "").lower() and \
-           entry.get("product", "").lower() in dmi.get("product_name", "").lower():
+        aliases = [entry.get("vendor", "")] + list(entry.get("aliases", []))
+        vendor_ok = any(
+            value and (value.lower() in dmi.get("sys_vendor", "").lower()
+                       or dmi.get("sys_vendor", "").lower() in value.lower())
+            for value in map(str, aliases)
+        )
+        product_pattern = str(entry.get("product", "")).strip().lower()
+        product_ok = (
+            not product_pattern
+            or fnmatch.fnmatchcase(dmi.get("product_name", "").lower(), product_pattern)
+        )
+        if vendor_ok and product_ok:
             sys_status = entry.get("status", "compatible")
             sys_note = entry.get("notes", "")
+            sys_family = entry.get("family", "")
             break
+
+    if sys_status == "untested" and platform.get("laptop") and platform.get("supported"):
+        sys_status = platform.get("status") or "compatible"
+        sys_note = platform.get("notes", "")
+        sys_family = platform.get("family", "")
 
     # Evaluate CPU
     cpu_status = "untested"
@@ -184,9 +363,15 @@ def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) 
             elif status == "incompatible":
                 has_incompatible = True
         else:
-            status = "untested"
-            name = f"PCI device {dev_id} (class {dev['class']})"
-            notes = ""
+            default = class_defaults.get(dev["class"].lower())
+            if default:
+                status = default.get("status", "compatible")
+                name = default.get("name", f"PCI device {dev_id} (class {dev['class']})")
+                notes = default.get("notes", "")
+            else:
+                status = "untested"
+                name = f"PCI device {dev_id} (class {dev['class']})"
+                notes = ""
 
         evaluated_pci.append({
             "slot": dev["slot"],
@@ -200,9 +385,11 @@ def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) 
     # Overall compatibility assessment
     if has_incompatible:
         overall = "incompatible"
-    elif sys_status == "verified" or (cpu_status == "verified" and has_verified_pci):
+    elif sys_status == "verified":
         overall = "verified"
-    elif sys_status == "compatible" or cpu_status == "compatible":
+    elif sys_status in {"compatible", "supported"} and cpu_status in {"verified", "compatible"}:
+        overall = "compatible"
+    elif platform.get("supported") and cpu_status != "incompatible":
         overall = "compatible"
     else:
         overall = "untested"
@@ -214,6 +401,7 @@ def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) 
             "product": dmi.get("product_name", ""),
             "board": dmi.get("board_name", ""),
             "bios": dmi.get("bios_version", ""),
+            "family": sys_family,
             "status": sys_status,
             "notes": sys_note,
         },
@@ -224,6 +412,7 @@ def evaluate_compatibility(hcl_db: dict, dmi: dict, cpu: dict, pci: list[dict]) 
             "status": cpu_status,
         },
         "devices": evaluated_pci,
+        "features": detect_features(pci, net),
     }
 
 
@@ -236,12 +425,14 @@ def main() -> None:
     args = parser.parse_args()
 
     hcl_db = load_hcl_database(args.database)
+    laptop_db = load_laptop_database()
     dmi = detect_dmi()
     cpu = detect_cpu()
     pci = detect_pci()
     net = detect_network()
     tpm = detect_tpm()
-    eval_result = evaluate_compatibility(hcl_db, dmi, cpu, pci)
+    platform = detect_platform(laptop_db, dmi)
+    eval_result = evaluate_compatibility(hcl_db, dmi, cpu, pci, net, platform)
 
     report = {
         "machine": f"{dmi['sys_vendor']} {dmi['product_name']}".strip(),
@@ -250,6 +441,8 @@ def main() -> None:
         "cpu": eval_result["cpu"],
         "network": net,
         "tpm": tpm,
+        "features": eval_result["features"],
+        "platform": platform,
         "pci_devices": eval_result["devices"],
     }
 
@@ -258,19 +451,41 @@ def main() -> None:
         return
 
     if args.machine:
-        print(f"Machine: {report['machine']} [{report['compatibility']}]")
+        suffix = ""
+        if platform.get("laptop"):
+            support = platform.get("profile") or "generic"
+            family = platform.get("family")
+            suffix = f" [{support}" + (f"/{family}" if family else "") + "]"
+        print(f"Machine: {report['machine']}{suffix} [{report['compatibility']}]")
         return
 
     print("=" * 60)
     print("Grintion-OS Hardware Compatibility Report (HCL)")
     print("=" * 60)
     print(f"Machine:        {report['machine']}")
+    if platform.get("laptop"):
+        support = platform.get("profile") or "generic"
+        family = platform.get("family") or "unlisted family"
+        print(f"Laptop:         yes ({support} / {family})")
+        if platform.get("expected_modules"):
+            print(f"Drivers:        {', '.join(platform['expected_modules'])}")
+    else:
+        print("Laptop:         no (desktop, server or virtual machine)")
     print(f"Platform:       {report['system']['status'].upper()}")
     if report['system']['notes']:
         print(f"Notes:          {report['system']['notes']}")
     print(f"BIOS/Firmware:  {report['system']['bios'] or 'N/A'}")
     print(f"CPU:            {report['cpu']['model']} ({report['cpu']['cores']} cores) [{report['cpu']['status']}]")
     print(f"TPM 2.0:        {'Available' if tpm['present'] else 'Not detected'}")
+    features = report["features"]
+    print(
+        "Hardware:       "
+        f"Wi-Fi {'yes' if features['wifi'] else 'no'}, "
+        f"storage {'yes' if features['storage'] else 'no'}, "
+        f"audio {'yes' if features['audio'] else 'no'}, "
+        f"ports {'yes' if features['ports'] else 'no'}, "
+        f"ethernet {'yes' if features['ethernet'] else 'no'}"
+    )
     print(f"Overall Rating: {report['compatibility'].upper()}")
     print("-" * 60)
     print("Detected Peripherals:")
@@ -281,4 +496,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

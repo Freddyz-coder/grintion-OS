@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.19.0 — *encrypted live persistence · independent release audit · fail-closed boot*
+- **Version:** 0.20.0 — *seven-vendor laptop support · expanded hardware drivers · automatic firmware selection*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,18 +17,20 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
 
-0.19.0 adds encrypted live persistence and an independent release audit.
-`grintion-persist` creates a LUKS2 container by default, the live init unlocks
-it with a passphrase at boot, and the overlay upper layer is never stored in
-plaintext. `grintion-release-audit artifact` re-derives the released ISO's
-hashes, boot policy, set-ID allowlist, SSH host-key hygiene and audit coverage
-from the artifact itself; `grintion-release-audit runtime` checks the running
-system. The release retains the 0.18.0 security model: boot failures halt
-instead of dropping to an unauthenticated root shell, recovery requires an
-explicit `grintion.recovery=1` entry, every shipped boot path selects AppArmor,
-enforces signed modules and requests kernel lockdown, and auditd verifies that
-kernel auditing is enabled. The 0.17.1 package manager repairs and database
-pinning remain in this image. See [CHANGELOG.md](CHANGELOG.md).
+0.20.0 adds family-level laptop hardware support for Lenovo, HP, Dell, Acer,
+Asus, MSI and Samsung machines. `grintion-driver-select` matches DMI vendor
+profiles and product families, loads the available ACPI/WMI/EC platform
+drivers, resolves Wi-Fi, storage, audio and port firmware from each device
+modalias, and installs only the missing split `linux-firmware-*` packages plus
+CPU microcode, `alsa-ucm-conf` and `sof-firmware` on Intel-audio laptops.
+`grintion-hcl` reports the matched family and class-level driver coverage, and
+`grintion-hwinfo` reports the chassis form factor. The 0.19.0 security model
+remains: boot failures halt instead of dropping to an unauthenticated root
+shell, recovery requires an explicit `grintion.recovery=1` entry, every
+shipped boot path selects AppArmor, enforces signed modules and requests kernel
+lockdown, auditd verifies kernel auditing, and encrypted live persistence is
+the default. See [CHANGELOG.md](CHANGELOG.md) and
+[docs/HARDWARE-FIRMWARE.md](docs/HARDWARE-FIRMWARE.md).
 
 0.16.0 delivered three major improvements over 0.15.0:
 
@@ -49,7 +51,7 @@ pinning remain in this image. See [CHANGELOG.md](CHANGELOG.md).
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.19.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.20.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -64,6 +66,7 @@ with `make sign-release` and verified with `bin/release-verify` (see
 | Live boot | Kernel and initramfs load entirely into RAM. The root is a tmpfs overlay, so the live session can write anywhere without touching a disk. |
 | Installed boot | The installer copies the live root to an ext4 root partition and installs Limine for BIOS or UEFI. Root is read-write. |
 | Networking | Base image: `/etc/grintion/network.conf` drives DHCP or static addressing; `grintion-network` configures static IPs and supervised Wi-Fi (`wpa_supplicant`). Desktop profiles install NetworkManager and switch `/var/service` to `/etc/sv/NetworkManager`, so the XFCE, LXQt, i3, Sway and Plasma network applets have a working D-Bus backend. DNS fallback resolvers keep name resolution responsive from early boot. |
+| Laptop hardware | DMI is matched against a vendor matrix for Lenovo, HP, Dell, Acer, Asus, MSI and Samsung laptop families. `grintion-driver-select` loads the matching ACPI/WMI/EC platform modules, selects Wi-Fi, storage, audio and port drivers, and installs the missing firmware, UCM and SOF packages automatically. See [docs/HARDWARE-FIRMWARE.md](docs/HARDWARE-FIRMWARE.md). |
 | Desktop & GUI | Boots to a clean prompt for pre-installation and configuration. Graphical desktop environments and GPU drivers can be pre-installed with `grintion-install --desktop` or installed on-demand with `grintion-desktop`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway were rendered in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires systemd. |
 | Audio | HDA and USB audio are built into the kernel. Desktop profiles install PipeWire, WirePlumber, firmware and ALSA tools. The shared `grintion-audio` helper is started by the X11 hook or XDG autostart, and unmutes every detected ALSA card; WirePlumber enumerates real sinks through udev instead of a hard-coded `plughw:0,0`. PipeWire playback was captured on the XFCE QEMU probe. Direct ALSA is only usable after PipeWire releases the PCM. |
 | Services | runit supervises two local gettys, a serial getty, networking (dhcpcd or NetworkManager), the nftables firewall, syslogd, optional display manager, and a local hook. |
@@ -82,6 +85,7 @@ Documentation:
 - [Architecture](docs/ARCHITECTURE.md)
 - [Installation](docs/INSTALL.md)
 - [Security Hardening](docs/SECURITY-HARDENING.md)
+- [Hardware & Firmware](docs/HARDWARE-FIRMWARE.md)
 - [Hardware & Lab Validation](docs/HARDWARE-LAB.md)
 - [Package Ecosystem](docs/PACKAGE-ECOSYSTEM.md)
 - [32-bit and 64-bit Support](docs/MULTIARCH.md)
@@ -89,6 +93,9 @@ Documentation:
 - [Performance Baselines](docs/PERFORMANCE-BASELINES.md)
 - [Tracked Binary Provenance](docs/BINARY-PROVENANCE.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Support and Funding](docs/SUPPORT-AND-FUNDING.md)
+- [Funding Ledger](docs/FUNDING-LEDGER.md)
+- [Community Support](SUPPORT.md)
 
 ---
 
@@ -207,6 +214,45 @@ LightDM and SDDM are supervised by runit (`/var/service/display-manager`); GDM i
 
 ---
 
+## Laptop hardware support
+
+Grintion-OS recognizes laptop families from **Lenovo, HP, Dell, Acer, Asus,
+MSI and Samsung** using DMI vendor aliases and product-family globs. The
+matrix lives in [`etc/grintion/laptop-support.json`](etc/grintion/laptop-support.json),
+so a family entry covers every model in that family rather than one tested SKU.
+
+| Vendor | Covered families | Platform drivers |
+| --- | --- | --- |
+| Lenovo | ThinkPad, ThinkBook, IdeaPad, Legion, LOQ, Yoga, V/Slim | `thinkpad_acpi`, `think_lmi`, `ideapad_laptop` |
+| HP | EliteBook, ProBook, ZBook, Dragonfly, Pavilion, Envy, Spectre, OMEN, Victus | `hp_wmi`, `hp_accel` |
+| Dell | Latitude, Vostro, Inspiron, XPS, Precision, G-Series, Alienware | `dell_laptop`, `dell_wmi`, `dell_smbios` |
+| Acer | Aspire, Nitro, Predator, Swift, Spin, TravelMate, Extensa, ConceptD | `acer_wmi`, `acer_wireless`, `acerhdf` |
+| Asus | ZenBook, VivoBook, ProArt, ROG, TUF, ExpertBook | `asus_wmi`, `asus_nb_wmi`, `asus_laptop` |
+| MSI | Prestige, Modern, Creator, Katana, Raider, Stealth, Vector, Thin | `msi_ec`, `msi_wmi`, `msi_wmi_platform` |
+| Samsung | Galaxy Book, Notebook, Odyssey, Galaxy Chromebook, 300E/500R5/700G/900X | `samsung_laptop`, `samsung_q10` |
+
+The installer runs `grintion-driver-select --apply` automatically. It detects
+Wi-Fi, NVMe/SATA/UFS storage, card readers, HDA/SOF audio and USB4/Thunderbolt
+controllers, asks `modinfo` which firmware each module needs, and installs only
+the missing split firmware packages plus CPU microcode, `alsa-ucm-conf` and
+`sof-firmware` on Intel-audio machines. It writes
+`/etc/grintion/hardware-profile.json` and
+`/etc/modules-load.d/grintion-hardware.conf`. `--no-auto-drivers` skips the
+step, and an offline install leaves the exact package list in the manifest.
+
+```sh
+grintion-hcl                         # vendor family, compatibility, Wi-Fi/storage/audio/ports
+grintion-driver-select --json        # detected modules, firmware gaps and packages
+sudo grintion-driver-select --apply  # install the selected support now
+grintion-firmware status             # EFI firmware/ESRT entries
+```
+
+This is driver-level support added in 0.20.0. Physical per-model validation
+remains tracked in [docs/HARDWARE-LAB.md](docs/HARDWARE-LAB.md); a model that is
+not listed in the lab still receives the generic drivers and firmware path.
+
+---
+
 ## Tests
 
 ```sh
@@ -257,7 +303,7 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.19.0 |
+| Feature | 0.20.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
@@ -266,8 +312,11 @@ path to a from-source bootstrap later. Do not describe the image as
 | ARM64 | Build scripts are x86_64-only |
 | Graphical desktop | XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM. GNOME is not supported because `gnome-session` 51 requires `org.freedesktop.systemd1` |
 | Kernel flavors | LTS (`6.12.114-grintion`) is the default source-built kernel. The installer and `grintion-kernel` can optionally add `hwe` (Arch current kernel + headers) or `dkms` (HWE headers + module builds) from the pinned snapshot as separate Limine entries. HWE/DKMS require network access and are not boot-verified in this tree. |
-| Audio | PipeWire playback verified end-to-end on XFCE (QEMU WAV capture) with a dynamically enumerated sink; all ALSA cards are unmuted. Direct ALSA playback requires suspending PipeWire first. PipeWire 1.6.11 is the current Arch stable version and includes the upstream `pipewire-alsa` drain fix |
-| Wi-Fi | Supported via `grintion-network` (Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization, DNS leak test) |
+| Audio | HDA and USB audio are built in. Intel SOF (Tiger Lake through Panther Lake) and SoundWire, AMD ACP3x/5x/6x, and Realtek/Conexant/Sigmatel codecs are enabled. Laptop installs add `alsa-ucm-conf` and, on Intel audio, `sof-firmware`. PipeWire playback was verified end-to-end on XFCE (QEMU WAV capture); direct ALSA requires suspending PipeWire first |
+| Wi-Fi | Kernel contract covers Intel `iwlwifi`, Realtek `rtw88`/`rtw89`, MediaTek `mt76`, Qualcomm Atheros and Broadcom `brcmfmac`. `grintion-driver-select` installs only the split `linux-firmware-*` package a detected card needs. `grintion-network` provides Enterprise WPA2/WPA3, priority roaming, reconnection, MAC randomization and a DNS leak test |
+| Laptop hardware | Lenovo, HP, Dell, Acer, Asus, MSI and Samsung families are matched from DMI; vendor ACPI/WMI/EC modules, storage, audio, port and firmware support are installed automatically. See [docs/HARDWARE-FIRMWARE.md](docs/HARDWARE-FIRMWARE.md) |
+| Storage | NVMe over PCIe, SATA AHCI, UFS, SDHCI and Realtek RTSX card readers are in the kernel contract; card-reader and removable-media modules are selected from detected hardware |
+| Ports | USB4/Thunderbolt 3 and 4, USB-C UCSI and DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD/microSD readers and 3.5 mm audio are covered |
 | Disk encryption | Supported; LUKS2 root (`--encrypt`), encrypted swap (`/etc/sv/cryptswap`), encrypted `/home` (`--encrypt-home`) via `grintion-install`, and LUKS2 live persistence via `grintion-persist` |
 | Snapshots / rollback | Supported; Btrfs root snapshots and rollback (`grintion-snapshot`), boot failure auto-rollback (`grintion-boot-health`), and package generations (`garb generations` / `rollback-generation`) |
 | Package installation | Supported; dual backends (`garb` native signed repo & bundled `pacman` with the dated Arch snapshot). The image ships the snapshot sync databases, so direct `pacman -S` works without a separate `-Sy`. Seeded packages own their complete shared-library sets and unowned udev/desktop data is pruned, so Firefox and desktop installs do not fail on file conflicts or missing `.so` files. |
@@ -283,7 +332,8 @@ this release builds and tests.
 
 ```text
 bin/            install, config, desktop, persist, chroot, garb, limine-deploy,
-                doctor, security-report, hwinfo, release-verify, release-audit,
+                doctor, security-report, hwinfo, hcl, driver-select, firmware,
+                release-verify, release-audit,
                 secureboot, uki,
                 attest, tpm-luks, snapshot, boot-health, backup, reset, network,
                 session, audit, integrity, audit-log, sandbox, shield, vault, usb,
@@ -304,12 +354,28 @@ docs/           comprehensive user handbook, architecture, security hardening, r
 
 ---
 
+## Support and community
+
+Grintion-OS is maintained without ads, telemetry or vendor funding. If it is
+useful to you, you can fund the CI hardware, signing keys and hosting that the
+release process depends on, or contribute test evidence instead:
+
+- [Support the project](docs/SUPPORT-AND-FUNDING.md) - funding channels, what the money pays for, and the funding policy
+- [Funding ledger](docs/FUNDING-LEDGER.md) - recorded income and spend
+- [SUPPORT.md](SUPPORT.md) - where to ask questions and report problems
+- [Contributing](CONTRIBUTING.md) - build, test and patch rules
+
+The public page is generated from `site/` by the `Support site` workflow; see
+[the setup guide](docs/SUPPORT-AND-FUNDING.md) for the Pages configuration.
+
+---
+
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.19.0 has not undergone an independent third-party
+and atomic rollback, but 0.20.0 has not undergone an independent third-party
 security audit. The automated `grintion-release-audit` checks are documented in
 [docs/INDEPENDENT-AUDIT.md](docs/INDEPENDENT-AUDIT.md); they are not a
 substitute for external review.

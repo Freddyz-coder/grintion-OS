@@ -1,0 +1,14 @@
+# Funding links GitHub shows behind the "Sponsor" button.
+#
+# github: the account must have GitHub Sponsors enabled, otherwise the button
+# points at an empty profile page. See docs/SUPPORT-AND-FUNDING.md.
+github: [Freddyz-coder]
+
+# Add these after the accounts exist. The same handles must be added to the
+# disabled cards in site/index.html.
+# ko_fi: your-handle
+# liberapay: your-handle
+# open_collective: grintion-os
+
+# Point this at the published support site once Pages is enabled.
+# custom: ["https://freddyz-coder.github.io/grintion-OS/"]

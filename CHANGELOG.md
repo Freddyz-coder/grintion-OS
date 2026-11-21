@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.0] - 2026-11-21
+
+### Added
+
+- **Laptop vendor support matrix for seven vendors.** `etc/grintion/laptop-support.json`
+  recognizes Lenovo (ThinkPad, ThinkBook, IdeaPad, Legion, LOQ, Yoga, V/Slim),
+  HP (EliteBook, ProBook, ZBook, Dragonfly, Pavilion, Envy, Spectre, OMEN,
+  Victus), Dell (Latitude, Vostro, Inspiron, XPS, Precision, G-Series,
+  Alienware), Acer (Aspire, Nitro, Predator, Swift, Spin, TravelMate, Extensa,
+  ConceptD), Asus (ZenBook, VivoBook, ProArt, ROG, TUF, ExpertBook), MSI
+  (Prestige, Modern, Creator, Katana, Raider, Stealth, Vector and related
+  series) and Samsung (Galaxy Book, Notebook, Odyssey, Galaxy Chromebook and
+  older series). Matching uses DMI aliases and product-family globs.
+- **Automatic laptop hardware support.** `grintion-driver-select` now reads DMI,
+  matches the vendor profile, loads available vendor ACPI/WMI/EC modules and
+  writes them to `modules-load.d`. It adds `alsa-ucm-conf` for detected audio
+  and `sof-firmware` for Intel HDA/SOF controllers. A combined pacman failure
+  is retried package-by-package so one missing optional package cannot block
+  Wi-Fi firmware installation.
+- **Wi-Fi, storage, audio and port kernel coverage.** The hardened fragment now
+  includes additional Realtek rtw88/rtw89 and MediaTek mt76 adapters, Atheros
+  ath9k, Broadcom brcmfmac PCIe/SDIO/USB, NVMe/SATA/UFS/SDHCI/RTSX card
+  readers, USB4/Thunderbolt/Type-C UCSI and DisplayPort alternate mode, Intel
+  SOF from Tiger Lake through Panther Lake, SoundWire Intel/AMD, AMD ACP3x/5x/6x,
+  USB/2.5GbE Ethernet, Bluetooth, I2C HID multitouch and pin control.
+- **Vendor platform drivers.** ThinkPad ACPI/LMI, IdeaPad, Dell
+  laptop/WMI/SMBIOS, HP WMI/accelerometer, Acer WMI/wireless/thermal, ASUS
+  WMI/notebook, MSI EC/WMI/platform and Samsung laptop drivers are modules in
+  the kernel contract.
+- **HCL family matching and feature reporting.** `grintion-hcl` now supports
+  product wildcards, reports the matched laptop family, and adds boolean
+  Wi-Fi/storage/audio/ports/Ethernet detection. Class-level defaults cover
+  unlisted Wi-Fi, NVMe/SATA/SAS, audio, USB/USB4, card-reader, Ethernet and
+  GPU controllers when the class driver is present.
+- `tests/test_laptop_hardware_support.py` covers all seven vendors, non-laptop
+  rejection, HCL wildcard matching, manifest writing, the per-package retry
+  after a failed combined transaction, and the kernel contract.
+
+### Changed
+
+- `grintion-hwinfo` reports the DMI chassis type/form factor and shares the
+  split-firmware package mapping with `grintion-driver-select`.
+- Modalias resolution uses a literal-prefix prefilter and firmware results are
+  cached, avoiding an O(devices × modules.alias) scan on a full module tree.
+- `docs/HARDWARE-FIRMWARE.md` documents the vendor matrix, automatic install
+  path, kernel coverage and firmware package licensing.
+
+### Tests
+
+- `tests/test_laptop_hardware_support.py`, the existing hardware/phase 11
+  suites and the kernel configuration contract were run locally. The kernel
+  fragment was merged over the pinned 6.12.114 `.config` and passed
+  `build/check-kernel-config.sh` with 377 options checked.
+- `bin/hcl --json`, `bin/driver-select --json` and `bin/hwinfo --json` were
+  smoke-tested on the build host.
+
+### Limitations
+
+- The vendor matrix is driver/package support, not a per-model physical
+  verification claim; physical evidence remains tracked in
+  `docs/HARDWARE-LAB.md`.
+
+---
+
 ## [0.19.0] - 2026-11-16
 
 ### Added

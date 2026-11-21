@@ -162,15 +162,20 @@ def firmware_present(name: str) -> bool:
     return False
 
 
-def module_aliases() -> list[tuple[str, str]]:
-    aliases: list[tuple[str, str]] = []
+def _pattern_prefix(pattern: str) -> str:
+    positions = [pattern.find(char) for char in "*?[" if char in pattern]
+    return pattern[:min(positions)] if positions else pattern
+
+
+def module_aliases() -> list[tuple[str, str, str]]:
+    aliases: list[tuple[str, str, str]] = []
     try:
         for line in (MODULES_DIR / "modules.alias").read_text(
             encoding="utf-8", errors="replace"
         ).splitlines():
             parts = line.split()
             if len(parts) >= 3 and parts[0] == "alias":
-                aliases.append((parts[1], parts[2]))
+                aliases.append((parts[1], _pattern_prefix(parts[1]), parts[2]))
     except OSError:
         pass
     return aliases
@@ -208,18 +213,25 @@ def module_firmware(module: str, cache: dict[str, list[str]] | None = None) -> l
 
 
 def firmware_packages(files: list[str]) -> list[str]:
+    """Map firmware paths to Arch split packages; keep this in sync with driver-select."""
     packages: set[str] = set()
     for name in files:
-        base = name.rsplit("/", 1)[-1]
-        if base.startswith(("iwlwifi", "i915", "btintel")):
+        path = name.lower().replace("\\", "/")
+        base = path.rsplit("/", 1)[-1]
+        if "intel/sof" in path or base.startswith("sof-"):
+            packages.add("sof-firmware")
+        elif (
+            base.startswith(("iwlwifi", "i915", "xe", "btintel", "ibt"))
+            or "intel/" in path
+        ):
             packages.add("linux-firmware-intel")
         elif base.startswith("rtw88"):
             packages.add("linux-firmware-rtw88")
         elif base.startswith("rtw89"):
             packages.add("linux-firmware-rtw89")
-        elif base.startswith(("rtl", "btrtl")):
+        elif base.startswith(("rtl", "rtw", "btrtl")):
             packages.add("linux-firmware-realtek")
-        elif base.startswith(("ath", "qca")):
+        elif path.startswith("ath") or base.startswith(("ath", "qca")):
             packages.add("linux-firmware-atheros")
         elif base.startswith(("amdgpu", "radeon")):
             packages.add("linux-firmware-amdgpu")
@@ -227,8 +239,10 @@ def firmware_packages(files: list[str]) -> list[str]:
             packages.add("linux-firmware-nvidia")
         elif base.startswith(("brcm", "bcm")):
             packages.add("linux-firmware-broadcom")
-        elif base.startswith(("mt76", "mt79", "mediatek")):
+        elif base.startswith(("mt76", "mt79", "mt7", "mediatek")):
             packages.add("linux-firmware-mediatek")
+        elif path.startswith("cirrus/") or base.startswith("cirrus"):
+            packages.add("linux-firmware-cirrus")
         else:
             packages.add("linux-firmware")
     return sorted(packages)
@@ -251,8 +265,8 @@ def firmware_report() -> dict:
             continue
         modalias = read_text(SYSFS / "bus" / "pci" / "devices" / device["slot"] / "modalias")
         modules = [
-            module for pattern, module in aliases
-            if modalias and fnmatch.fnmatchcase(modalias, pattern)
+            module for pattern, prefix, module in aliases
+            if modalias and modalias.startswith(prefix) and fnmatch.fnmatchcase(modalias, pattern)
         ]
         modules = list(dict.fromkeys(modules))
         if not modules and device["driver"]:
@@ -319,12 +333,19 @@ def memory_info() -> dict:
 
 
 def dmi_info(include: bool) -> dict:
+    chassis = read_text("/sys/class/dmi/id/chassis_type")
+    try:
+        chassis_number = int(chassis.split(".")[0]) if chassis else 0
+    except ValueError:
+        chassis_number = 0
     return {
         "vendor": read_text("/sys/class/dmi/id/sys_vendor"),
         "product": read_text("/sys/class/dmi/id/product_name"),
         "version": read_text("/sys/class/dmi/id/product_version"),
         "board": read_text("/sys/class/dmi/id/board_name"),
         "bios": read_text("/sys/class/dmi/id/bios_version"),
+        "chassis_type": chassis,
+        "form_factor": "laptop" if chassis_number in {8, 9, 10, 14, 30, 31, 32} else "desktop-or-unknown",
         "serial": redact(read_text("/sys/class/dmi/id/product_serial"), include),
     }
 

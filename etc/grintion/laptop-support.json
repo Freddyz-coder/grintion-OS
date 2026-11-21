@@ -1,0 +1,521 @@
+{
+  "schema": 1,
+  "updated": "2026-11-21",
+  "description": "Vendor laptop support matrix for Grintion-OS. DMI aliases and product families are matched case-insensitively with shell globs. Modules are loaded only when the running kernel provides them; packages are installed by grintion-driver-select --apply. Physical-hardware verification remains tracked in docs/HARDWARE-LAB.md.",
+  "chassis_types": {
+    "8": "portable",
+    "9": "laptop",
+    "10": "notebook",
+    "14": "subnotebook",
+    "30": "tablet",
+    "31": "convertible",
+    "32": "detachable"
+  },
+  "default_packages": [
+    "alsa-ucm-conf"
+  ],
+  "vendors": [
+    {
+      "id": "lenovo",
+      "vendor": "Lenovo",
+      "aliases": [
+        "LENOVO",
+        "Lenovo",
+        "Lenovo Group",
+        "LENOVO Group Limited"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "ThinkPad",
+          "patterns": ["ThinkPad*"]
+        },
+        {
+          "name": "ThinkBook",
+          "patterns": ["ThinkBook*"]
+        },
+        {
+          "name": "IdeaPad",
+          "patterns": ["IdeaPad*"]
+        },
+        {
+          "name": "Legion",
+          "patterns": ["Legion*"]
+        },
+        {
+          "name": "LOQ",
+          "patterns": ["LOQ*"]
+        },
+        {
+          "name": "Yoga",
+          "patterns": ["Yoga*"]
+        },
+        {
+          "name": "Lenovo V / Slim",
+          "patterns": ["V14*", "V15*", "V16*", "V17*", "V130*", "V330*", "V340*", "Slim*", "100-*", "300-*", "500-*"]
+        }
+      ],
+      "platform_modules": [
+        "thinkpad_acpi",
+        "think_lmi",
+        "ideapad_laptop",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211/BE200, Realtek RTL8821CE/RTL8822CE/RTL8852BE/RTL8852CE, MediaTek MT7921/MT7922/MT7925, Qualcomm Atheros QCA6174/WCN6855 and Broadcom BCM43xx",
+        "storage": "NVMe over PCIe, SATA AHCI, UFS and SD/microSD readers (Realtek RTS522A/RTS525A and Genesys Logic)",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF from Tiger Lake through Panther Lake, SoundWire links, AMD ACP3x/5x/6x, and Realtek/Conexant/Sigmatel HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45 where fitted"
+      },
+      "notes": "Covers ThinkPad, ThinkBook, IdeaPad, Legion, LOQ, Yoga and Lenovo V/Slim laptop families. thinkpad_acpi adds hotkeys, rfkill, battery thresholds and platform profiles; ideapad_laptop and think_lmi cover consumer and WMI-managed models."
+    },
+    {
+      "id": "hp",
+      "vendor": "HP",
+      "aliases": [
+        "HP",
+        "Hewlett-Packard",
+        "Hewlett Packard",
+        "HP Inc.",
+        "HP Inc"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "EliteBook",
+          "patterns": ["EliteBook*"]
+        },
+        {
+          "name": "ProBook",
+          "patterns": ["ProBook*"]
+        },
+        {
+          "name": "ZBook",
+          "patterns": ["ZBook*"]
+        },
+        {
+          "name": "Elite Dragonfly",
+          "patterns": ["Elite Dragonfly*", "Dragonfly*"]
+        },
+        {
+          "name": "Pavilion",
+          "patterns": ["Pavilion*"]
+        },
+        {
+          "name": "Envy",
+          "patterns": ["Envy*"]
+        },
+        {
+          "name": "Spectre",
+          "patterns": ["Spectre*"]
+        },
+        {
+          "name": "OMEN / Victus",
+          "patterns": ["OMEN*", "Omen*", "Victus*"]
+        },
+        {
+          "name": "HP Stream / Chromebook",
+          "patterns": ["Stream*", "Chromebook*", "HP Chromebook*"]
+        }
+      ],
+      "platform_modules": [
+        "hp_wmi",
+        "hp_accel",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211/BE200, Realtek RTL8821CE/RTL8822CE/RTL8852BE/RTL8852CE, MediaTek MT7921/MT7922 and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and SD/microSD readers (Realtek RTS522A/RTS525A)",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent EliteBook/ProBook/ZBook models, SoundWire links, AMD ACP audio, and Realtek/Conexant HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45 on business models"
+      },
+      "notes": "Covers EliteBook, ProBook, ZBook, Dragonfly, Pavilion, Envy, Spectre, OMEN, Victus, Stream and HP Chromebook families. HP WMI exposes hotkeys, rfkill, dock/ambient-light state and platform profiles; hp_accel covers the 3D DriveGuard accelerometer."
+    },
+    {
+      "id": "dell",
+      "vendor": "Dell",
+      "aliases": [
+        "Dell Inc.",
+        "Dell Inc",
+        "Dell",
+        "Alienware"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "Latitude",
+          "patterns": ["Latitude*"]
+        },
+        {
+          "name": "Vostro",
+          "patterns": ["Vostro*"]
+        },
+        {
+          "name": "Inspiron",
+          "patterns": ["Inspiron*"]
+        },
+        {
+          "name": "XPS",
+          "patterns": ["XPS*"]
+        },
+        {
+          "name": "Precision",
+          "patterns": ["Precision*"]
+        },
+        {
+          "name": "G-Series",
+          "patterns": ["G3*", "G5*", "G7*", "G15*", "G16*"]
+        },
+        {
+          "name": "Alienware",
+          "patterns": ["Alienware*", "m15*", "m16*", "m17*", "m18*", "x14*", "x15*", "x16*", "x17*"]
+        },
+        {
+          "name": "Dell Studio",
+          "patterns": ["Studio*"]
+        }
+      ],
+      "platform_modules": [
+        "dell_laptop",
+        "dell_wmi",
+        "dell_smbios",
+        "dell_wmi_descriptor",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211/BE200, Realtek RTL8821CE/RTL8822CE/RTL8852BE, MediaTek MT7921/MT7922 and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and SD/microSD readers (Realtek RTS522A/RTS525A)",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, Dell SMBIOS firmware attributes and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent Latitude/XPS/Precision models, SoundWire links, AMD ACP audio, and Realtek/Conexant/Cirrus HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45 on Latitude/Precision"
+      },
+      "notes": "Covers Latitude, Vostro, Inspiron, XPS, Precision, G-Series, Alienware and Studio families. Dell SMBIOS is used for firmware attributes and platform profiles; the legacy DELL_RBU sysfs update path stays disabled in favor of EFI capsules."
+    },
+    {
+      "id": "acer",
+      "vendor": "Acer",
+      "aliases": [
+        "Acer",
+        "ACER",
+        "Acer Incorporated",
+        "Acer Inc.",
+        "Acer Inc"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "Aspire",
+          "patterns": ["Aspire*"]
+        },
+        {
+          "name": "Nitro",
+          "patterns": ["Nitro*"]
+        },
+        {
+          "name": "Predator",
+          "patterns": ["Predator*"]
+        },
+        {
+          "name": "Swift",
+          "patterns": ["Swift*"]
+        },
+        {
+          "name": "Spin",
+          "patterns": ["Spin*"]
+        },
+        {
+          "name": "TravelMate",
+          "patterns": ["TravelMate*"]
+        },
+        {
+          "name": "Extensa",
+          "patterns": ["Extensa*"]
+        },
+        {
+          "name": "ConceptD",
+          "patterns": ["ConceptD*"]
+        },
+        {
+          "name": "Acer Chromebook",
+          "patterns": ["Chromebook*", "Acer Chromebook*"]
+        }
+      ],
+      "platform_modules": [
+        "acer_wmi",
+        "acer_wireless",
+        "acerhdf",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211, Realtek RTL8821CE/RTL8822CE/RTL8852BE, MediaTek MT7921/MT7922 and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and SD/microSD readers (Realtek RTS522A/RTS525A)",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent Swift/Spin/Aspire models, SoundWire links, AMD ACP audio, and Realtek HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4 on supported Swift/TravelMate models, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45 on TravelMate/Extensa"
+      },
+      "notes": "Covers Aspire, Nitro, Predator, Swift, Spin, TravelMate, Extensa, ConceptD and Acer Chromebook families. acer_wmi provides hotkeys, rfkill and backlight control; acerhdf covers older Aspire/TravelMate thermal control."
+    },
+    {
+      "id": "asus",
+      "vendor": "Asus",
+      "aliases": [
+        "ASUSTeK COMPUTER INC.",
+        "ASUSTeK COMPUTER INC",
+        "ASUSTeK",
+        "ASUS",
+        "Asus"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "ZenBook",
+          "patterns": ["ZenBook*", "Zenbook*"]
+        },
+        {
+          "name": "VivoBook",
+          "patterns": ["VivoBook*", "Vivobook*"]
+        },
+        {
+          "name": "ProArt",
+          "patterns": ["ProArt*"]
+        },
+        {
+          "name": "ROG",
+          "patterns": ["ROG*", "ROG Strix*", "ROG Zephyrus*", "ROG Flow*"]
+        },
+        {
+          "name": "TUF",
+          "patterns": ["TUF*", "TUF Gaming*"]
+        },
+        {
+          "name": "ExpertBook",
+          "patterns": ["ExpertBook*"]
+        },
+        {
+          "name": "ASUS Laptop",
+          "patterns": ["ASUS Laptop*", "ASUS Vivobook*", "ASUS TUF*", "ASUS ROG*"]
+        },
+        {
+          "name": "ASUS Chromebook",
+          "patterns": ["Chromebook*", "ASUS Chromebook*"]
+        }
+      ],
+      "platform_modules": [
+        "asus_wmi",
+        "asus_nb_wmi",
+        "asus_laptop",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211/BE200, Realtek RTL8821CE/RTL8822CE/RTL8852BE, MediaTek MT7921/MT7922 and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and SD/microSD readers (Realtek RTS522A/RTS525A)",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent ZenBook/VivoBook/ROG models, SoundWire links, AMD ACP audio, and Realtek HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45 on TUF/ROG"
+      },
+      "notes": "Covers ZenBook, VivoBook, ProArt, ROG, TUF, ExpertBook, ASUS Laptop and ASUS Chromebook families. asus_wmi and asus_nb_wmi provide hotkeys, rfkill, fan curves and platform profiles; asus_laptop covers older models."
+    },
+    {
+      "id": "msi",
+      "vendor": "MSI",
+      "aliases": [
+        "Micro-Star International",
+        "Micro-Star International Co., Ltd.",
+        "Micro-Star International Co., Ltd",
+        "MICRO-STAR INTERNATIONAL CO., LTD",
+        "MSI",
+        "Micro-Star"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "Prestige",
+          "patterns": ["Prestige*"]
+        },
+        {
+          "name": "Modern",
+          "patterns": ["Modern*"]
+        },
+        {
+          "name": "Creator",
+          "patterns": ["Creator*"]
+        },
+        {
+          "name": "Katana",
+          "patterns": ["Katana*"]
+        },
+        {
+          "name": "Raider",
+          "patterns": ["Raider*"]
+        },
+        {
+          "name": "Stealth",
+          "patterns": ["Stealth*"]
+        },
+        {
+          "name": "Vector",
+          "patterns": ["Vector*"]
+        },
+        {
+          "name": "Thin",
+          "patterns": ["Thin*"]
+        },
+        {
+          "name": "Cyborg",
+          "patterns": ["Cyborg*"]
+        },
+        {
+          "name": "Summit",
+          "patterns": ["Summit*"]
+        },
+        {
+          "name": "Sword",
+          "patterns": ["Sword*"]
+        },
+        {
+          "name": "MSI GP/GS/GE/GT/GF",
+          "patterns": ["GP*", "GS*", "GE*", "GT*", "GF*"]
+        },
+        {
+          "name": "MSI Bravo/Alpha/Delta",
+          "patterns": ["Bravo*", "Alpha*", "Delta*"]
+        }
+      ],
+      "platform_modules": [
+        "msi_ec",
+        "msi_wmi",
+        "msi_wmi_platform",
+        "msi_laptop",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211/BE200, Realtek RTL8821CE/RTL8822CE/RTL8852BE, MediaTek MT7921/MT7922 and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and SD/microSD readers",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent Prestige/Modern/Katana models, SoundWire links, AMD ACP audio, and Realtek HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 3 and 4 on supported Creator/Prestige models, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI/DisplayPort, SD reader, 3.5 mm combo jack and RJ-45"
+      },
+      "notes": "Covers Prestige, Modern, Creator, Katana, Raider, Stealth, Vector, Thin, Cyborg, Summit, Sword, GP/GS/GE/GT/GF and Bravo/Alpha/Delta families. MSI EC exposes battery charge thresholds and fan modes; msi_wmi handles hotkeys."
+    },
+    {
+      "id": "samsung",
+      "vendor": "Samsung",
+      "aliases": [
+        "SAMSUNG ELECTRONICS CO., LTD.",
+        "SAMSUNG ELECTRONICS CO., LTD",
+        "SAMSUNG ELECTRONICS",
+        "Samsung Electronics",
+        "Samsung",
+        "SAMSUNG"
+      ],
+      "status": "supported",
+      "families": [
+        {
+          "name": "Galaxy Book",
+          "patterns": ["Galaxy Book*", "Galaxy Book* Pro*", "Galaxy Book* Ultra*"]
+        },
+        {
+          "name": "Samsung Notebook",
+          "patterns": ["Notebook*", "NP*"]
+        },
+        {
+          "name": "Odyssey",
+          "patterns": ["Odyssey*"]
+        },
+        {
+          "name": "Samsung Chromebook",
+          "patterns": ["Chromebook*", "Galaxy Chromebook*"]
+        },
+        {
+          "name": "Samsung Series",
+          "patterns": ["300E*", "500R5*", "700G*", "900X*"]
+        }
+      ],
+      "platform_modules": [
+        "samsung_laptop",
+        "samsung_q10",
+        "intel_pmc_core",
+        "intel_vsec",
+        "intel_pmt_telemetry",
+        "intel_hid",
+        "intel_vbtn",
+        "intel_wmi_thunderbolt",
+        "thunderbolt",
+        "thunderbolt_net"
+      ],
+      "packages": [
+        "alsa-ucm-conf"
+      ],
+      "features": {
+        "wifi": "Intel AX200/AX201/AX210/AX211, Realtek RTL8821CE/RTL8822CE/RTL8852BE and Qualcomm Atheros QCA6174",
+        "storage": "NVMe over PCIe, SATA AHCI and microSD readers",
+        "firmware": "Intel and AMD CPU microcode, split linux-firmware packages per detected device, Intel SOF audio firmware, and EFI capsule staging through grintion-firmware",
+        "audio": "Intel HDA plus SOF on recent Galaxy Book models, SoundWire links, AMD ACP audio, and Realtek HDA codecs with UCM profiles",
+        "ports": "USB4/Thunderbolt 4 on Galaxy Book Pro/Ultra, USB-C DisplayPort alternate mode, USB 3.x/2.0, HDMI, microSD reader and 3.5 mm combo jack"
+      },
+      "notes": "Covers Galaxy Book, Samsung Notebook, Odyssey, Galaxy Chromebook and 300E/500R5/700G/900X series. samsung_laptop provides rfkill, hotkeys and backlight control; samsung_q10 covers older Q10-derived models."
+    }
+  ]
+}

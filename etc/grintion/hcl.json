@@ -1,7 +1,81 @@
 {
   "version": 1,
   "description": "Grintion-OS Hardware Compatibility List (HCL) Database",
-  "updated": "2026-11-07",
+  "updated": "2026-11-21",
+  "class_defaults": [
+    {
+      "class": "0280",
+      "name": "Wireless network controller (class driver)",
+      "status": "compatible",
+      "notes": "Wi-Fi class driver and split firmware are selected from the PCI modalias by grintion-driver-select."
+    },
+    {
+      "class": "0108",
+      "name": "NVMe storage controller (class driver)",
+      "status": "compatible",
+      "notes": "NVMe support is built into the kernel contract."
+    },
+    {
+      "class": "0107",
+      "name": "SAS storage controller (class driver)",
+      "status": "compatible",
+      "notes": "The SCSI/SAS class driver is in the kernel contract."
+    },
+    {
+      "class": "0106",
+      "name": "SATA storage controller (class driver)",
+      "status": "compatible",
+      "notes": "AHCI/SATA support is built into the kernel contract."
+    },
+    {
+      "class": "0403",
+      "name": "Audio device (class driver)",
+      "status": "compatible",
+      "notes": "HDA/SOF/USB audio and UCM packages are selected automatically."
+    },
+    {
+      "class": "0401",
+      "name": "Multimedia audio controller (class driver)",
+      "status": "compatible",
+      "notes": "HDA/SOF audio and UCM packages are selected automatically."
+    },
+    {
+      "class": "0c03",
+      "name": "USB controller (class driver)",
+      "status": "compatible",
+      "notes": "xHCI/EHCI/OHCI and USB4 support are in the kernel contract."
+    },
+    {
+      "class": "0c80",
+      "name": "USB4/Thunderbolt controller (class driver)",
+      "status": "compatible",
+      "notes": "USB4 and Thunderbolt modules are in the kernel contract."
+    },
+    {
+      "class": "0805",
+      "name": "SD host controller / card reader (class driver)",
+      "status": "compatible",
+      "notes": "SDHCI and Realtek RTSX card-reader modules are selected from detected hardware."
+    },
+    {
+      "class": "0200",
+      "name": "Ethernet controller (class driver)",
+      "status": "compatible",
+      "notes": "e1000/e1000e/r8169/igb/igc/alx class drivers are in the kernel contract."
+    },
+    {
+      "class": "0300",
+      "name": "VGA compatible controller (class driver)",
+      "status": "compatible",
+      "notes": "i915/amdgpu/nouveau class drivers and firmware selection are present."
+    },
+    {
+      "class": "0302",
+      "name": "3D controller (class driver)",
+      "status": "compatible",
+      "notes": "NVIDIA/AMD discrete GPU class drivers and firmware selection are present."
+    }
+  ],
   "vendors": {
     "system": [
       {
