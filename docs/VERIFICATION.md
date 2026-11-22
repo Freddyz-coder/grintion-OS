@@ -5,6 +5,66 @@ This document records what was actually executed for Grintion-OS 0.21.0,
 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
 
+## 0.21.0 installer and package progress UI (2026-11-22)
+
+0.21.0 replaces pacman-style transaction output with the shared Grintion
+progress renderer. `grintion-install` adds a target banner, eight numbered
+phases and an elapsed-time spinner for the root copy; delegated `garb`
+transactions and the desktop pre-install show download size, speed, percentage,
+ETA and the active package. The final ISO was built from release commit
+`5505167`, after the feature and version changes were committed.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,899,584 bytes (146 MiB) |
+| SHA-256 | `3915962405e71959705aa8bc2cf80c561a19f76345bcf99aa172b6b5d757d590` |
+| `BUILD-INFO` source commit | `5505167` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,511,618 bytes, SHA-256 `5a2bf799784080c35915cebb1e0072303d76c3c7f6fb0024541f6723bd7e322a`; `/etc/grintion/version` = `0.21.0`; 9,555 entries |
+| Installed initramfs | 5,980,658 bytes, SHA-256 `fd2f652234d2249b2e6d68fe061bf2a5ee17d64d86310781cae4c4e223ec1946` |
+| Limine entries | `Grintion-OS 0.21.0 (live, RAM)` and `Grintion-OS 0.21.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `make check` | **277 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| Live rootfs | Built with the staged Arch AppArmor parser; 0.21.0 identity, 9,555 entries, 130 MiB live initramfs |
+| ISO checksum | `sha256sum -c grintion-os-x86_64.iso.sha256` passed from `output/` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit `5505167`, kernel and initramfs hashes, 0.21.0 boot entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence path verified |
+| BIOS installer / installed reboot | Passed on the final ISO: target banner, `[1/8]` through `[8/8]`, spinner completion, `Grintion-OS 0.21.0 installed`, reboot from the target disk, login, DHCP, `INSTALLED`, yescrypt shadow entry, sudo, seatd, udev and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Bare-metal hardware probe | Performed without disk changes on a Lenovo IdeaPad Flex 5 16ABR8; see below |
+| Bare-metal installation / reboot | Not performed; the host cannot be repartitioned without destroying its working disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+The installer test's final `poweroff -f` is issued as the unprivileged test user
+and is denied; the harness closes QEMU after the installed-system assertions
+pass. No release signing key was available, so verify the SHA-256 before use.
+
+### Bare-metal hardware probe
+
+The physical host was probed with the shipped 0.21.0 tools; no partition was
+written and the machine was not rebooted. The host is a **Lenovo IdeaPad Flex 5
+16ABR8** (`LENOVO 82XY`, BIOS `L7CN26WW`, chassis type 31, AMD Ryzen 7 7730U,
+16 logical CPUs, TPM 2.0, MediaTek MT7921 Wi-Fi).
+
+| Probe | Result |
+| --- | --- |
+| `hcl --json` | `compatible`; Lenovo family `supported`; Wi-Fi, storage, audio, ports, USB and card reader `true`; Ethernet and Thunderbolt `false` on this model |
+| `hwinfo --json` | DMI form factor `laptop`, chassis type `31`; UEFI `true`, Secure Boot `disabled` |
+| `driver-select --json` | Selected `amd-ucode`, `alsa-ucm-conf` and `linux-firmware`; detected `mt7921e`, `amdgpu`, `ideapad_laptop`, `think_lmi`, `thinkpad_acpi`, `snd_pci_acp6x`, `sdhci_pci` and `nvme` |
+
+This is detection and driver-selection evidence, not a bare-metal boot or
+install result. The QEMU installer tests exercise the installation and reboot
+path inside the release image. The QEMU probe had no Arch mirror access, so
+optional driver packages were skipped; the base install and installed-system
+verification passed.
+
+---
+
 ## 0.20.0 laptop hardware support (2026-11-21)
 
 0.20.0 adds a DMI-driven laptop vendor matrix for Lenovo, HP, Dell, Acer,

@@ -48,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_progress.py` covers byte/rate/ETA formatting, transaction
   planning, hiding raw pacman output, the no-progress stall exit (`124`), and
   the forced `garb` progress path.
+- The final ISO was built from commit `5505167`: 152,899,584 bytes, SHA-256
+  `3915962405e71959705aa8bc2cf80c561a19f76345bcf99aa172b6b5d757d590`.
+- `bin/release-audit artifact`: **38 ok, 0 warn, 0 fail, 1 info**.
+- BIOS and UEFI installer/installed-system reboot tests passed on the final
+  ISO, including the `[1/8]`–`[8/8]` installer phases and installed-system
+  verification. See [docs/VERIFICATION.md](docs/VERIFICATION.md).
+- A non-destructive bare-metal host probe on a Lenovo IdeaPad Flex 5 16ABR8
+  verified HCL coverage and driver/firmware selection; no disk was changed.
 
 ## [0.20.0] - 2026-11-21
 
