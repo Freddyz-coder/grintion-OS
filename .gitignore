@@ -29,3 +29,6 @@ SecurityProblems.txt
 
 # Local machine-readable system dump; not part of the public source tree.
 info.txt
+
+# Local operating instructions; keep out of the public repository.
+Instructions.md
