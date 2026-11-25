@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.1] - 2026-11-25
+
+### Fixed
+
+- **Package downloads no longer sit at `0 B / <total>` while data arrives.**
+  pacman 7.1.0 prints `%s` as `0` for every package resolved from a sync
+  database, so the transaction plan discarded the download size and
+  `grintion-pkg-progress` treated a multi-gigabyte transaction as having no
+  measurable bytes. The plan now recovers `%CSIZE%` from the seeded
+  `var/lib/pacman/sync/<repo>.db` databases, keeps `%s` as the fallback and
+  counts bytes actually written (including `.part` files) when a size is
+  unknown. If a size cannot be recovered, the line reports the bytes received
+  and the transfer rate instead of a false percentage or `0 B / total`.
+  Measured on the KDE profile against the pinned snapshot: 585 of 591 packages
+  reported `%s = 0` and the total read 12.7 MiB; the corrected plan reports
+  1.18 GiB with no unknown sizes.
+- **A slow desktop pre-install no longer ends in a console-only system.** The
+  zero-size plan also blinded the five-minute no-progress watchdog, so a
+  healthy KDE, LXQt or other desktop transaction could be stopped and the
+  installer would still finish without a display manager. The watchdog now
+  treats growth of the package cache as activity, and the installer verifies
+  that the target's `/var/service/display-manager` runit link exists after the
+  chroot pre-install, recreating it when the service is present and reporting
+  the desktop as not ready otherwise.
+
+### Tests
+
+- `./build/check.sh`: **281 passed**, 0 failures; shellcheck, Python
+  compilation, documentation links, executable bits, provenance and
+  staged-rootfs checks passed.
+- `tests/test_progress.py` covers sync-database size recovery for zero-`%s`
+  plans, `.part` byte counting when the size is unknown, and a CLI run that
+  shows received bytes instead of `0 B /`.
+
 ## [0.22.0] - 2026-11-25
 
 ### Added
