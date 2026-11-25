@@ -40,6 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_progress.py` covers sync-database size recovery for zero-`%s`
   plans, `.part` byte counting when the size is unknown, and a CLI run that
   shows received bytes instead of `0 B /`.
+- The final ISO was built from release commit `ea1bae7`: 152,895,488 bytes,
+  SHA-256 `27ea95410fb3a96ebdbe9732a422f61b536e3c8e10956d6569f64aa3f80c3714`.
+- `bin/release-audit artifact`: **38 ok, 0 warn, 0 fail, 1 info**; checksum,
+  `BUILD-INFO` commit `ea1bae7`, kernel and initramfs hashes, 0.22.1 Limine
+  entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177
+  AppArmor files and the LUKS2 persistence path verified.
+- BIOS and UEFI live boot passed on the final ISO: root shell, kernel release,
+  DHCP, network service, live marker, nftables input chain, six AppArmor
+  profiles, sudo, `DOCTOR_RC=0`, runtime audit `AUDIT_RC=0` and the
+  framebuffer console.
+- BIOS and UEFI installer/installed-system reboot tests passed: 0.22.1 was
+  installed to an 8 GiB QEMU disk, booted from the target disk, and verified
+  ext4, UUID fstab, DHCP, seatd, udev, sudo, yescrypt and installed marker.
+- No end-to-end desktop pre-install was run in QEMU for this release. The size
+  recovery and unknown-size paths are covered by `tests/test_progress.py`, the
+  KDE plan against the pinned snapshot measured 1.18 GiB with no unknown
+  sizes, and the display-manager link repair is covered by code inspection and
+  the shared desktop-profile tests.
 
 ## [0.22.0] - 2026-11-25
 

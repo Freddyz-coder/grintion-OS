@@ -1,6 +1,6 @@
 # Independent release audit
 
-Grintion-OS 0.22.0 ships `grintion-release-audit`, an artifact-first audit tool.
+Grintion-OS 0.22.1 ships `grintion-release-audit`, an artifact-first audit tool.
 It reads the released ISO and its checksum rather than the build tree, so a
 passing audit is evidence about the bytes being distributed, not about the
 working directory that produced them.
@@ -13,7 +13,7 @@ trustworthy before the ISO was created.
 
 ```sh
 grintion-release-audit artifact output/grintion-os-x86_64.iso \
-    --expected-version 0.22.0
+    --expected-version 0.22.1
 make audit-release
 ```
 
@@ -38,7 +38,7 @@ Exit status is `0` when every check is `ok` or `warn`, and `1` on any `fail`.
 
 ```sh
 grintion-release-audit runtime
-grintion-release-audit runtime --expected-version 0.22.0 --strict-setuid --json
+grintion-release-audit runtime --expected-version 0.22.1 --strict-setuid --json
 ```
 
 The runtime audit checks the effective `/proc/cmdline`, kernel lockdown,
@@ -60,6 +60,17 @@ setuid paths are reported as warnings unless `--strict-setuid` is used.
 Use the tool together with a checksum file, an offline release key and
 `grintion-release-verify`. See [RELEASE-VERIFICATION.md](RELEASE-VERIFICATION.md)
 and [REPO-KEY-CEREMONY.md](REPO-KEY-CEREMONY.md).
+
+## 0.22.1 result
+
+The 0.22.1 ISO (`27ea95410fb3a96ebdbe9732a422f61b536e3c8e10956d6569f64aa3f80c3714`)
+passed the artifact audit with **38 ok, 0 warn, 0 fail and 1 info**. The
+informational line is the ISO digest. The audit verified the checksum,
+`BUILD-INFO` commit `ea1bae7`, the kernel/live/installed-initramfs hashes, the
+Limine 0.22.1 entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules,
+177 AppArmor files and the LUKS2 persistence unlock path. BIOS and UEFI live
+boot and installer/installed-system reboot tests passed on the final ISO; the
+runtime audit reported `AUDIT_RC=0` during the live boot test.
 
 ## 0.22.0 result
 
