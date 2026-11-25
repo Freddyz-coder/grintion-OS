@@ -24,7 +24,9 @@ parsers and USB audio built in; the profile installs PipeWire, WirePlumber,
 `sof-firmware`. The shared `grintion-audio` helper is called from the X11
 session hook and from `/etc/xdg/autostart/grintion-audio.desktop`, so KDE,
 LXQt and XFCE sessions all start the same stack without a systemd user
-manager. It unmutes every card in `/proc/asound/card*`, not just card 0.
+manager. It starts a private D-Bus session bus when the session has none,
+unmutes every card in `/proc/asound/card*` (not just card 0), and unmutes the
+default PipeWire sink after WirePlumber publishes it.
 
 The hard-coded `plughw:0,0` PipeWire sink was removed. That sink selected the
 wrong PCM on machines where HDMI is card 0 or the analog codec is card 1, and

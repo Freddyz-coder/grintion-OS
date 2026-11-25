@@ -288,6 +288,10 @@ def test_audio_startup_is_shared_by_x11_and_wayland() -> None:
     text = helper.read_text()
     assert "for card in /proc/asound/card[0-9]*" in text
     assert 'amixer -c "$index"' in text
+    assert "dbus-daemon --session --fork" in text
+    assert "@DEFAULT_AUDIO_SINK@" in text
+    assert "pipewire-pulse did not create" in text
+    assert "no ALSA card detected" in text
     assert not (REPO_ROOT / "etc" / "pipewire" / "pipewire.conf.d" / "50-grintion-alsa.conf").exists()
 
     hook = (

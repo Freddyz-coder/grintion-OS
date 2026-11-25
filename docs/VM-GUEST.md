@@ -68,14 +68,16 @@ absolute tablet is visible.
 
 ## Audio
 
-The 0.10.0 kernel has the HDA controller, HDA codec parsers and USB audio built
-in. The desktop profiles install `pipewire`, `pipewire-pulse`, `pipewire-alsa`,
-`wireplumber`, `alsa-ucm-conf`, `sof-firmware`, `linux-firmware` and
-`alsa-utils`. The shared `grintion-audio` helper starts PipeWire, WirePlumber
-and the PulseAudio compatibility daemon because this image has no systemd user
-manager to activate their sockets. It is called by the X11 hook and by an XDG
-autostart entry, and it unmutes every detected ALSA card. PipeWire enumerates
-real sinks through udev; there is no hard-coded `plughw:0,0` sink.
+The Grintion kernel has the HDA controller, HDA codec parsers and USB audio
+built in. The desktop profiles install `pipewire`, `pipewire-pulse`,
+`pipewire-alsa`, `wireplumber`, `alsa-ucm-conf`, `sof-firmware`,
+`linux-firmware` and `alsa-utils`. The shared `grintion-audio` helper starts
+PipeWire, WirePlumber and the PulseAudio compatibility daemon because this
+image has no systemd user manager to activate their sockets. It is called by
+the X11 hook and by an XDG autostart entry, starts a private session bus when
+the session does not provide one, and unmutes every detected ALSA card plus
+the default PipeWire sink. PipeWire enumerates real sinks through udev; there
+is no hard-coded `plughw:0,0` sink.
 
 If an older installation has no sound, reinstall the desktop profile to pull
 the audio packages, firmware and session helper:
@@ -93,7 +95,14 @@ pgrep -a -x pipewire
 pgrep -a -x wireplumber
 pgrep -a -x pipewire-pulse
 wpctl status                 # sinks and default device
+wpctl get-volume @DEFAULT_AUDIO_SINK@   # 1.00, or [MUTED]
+wpctl set-mute @DEFAULT_AUDIO_SINK@ 0   # unmute if needed
+pactl info                   # PulseAudio compatibility endpoint
 ```
+
+The helper writes its startup diagnostics to
+`$XDG_RUNTIME_DIR/grintion-audio.log` (normally
+`/tmp/grintion-runtime-1000/grintion-audio.log`).
 
 On QEMU, the guest only has a sound card if the host creates one. For playback
 capture to a WAV file, use an output-only HDA codec:
@@ -107,18 +116,49 @@ qemu-system-x86_64 ... \
 
 `hda-duplex` opens a capture stream as well. QEMU's WAV backend is
 playback-only and logs `audio: Can not open 'adc' (no host audio driver)`, so
-use `hda-output` for WAV capture. For interactive host audio, a duplex codec
-with a real backend works:
+use `hda-output` for WAV capture. For interactive host audio, use the backend that matches the host's sound
+server. QEMU 8.2 and newer can attach directly to PipeWire; PulseAudio and
+plain ALSA are the fallbacks:
 
 ```sh
+# PipeWire host (preferred on current desktops)
+qemu-system-x86_64 ... \
+    -audiodev pipewire,id=snd0 \
+    -device intel-hda \
+    -device hda-duplex,audiodev=snd0
+
+# PulseAudio host, or PipeWire's pulse compatibility daemon
 qemu-system-x86_64 ... \
     -audiodev pa,id=snd0 \
     -device intel-hda \
     -device hda-duplex,audiodev=snd0
+
+# Plain ALSA host
+qemu-system-x86_64 ... \
+    -audiodev alsa,id=snd0 \
+    -device intel-hda \
+    -device hda-duplex,audiodev=snd0
 ```
+
+Check which backends this QEMU build provides with
+`qemu-system-x86_64 -audiodev help`. The `pipewire` backend needs a running
+user PipeWire instance; `pa` needs PulseAudio or `pipewire-pulse`. A backend
+that cannot connect makes QEMU exit before the guest boots, so the failure is
+visible on the host rather than as silent audio in the guest.
 
 Use `-audiodev none` for a silent but functional guest. A VM created without
 an audio device shows no card in `/proc/asound/cards`, regardless of PipeWire.
+If the card is listed and the helper log says the sink is unmuted but the host
+is still silent, select a different host audio backend or device.
+
+### VirtualBox and VMware
+
+In VirtualBox, open **Settings → Audio**, enable audio, choose **Intel HD
+Audio** as the controller, and select the host driver that matches the host
+(PipeWire/PulseAudio through the default driver, or ALSA). In VMware, add a
+sound card with the HD Audio model. The guest's ALSA card check
+(`cat /proc/asound/cards`) is the quickest way to prove the VM exposed a device
+at all.
 
 The release probe uses QEMU's `wav` backend and verifies that a 440 Hz tone
 played through the native PipeWire client (`pw-play`) and through direct ALSA

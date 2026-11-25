@@ -651,9 +651,14 @@ def test_desktop_profiles_install_and_start_pipewire() -> None:
         assert daemon in text
     assert "XDG_RUNTIME_DIR" in text
     assert "/proc/asound/card[0-9]*" in text
+    assert "dbus-daemon --session --fork" in text
+    assert "@DEFAULT_AUDIO_SINK@" in text
+    assert "pactl set-sink-mute" in text
 
     wrapper = (REPO_ROOT / "etc" / "lightdm" / "Xsession-grintion").read_text()
     assert "XDG_RUNTIME_DIR" in wrapper
+    assert "stat -c %u" in wrapper
+    assert "/tmp/grintion-runtime-" in wrapper
 
     for profile in (REPO_ROOT / "etc" / "grintion" / "desktops.d").glob("*.conf"):
         values = profile.read_text()

@@ -9,8 +9,16 @@ set -e
 
 # No logind/systemd user manager creates a runtime directory for the session.
 # PipeWire, WirePlumber and dbus-launch all expect a private XDG_RUNTIME_DIR.
-if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-    XDG_RUNTIME_DIR="/tmp/grintion-runtime-$(id -u)"
+# Validate an inherited value as well: a path such as /run/user/UID that this
+# user cannot create or own would otherwise abort the session.
+uid=$(id -u)
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ] \
+    || [ "$(stat -c %u "$XDG_RUNTIME_DIR" 2>/dev/null || echo -1)" != "$uid" ]; then
+    XDG_RUNTIME_DIR="/tmp/grintion-runtime-$uid"
+    if [ -e "$XDG_RUNTIME_DIR" ] \
+        && [ "$(stat -c %u "$XDG_RUNTIME_DIR" 2>/dev/null || echo -1)" != "$uid" ]; then
+        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR-$$"
+    fi
     export XDG_RUNTIME_DIR
 fi
 mkdir -p "$XDG_RUNTIME_DIR"
