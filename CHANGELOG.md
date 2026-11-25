@@ -34,6 +34,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   VM guide now documents QEMU's `pipewire`, `pa` and `alsa` host-audio
   backends, plus the VirtualBox/VMware audio settings and guest mute checks.
 
+### Tests
+
+- `./build/check.sh`: **278 passed**, 0 failures; shellcheck, Python
+  compilation, documentation links, executable bits, provenance and
+  staged-rootfs checks passed.
+- The final ISO was built from release commit `b845757`: 152,907,776 bytes,
+  SHA-256 `bd95e9dba047aa5941ff26e15693e16e490ca82101158e21eb0f5a127b557a9d`.
+- `bin/release-audit artifact`: **38 ok, 0 warn, 0 fail, 1 info**; checksum,
+  `BUILD-INFO` commit `b845757`, kernel and initramfs hashes, 0.22.0 Limine
+  entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177
+  AppArmor files and the LUKS2 persistence path verified.
+- BIOS and UEFI live boot passed on the final ISO: root shell, kernel release,
+  DHCP, network service, live marker, nftables firewall, AppArmor, sudo,
+  `grintion-doctor` (`DOCTOR_RC=0`), runtime audit (`AUDIT_RC=0`) and the
+  framebuffer console.
+- BIOS and UEFI installer/installed-system reboot tests passed: 0.22.0 was
+  installed to an 8 GiB QEMU disk, booted from the target disk, and verified
+  ext4, UUID fstab, DHCP, seatd, udev, sudo, yescrypt and the installed marker.
+- The air-gap service and profile transitions are covered by focused tests with
+  simulated `ip`, `nft`, `sv` and `rfkill` commands. No live air-gapped VM
+  network test was run for this release.
+- The VM audio helper changes are covered by focused tests. This release did
+  not repeat a host-audio playback probe on a full desktop install.
+- No bare-metal install, independent third-party audit or signed release was
+  performed; verify the SHA-256 before use.
+
 ## [0.21.0] - 2026-11-22
 
 ### Added

@@ -1,9 +1,50 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.21.0,
-0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3, 0.14.2, 0.14.1,
-0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
+This document records what was actually executed for Grintion-OS 0.22.0,
+0.21.0, 0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3,
+0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.22.0 air-gapped lockdown and VM audio repair (2026-11-25)
+
+0.22.0 adds a supervised network lockdown to the `air-gapped` security
+profile and repairs the per-user audio startup path used by graphical VM
+sessions. The final ISO was built from release commit `b845757` after the
+feature and release-preparation commits.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,907,776 bytes (146 MiB) |
+| SHA-256 | `bd95e9dba047aa5941ff26e15693e16e490ca82101158e21eb0f5a127b557a9d` |
+| `BUILD-INFO` source commit | `b845757` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,519,246 bytes, SHA-256 `9a4470369a5883b52d5fa025d2e62e79a530b98df7735bd5910eae763106ba43`; `/etc/grintion/version` = `0.22.0`; 9,557 entries |
+| Installed initramfs | 5,980,658 bytes, SHA-256 `fd2f652234d2249b2e6d68fe061bf2a5ee17d64d86310781cae4c4e223ec1946` |
+| Limine entries | `Grintion-OS 0.22.0 (live, RAM)` and `Grintion-OS 0.22.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `./build/check.sh` | **278 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| ISO checksum | The asset audit matched `grintion-os-x86_64.iso.sha256` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit `b845757`, kernel and initramfs hashes, 0.22.0 boot entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence path verified |
+| BIOS live boot | Passed: root shell, `6.12.114-grintion`, DHCP `10.0.2.15`, network service, `LIVE`, nftables input chain, six loaded AppArmor profiles, sudo, `DOCTOR_RC=0`, `AUDIT_RC=0` and framebuffer console |
+| UEFI live boot | The same test passed with OVMF |
+| BIOS installer / installed reboot | Passed on the final ISO: `Grintion-OS 0.22.0 installed`, reboot from the target disk, login, DHCP, `INSTALLED`, yescrypt shadow entry, sudo, seatd, udev and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Air-gapped runtime | Not exercised on a live QEMU network. Focused tests cover service startup, live interface verification, radio restoration and rollback with simulated `ip`, `nft`, `sv` and `rfkill` commands |
+| VM audio playback | Not rerun end-to-end for 0.22.0. Focused tests cover private-bus startup, PipeWire/Pulse readiness checks, socket handling and default-sink unmute paths; the QEMU host-device path was verified separately |
+| Bare-metal installation / reboot | Not performed; the host cannot be repartitioned without destroying its working disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+The installer test's final `poweroff -f` is issued as the unprivileged test user
+and is denied; the harness closes QEMU after the installed-system assertions
+pass. No release signing key was available, so verify the SHA-256 before use.
+
+---
 
 ## 0.21.0 installer and package progress UI (2026-11-22)
 
