@@ -17,6 +17,7 @@ import queue
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -149,6 +150,11 @@ class PacmanPlan:
         return counts
 
     @property
+    def unknown_size_count(self) -> int:
+        """Packages whose download size could not be determined."""
+        return sum(1 for package in self.packages if package.size <= 0)
+
+    @property
     def largest(self) -> list[PlannedPackage]:
         return sorted(self.packages, key=lambda item: item.size, reverse=True)[:3]
 
@@ -228,6 +234,57 @@ def _plan_argv(argv: Sequence[str], operation: str) -> list[str] | None:
     return output
 
 
+def _sync_db_sizes(root: Path, wanted: dict[str, set[str]]) -> dict[str, int]:
+    """Return %CSIZE% values for package filenames from pacman's sync databases.
+
+    pacman 7 prints `%s` as 0 for packages that come from a sync database, so a
+    plan built from `-Sp` reports no download size for almost every package.
+    The database still stores the compressed size, and reading it keeps the
+    progress bar and the stall watchdog working. A missing or unreadable
+    database is never fatal: the transaction can still run without a total.
+    """
+    sizes: dict[str, int] = {}
+    wanted = {repo: names for repo, names in wanted.items() if names}
+    remaining = sum(len(names) for names in wanted.values())
+    if remaining == 0:
+        return sizes
+    sync_dir = root / "var/lib/pacman/sync"
+    for repo, names in wanted.items():
+        try:
+            archive = tarfile.open(sync_dir / f"{repo}.db", "r:*")
+        except (OSError, tarfile.TarError):
+            continue
+        with archive:
+            try:
+                for member in archive:
+                    if remaining == 0:
+                        break
+                    if not member.isfile() or not member.name.endswith("/desc"):
+                        continue
+                    handle = archive.extractfile(member)
+                    if handle is None:
+                        continue
+                    text = handle.read().decode("utf-8", "replace")
+                    filename = ""
+                    size = 0
+                    lines = text.splitlines()
+                    for index, line in enumerate(lines):
+                        if line == "%FILENAME%" and index + 1 < len(lines):
+                            filename = lines[index + 1].strip()
+                        elif line == "%CSIZE%" and index + 1 < len(lines):
+                            try:
+                                size = max(int(lines[index + 1].strip()), 0)
+                            except ValueError:
+                                size = 0
+                    if filename in names and size > 0:
+                        sizes[filename] = size
+                        names.discard(filename)
+                        remaining -= 1
+            except (OSError, tarfile.TarError):
+                continue
+    return sizes
+
+
 def build_plan(
     argv: Sequence[str], root: Path, timeout: float = 60.0
 ) -> PacmanPlan | None:
@@ -276,6 +333,23 @@ def build_plan(
         )
     if not packages:
         return None
+    missing: dict[str, set[str]] = {}
+    for package in packages:
+        if package.size <= 0 and package.filename:
+            missing.setdefault(package.repo, set()).add(package.filename)
+    if missing:
+        sizes = _sync_db_sizes(root, missing)
+        if sizes:
+            packages = [
+                PlannedPackage(
+                    repo=package.repo,
+                    name=package.name,
+                    version=package.version,
+                    size=sizes.get(package.filename, package.size),
+                    filename=package.filename,
+                )
+                for package in packages
+            ]
     return PacmanPlan(packages=packages, total_download=sum(item.size for item in packages))
 
 
@@ -296,15 +370,22 @@ def _path_size(path: Path) -> int:
 
 
 def measured_download(plan: PacmanPlan | None, cache_dir: Path) -> int:
+    """Bytes already on disk for the planned packages.
+
+    A known size only clamps a package that is complete. A plan whose sizes
+    could not be resolved must still report the bytes pacman actually wrote,
+    otherwise the progress line stays at "0 B" while a download is running.
+    """
     if plan is None:
         return 0
     downloaded = 0
     for package in plan.packages:
-        if package.size <= 0:
-            continue
         complete = _path_size(cache_dir / package.filename)
         partial = _path_size(cache_dir / f"{package.filename}.part")
-        downloaded += min(package.size, max(complete, partial))
+        actual = max(complete, partial)
+        if package.size > 0:
+            actual = min(package.size, actual)
+        downloaded += actual
     return downloaded
 
 
@@ -410,10 +491,13 @@ class _Renderer:
 
     def plan_summary(self, plan: PacmanPlan | None, operation: str) -> None:
         if plan is not None:
-            self.success(
-                f"{plan.total_packages} package(s) queued; "
-                f"{format_bytes(plan.total_download)} to download"
-            )
+            detail = f"{plan.total_packages} package(s) queued"
+            if plan.total_download > 0:
+                detail += f"; {format_bytes(plan.total_download)} to download"
+            unknown = plan.unknown_size_count
+            if unknown:
+                detail += f" (size unknown for {unknown})"
+            self.success(detail)
             repositories = ", ".join(
                 f"{name} {count}"
                 for name, count in sorted(plan.repositories.items())
@@ -445,8 +529,9 @@ class _Renderer:
         speed: float,
         elapsed: float,
         current: str,
+        unknown_sizes: int = 0,
     ) -> None:
-        if total > 0:
+        if total > 0 and unknown_sizes == 0:
             fraction = min(downloaded / total, 1.0)
             text = (
                 f"[*] Downloading {render_bar(fraction)} {fraction * 100:3.0f}%  "
@@ -459,12 +544,28 @@ class _Renderer:
                 text += "  measuring rate..."
             if current:
                 text += f"  {current}"
-        else:
-            text = f"[*] Downloading packages... {format_bytes(downloaded)} cached"
+        elif total > 0:
+            # Some package sizes are unknown, so a percentage would be wrong.
+            # Show the bytes that are actually arriving instead of a bogus
+            # "0 B / total" line that never moves.
+            text = (
+                f"[*] Downloading packages... {format_bytes(downloaded)} received "
+                f"({format_bytes(total)} known)"
+            )
             if speed > 0:
                 text += f"  {format_rate(speed)}"
             else:
                 text += "  measuring rate..."
+            if current:
+                text += f"  {current}"
+        else:
+            text = f"[*] Downloading packages... {format_bytes(downloaded)} received"
+            if speed > 0:
+                text += f"  {format_rate(speed)}"
+            else:
+                text += "  measuring rate..."
+            if current:
+                text += f"  {current}"
         self.status(text, time.monotonic())
 
     def install_status(self, done: int, total: int, current: str) -> None:
@@ -523,9 +624,12 @@ class _Renderer:
             return
         if plan is not None:
             count = plan.total_packages
-            detail = (
-                f"{count} package(s), {format_bytes(plan.total_download)} download"
-            )
+            if plan.unknown_size_count:
+                detail = f"{count} package(s)"
+            else:
+                detail = (
+                    f"{count} package(s), {format_bytes(plan.total_download)} download"
+                )
         elif operation == "remove":
             detail = "removal complete"
         elif operation == "update":
@@ -661,12 +765,9 @@ def run_transaction(
     started = time.monotonic()
     last_activity = started
     last_sample = started
-    last_download = (
-        measured_download(plan, cache_path)
-        if plan is not None
-        else directory_size(cache_path)
-    )
-    initial_download = last_download
+    initial_cache_size = directory_size(cache_path)
+    initial_download = measured_download(plan, cache_path) if plan is not None else 0
+    last_download = initial_download
     last_download_at = started
     speed = 0.0
     downloaded = initial_download
@@ -764,10 +865,14 @@ def run_transaction(
 
         now = time.monotonic()
         if now - last_sample >= 0.25:
-            if plan is not None:
-                downloaded = measured_download(plan, cache_path)
-            else:
-                downloaded = max(0, directory_size(cache_path) - initial_download)
+            # Track named package files first, then fall back to the cache
+            # directory growing. The fallback keeps the counter (and the stall
+            # watchdog) moving when the plan cannot name every file, for
+            # example when a database sync changes a package version.
+            downloaded = max(
+                measured_download(plan, cache_path) if plan is not None else 0,
+                max(0, directory_size(cache_path) - initial_cache_size),
+            )
             if downloaded > last_download:
                 last_activity = now
             elapsed_since_sample = now - last_download_at
@@ -785,6 +890,7 @@ def run_transaction(
                     speed,
                     now - started,
                     current_package,
+                    plan.unknown_size_count if plan is not None else 0,
                 )
                 renderer.slow_warning(speed, now - started)
             elif phase == "install":
@@ -823,10 +929,10 @@ def run_transaction(
     elapsed = time.monotonic() - started
     raw_output = "".join(raw_chunks)
 
-    if plan is not None:
-        downloaded = measured_download(plan, cache_path)
-    else:
-        downloaded = max(0, directory_size(cache_path) - initial_download)
+    downloaded = max(
+        measured_download(plan, cache_path) if plan is not None else 0,
+        max(0, directory_size(cache_path) - initial_cache_size),
+    )
 
     if rc == 0:
         renderer.complete(

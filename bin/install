@@ -1409,6 +1409,32 @@ if [ -n "$DESKTOP" ] && [ "$DESKTOP" != "none" ]; then
             umount -l "$TARGET/$path" 2>/dev/null || true
         fi
     done
+
+    # The installed system only starts a graphical session when runit has the
+    # display-manager service link. Verify it here instead of reporting "ready
+    # on boot" for a system that would come up on a console, and repair the
+    # link from the tracked service when the packages are already present.
+    grintion_dm_installed=0
+    for grintion_dm in /usr/bin/lightdm /usr/bin/sddm /usr/bin/gdm; do
+        if [ -x "$TARGET$grintion_dm" ]; then
+            grintion_dm_installed=1
+            break
+        fi
+    done
+    if [ "$grintion_dm_installed" -eq 1 ]; then
+        grintion_dm_link=$(readlink "$TARGET/var/service/display-manager" 2>/dev/null || true)
+        if [ -z "$grintion_dm_link" ] && [ -f "$TARGET/etc/sv/display-manager/run" ]; then
+            mkdir -p "$TARGET/var/service"
+            ln -sfn /etc/sv/display-manager "$TARGET/var/service/display-manager"
+            grintion_dm_link=/etc/sv/display-manager
+            warn "display-manager service was not enabled by the desktop pre-install; enabled it now"
+        fi
+        if [ -z "$grintion_dm_link" ]; then
+            DESKTOP_READY=0
+            warn "the target has a display manager but no enabled display-manager service"
+            warn "run 'sudo grintion-desktop install $DESKTOP' after boot to finish the desktop setup"
+        fi
+    fi
 fi
 
 step "Installing the bootloader"

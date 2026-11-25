@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -31,12 +33,18 @@ def test_progress_plan_is_built_without_downloading() -> None:
     assert progress.operation_of(["pacman", "-Rns", "firefox"]) == "remove"
 
 
-def _fake_pacman(path: Path, *, stall: bool = False) -> None:
+def _fake_pacman(
+    path: Path,
+    *,
+    stall: bool = False,
+    size: int = 1048576,
+    download_seconds: float = 0.2,
+) -> None:
     path.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "--version" ]; then echo "Pacman v7.0.0"; exit 0; fi\n'
         'case " $* " in\n'
-        '  *" -Sp "*) printf "core\\tfirefox\\t160.0-1\\t1048576\\tfirefox-160.0-1-x86_64.pkg.tar.zst\\n"; exit 0 ;;\n'
+        f'  *" -Sp "*) printf "core\\tfirefox\\t160.0-1\\t{size}\\tfirefox-160.0-1-x86_64.pkg.tar.zst\\n"; exit 0 ;;\n'
         "esac\n"
         'echo ":: Retrieving packages..."\n'
         'echo " firefox-160.0-1-x86_64 downloading..."\n'
@@ -45,7 +53,7 @@ def _fake_pacman(path: Path, *, stall: bool = False) -> None:
             if stall
             else 'dd if=/dev/zero of="$FAKE_CACHE/firefox-160.0-1-x86_64.pkg.tar.zst" '
             "bs=1024 count=512 status=none\n"
-            "sleep 0.2\n"
+            f"sleep {download_seconds}\n"
             'echo ":: Processing package changes..."\n'
             'echo "(1/1) installing firefox"\n'
             'echo ":: Running post-transaction hooks..."\n'
@@ -56,11 +64,19 @@ def _fake_pacman(path: Path, *, stall: bool = False) -> None:
     path.chmod(0o755)
 
 
-def _run_cli(tmp_path: Path, *args: str, stall: bool = False) -> subprocess.CompletedProcess:
+def _run_cli(
+    tmp_path: Path,
+    *args: str,
+    stall: bool = False,
+    size: int = 1048576,
+    download_seconds: float = 0.2,
+) -> subprocess.CompletedProcess:
     cache = tmp_path / "cache"
     cache.mkdir()
     fake = tmp_path / "pacman"
-    _fake_pacman(fake, stall=stall)
+    _fake_pacman(
+        fake, stall=stall, size=size, download_seconds=download_seconds
+    )
     env = os.environ.copy()
     env["FAKE_CACHE"] = str(cache)
     return subprocess.run(
@@ -104,6 +120,67 @@ def test_progress_cli_hides_raw_output_and_shows_phases(tmp_path: Path) -> None:
     log = (tmp_path / "transaction.log").read_text()
     assert ":: Retrieving packages..." in log
     assert "(1/1) installing firefox" in log
+
+
+def _write_sync_db(root: Path, filename: str, csize: int) -> None:
+    sync = root / "var/lib/pacman/sync"
+    sync.mkdir(parents=True)
+    desc = (
+        b"%NAME%\nfirefox\n\n%FILENAME%\n"
+        + filename.encode()
+        + b"\n\n%CSIZE%\n"
+        + str(csize).encode()
+        + b"\n\n"
+    )
+    with tarfile.open(sync / "core.db", "w:gz") as archive:
+        info = tarfile.TarInfo("firefox-160.0-1/desc")
+        info.size = len(desc)
+        archive.addfile(info, io.BytesIO(desc))
+
+
+# pacman 7 prints %s as 0 for packages that come from a sync database. The
+# plan must recover the real size from the database instead of showing
+# "0 B / total" for a transaction that is downloading gigabytes.
+def test_progress_plan_fills_zero_sizes_from_sync_database(tmp_path: Path) -> None:
+    _write_sync_db(tmp_path, "firefox-160.0-1-x86_64.pkg.tar.zst", 2 * 1024 * 1024)
+    fake = tmp_path / "pacman"
+    _fake_pacman(fake, size=0)
+    plan = progress.build_plan([str(fake), "-S", "--noconfirm", "firefox"], tmp_path)
+    assert plan is not None
+    assert plan.total_download == 2 * 1024 * 1024
+    assert plan.unknown_size_count == 0
+
+
+def test_progress_counts_partial_downloads_for_unknown_sizes(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    plan = progress.PacmanPlan(
+        packages=[
+            progress.PlannedPackage(
+                repo="core",
+                name="firefox",
+                version="160.0-1",
+                size=0,
+                filename="firefox-160.0-1-x86_64.pkg.tar.zst",
+            )
+        ],
+        total_download=0,
+    )
+    (cache / "firefox-160.0-1-x86_64.pkg.tar.zst.part").write_bytes(b"x" * 4096)
+    assert progress.measured_download(plan, cache) == 4096
+
+
+# A plan without usable sizes must still show the bytes that arrive, and the
+# watchdog must see them as activity, instead of a frozen "0 B / <total>".
+def test_progress_shows_received_bytes_when_size_is_unknown(tmp_path: Path) -> None:
+    result = _run_cli(
+        tmp_path, "--stall-seconds", "10", size=0, download_seconds=0.6
+    )
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "0 B / " not in combined
+    assert "received" in combined
+    assert "512 KiB received" in combined
 
 
 def test_progress_cli_stops_a_stalled_transaction(tmp_path: Path) -> None:
