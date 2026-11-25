@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.0] - 2026-11-25
+
+### Added
+
+- **A real network lockdown for the `air-gapped` profile.** `grintion-security
+  set air-gapped` now enables `/etc/sv/airgap`, which holds every non-loopback
+  interface down, flushes its addresses, soft-blocks all radios and re-checks
+  the links every five seconds. Compliance verification additionally requires
+  the nftables output chain to be `policy drop`, the service link and runtime
+  state to be present, and no non-loopback interface to be up. The service is
+  linked in installations created with `--security-profile air-gapped`;
+  switching to a networked profile stops it, restores the previously unblocked
+  radios and restarts the linked network service. A later failed control rolls
+  the lockdown back with the rest of the profile.
+
+### Fixed
+
+- **VM sessions no longer come up silent when no D-Bus session bus exists.**
+  `grintion-audio` now starts a private bus for WirePlumber when Sway or a bare
+  X session did not, reuses it within the user's runtime directory, waits for
+  the PipeWire and Pulse sockets instead of trusting a stale socket, and
+  unmutes the default PipeWire sink after WirePlumber publishes it. The LightDM
+  session wrapper validates an inherited `XDG_RUNTIME_DIR` and falls back to
+  its private directory when the path is missing or owned by another user. The
+  VM guide now documents QEMU's `pipewire`, `pa` and `alsa` host-audio
+  backends, plus the VirtualBox/VMware audio settings and guest mute checks.
+
 ## [0.21.0] - 2026-11-22
 
 ### Added

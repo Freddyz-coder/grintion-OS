@@ -3,12 +3,13 @@
 Grintion-OS is a small Operating system with defensive defaults. It is not a
 hardened, audited, or verified-boot platform. This document states what the
 current source tree provides; the most recent image built from this tree is
-0.21.0. It also records the limits of that protection and how to report a problem.
+0.22.0. It also records the limits of that protection and how to report a problem.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
+| 0.22.x | Security fixes on a best-effort basis |
 | 0.21.x | Security fixes on a best-effort basis |
 | 0.20.x | Security fixes on a best-effort basis |
 | 0.19.x | Security fixes on a best-effort basis |
@@ -118,6 +119,11 @@ silently ignores a profile that partly failed to apply.
 4. It re-checks the active profile, firewall chain, AppArmor enforcement, USB
    state and audit availability. A failed control rolls back the profile
    configuration and the previously active firewall rules.
+5. For `air-gapped`, it also enables the supervised `airgap` service, which
+   holds every non-loopback interface down, flushes addresses and soft-blocks
+   radios. Verification requires the output chain to be `drop`, the service
+   state to exist and no non-loopback interface to be up. Applying this
+   profile disconnects an SSH session; use the local console.
 
 `--config-only` writes the profile files without applying live controls. Image
 builds and tests use it; it is not a claim that the controls are active.
@@ -257,6 +263,10 @@ These are explicit design limits, not bugs to be reported as vulnerabilities:
   `grintion-boot-health` can switch Limine to an existing snapshot/recovery
   entry after repeated failures, but it does not restore files or prove that
   the alternate entry boots on the current hardware.
+- **An air gap is software enforcement.** The `air-gapped` profile drops all
+  non-loopback traffic, holds interfaces down and soft-blocks radios, but it
+  does not remove firmware radios, hardware side channels or physical access
+  risks. Treat it as defence in depth, not as a certified air gap.
 - **Security-profile application is not one atomic kernel transaction.**
   nftables rules are validated before loading and configuration is rolled back
   on failure, but a power loss between loading rules and writing state can

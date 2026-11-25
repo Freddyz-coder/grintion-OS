@@ -1,6 +1,6 @@
 # Independent release audit
 
-Grintion-OS 0.21.0 ships `grintion-release-audit`, an artifact-first audit tool.
+Grintion-OS 0.22.0 ships `grintion-release-audit`, an artifact-first audit tool.
 It reads the released ISO and its checksum rather than the build tree, so a
 passing audit is evidence about the bytes being distributed, not about the
 working directory that produced them.
@@ -13,7 +13,7 @@ trustworthy before the ISO was created.
 
 ```sh
 grintion-release-audit artifact output/grintion-os-x86_64.iso \
-    --expected-version 0.21.0
+    --expected-version 0.22.0
 make audit-release
 ```
 
@@ -38,7 +38,7 @@ Exit status is `0` when every check is `ok` or `warn`, and `1` on any `fail`.
 
 ```sh
 grintion-release-audit runtime
-grintion-release-audit runtime --expected-version 0.21.0 --strict-setuid --json
+grintion-release-audit runtime --expected-version 0.22.0 --strict-setuid --json
 ```
 
 The runtime audit checks the effective `/proc/cmdline`, kernel lockdown,

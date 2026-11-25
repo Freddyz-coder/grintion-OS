@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.21.0 — *custom install progress UI · live speed/size/ETA · numbered installer phases*
+- **Version:** 0.22.0 — *air-gapped network lockdown · repaired VM audio · install progress UI*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -15,9 +15,20 @@ indexes.
 - **Init:** runit
 - **Userland:** GNU coreutils, glibc, bash, util-linux, PAM, OpenSSH client, GNU gzip with its full companion set
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
-- **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack and unmutes every detected ALSA card; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture
+- **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack, starts a private session bus when needed and unmutes every detected ALSA card plus the default PipeWire sink; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture; see [docs/VM-GUEST.md](docs/VM-GUEST.md) for VM host-audio setup
 
-0.21.0 replaces pacman-style output with the Grintion installer and package
+0.22.0 adds a real network lockdown to the `air-gapped` security profile.
+`grintion-security set air-gapped` now enables a supervised service that holds
+every non-loopback interface down, flushes its addresses, soft-blocks all
+radios and re-checks the links, while compliance verifies the live interface
+state and nftables output policy instead of trusting a configuration file.
+Installs created with `--security-profile air-gapped` link the service for the
+first boot; switching back to a networked profile restores the previous radio
+state. The release also repairs VM audio: the session helper starts a private
+D-Bus bus when needed, waits for PipeWire and Pulse sockets, and unmutes the
+default PipeWire sink. See [CHANGELOG.md](CHANGELOG.md).
+
+0.21.0 replaced pacman-style output with the Grintion installer and package
 progress UI. `grintion-install` now shows a target banner and eight numbered
 phases; installs through `grintion-desktop` and interactive `garb install`,
 `upgrade`, `remove` and `update` transactions show the download size, speed,
@@ -59,7 +70,7 @@ the default. See [CHANGELOG.md](CHANGELOG.md) and
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.21.0 is built from this tree. Release ISO images are published on
+Grintion-OS 0.22.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -81,7 +92,7 @@ with `make sign-release` and verified with `bin/release-verify` (see
 | Accounts | root logs in on the live image. The installer creates one administrative user in `wheel`; root stays locked unless `--root-password-stdin` is used. |
 | Packages | `garb` installs, removes, upgrades and verifies packages via native Ed25519-signed repositories or delegating to the bundled `pacman` backend for the dated Arch snapshot. |
 | Persistence | `grintion-persist` creates a LUKS2-encrypted partition labelled `GRINTION_PERSIST` (plain ext4 only with `--no-encrypt`); the live init unlocks it with a passphrase and mounts the inner ext4 filesystem as the overlay upper layer. |
-| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), read-only `aa-status`/`aa-unconfined` reporting, Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
+| Hardening | Kernel configuration fragment, restricted `/proc` and `dmesg`, ASLR, Yama ptrace, AppArmor mandatory access control compiled into the kernel and loaded by the `apparmor` service at boot (six daemon profiles), read-only `aa-status`/`aa-unconfined` reporting, Bubblewrap application sandboxing, USBGuard data-blocking, a working `auditd` with focused rules and sudo I/O trails, mode-aware file integrity verification (`grintion-integrity`), and fail-closed security profiles (`workstation`, `server`, `kiosk`, `air-gapped`). `grintion-security set` applies the firewall, AppArmor and USB policy before writing profile state and rolls back on failure. The `air-gapped` profile also enables a supervised network-lockdown service that holds every non-loopback interface down, flushes its addresses and soft-blocks all radios; compliance checks the live interface state and the nftables output policy. X11 starts without TCP or abstract-socket listeners and requires a per-session cookie; `grintion-security-report` flags an exposed X server. |
 | Configuration | Single unified system tool (`grintion-config`) for timezones, locales, keymaps, hostnames, user accounts, power governors, and background services. |
 | Resilience | Watchdog service supervision with crash backoff, atomic package generations and rollback (`garb generations`), Btrfs snapshots with safer rollback and retention, boot-health auto-revert, automated self-healing (`grintion-selfheal`) and diagnosis (`grintion-doctor`). |
 
@@ -313,11 +324,11 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.21.0 |
+| Feature | 0.22.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
-| Bare-metal hardware | A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| Bare-metal hardware | No new bare-metal probe was run for 0.22.0. A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
@@ -386,7 +397,7 @@ The public page is generated from `site/` by the `Support site` workflow; see
 Read [SECURITY.md](SECURITY.md) before relying on this system for anything
 sensitive. The short version: the design is defensive and implements LUKS2
 encryption, AppArmor MAC, user-controlled Secure Boot (MOK), auditd trails,
-and atomic rollback, but 0.21.0 has not undergone an independent third-party
+and atomic rollback, but 0.22.0 has not undergone an independent third-party
 security audit. The automated `grintion-release-audit` checks are documented in
 [docs/INDEPENDENT-AUDIT.md](docs/INDEPENDENT-AUDIT.md); they are not a
 substitute for external review.
