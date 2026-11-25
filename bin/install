@@ -1122,7 +1122,41 @@ fi
 
 mkdir -p "$TARGET/etc/grintion"
 printf '%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security-profile"
-printf 'PROFILE=%s\n' "$SECURITY_PROFILE" > "$TARGET/etc/grintion/security.conf"
+# Write the complete profile state, not just PROFILE=, so boot-time compliance
+# checks and grintion-security apply-firewall see the same policy the image was
+# installed with. The air-gapped profile also links the network-lockdown service
+# into the target so the first boot comes up with the interfaces held down.
+SEC_FIREWALL=drop_inbound
+SEC_APPARMOR=enforce_daemons
+SEC_USB=0
+SEC_NETWORK=1
+case "$SECURITY_PROFILE" in
+    workstation) ;;
+    server|kiosk)
+        SEC_FIREWALL=strict_drop
+        SEC_APPARMOR=enforce_all
+        SEC_USB=1
+        ;;
+    air-gapped)
+        SEC_FIREWALL=drop_all
+        SEC_APPARMOR=enforce_all
+        SEC_USB=1
+        SEC_NETWORK=0
+        ;;
+esac
+cat > "$TARGET/etc/grintion/security.conf" <<EOF
+PROFILE=$SECURITY_PROFILE
+FIREWALL_POLICY=$SEC_FIREWALL
+APPARMOR_POLICY=$SEC_APPARMOR
+USB_DATA_BLOCK=$SEC_USB
+ALLOW_NETWORK=$SEC_NETWORK
+SUDO_IO_LOG=1
+AUDITD_ENABLED=1
+EOF
+if [ "$SECURITY_PROFILE" = "air-gapped" ]; then
+    mkdir -p "$TARGET/var/service"
+    ln -sfn /etc/sv/airgap "$TARGET/var/service/airgap"
+fi
 
 step "Configuring the installed system"
 printf '%s\n' "$HOSTNAME" > "$TARGET/etc/hostname"

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Grintion-OS runit service: airgap
+#
+# Second line of defence behind the drop_all nftables policy. The firewall
+# already rejects every non-loopback packet; this service makes sure the
+# interfaces themselves cannot carry one. It keeps every non-loopback
+# interface down, flushes addresses and soft-blocks all radios, then re-checks
+# every five seconds so dhcpcd or NetworkManager cannot revive a link.
+#
+# It exits non-zero when ip is missing rather than publishing an "active"
+# status it cannot enforce; runsv will restart it and `grintion-security set`
+# will fail its post-apply verification.
+
+mkdir -p /var/log /run/grintion
+exec >>/var/log/airgap.log 2>&1
+
+if ! command -v ip >/dev/null 2>&1; then
+    echo "airgap: ip is not available; refusing to report an active air gap"
+    exit 1
+fi
+
+RFKILL_STATE=/run/grintion/airgap-rfkill
+if command -v rfkill >/dev/null 2>&1; then
+    # Remember which radios the operator had already soft-blocked so switching
+    # back to a networked profile does not unblock them behind their back.
+    if [ ! -e "$RFKILL_STATE" ]; then
+        : > "$RFKILL_STATE"
+        for radio in /sys/class/rfkill/rfkill*; do
+            [ -e "$radio/soft" ] || continue
+            echo "${radio##*rfkill} $(cat "$radio/soft")" >> "$RFKILL_STATE"
+        done
+    fi
+    rfkill block all || echo "airgap: could not soft-block every radio"
+else
+    echo "airgap: rfkill is not available; radios are not soft-blocked"
+fi
+
+STATUS=/run/grintion/airgap
+while :; do
+    interfaces=""
+    for path in /sys/class/net/*; do
+        [ -e "$path" ] || continue
+        iface=${path##*/}
+        [ "$iface" = "lo" ] && continue
+        ip link set "$iface" down 2>/dev/null || true
+        ip addr flush dev "$iface" 2>/dev/null || true
+        interfaces="$interfaces $iface"
+    done
+    printf 'active=1\ninterfaces=%s\nupdated=%s\n' \
+        "${interfaces# }" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS"
+    sleep 5
+done

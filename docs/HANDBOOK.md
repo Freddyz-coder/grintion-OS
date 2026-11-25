@@ -173,12 +173,14 @@ Grintion-OS provides four switchable security profiles via `grintion-security`:
 - **`workstation`**: Default interactive profile with inbound firewall drop and shipped daemon AppArmor enforcement.
 - **`server`**: Hardened server profile with USB data-block mode and strict inbound firewall rules. The base image ships and enables the auditd daemon with focused rules.
 - **`kiosk`**: Locked-down single-application mode with USB data-blocking and restricted inbound traffic.
-- **`air-gapped`**: Offline profile with all network traffic dropped.
+- **`air-gapped`**: Offline profile with all network traffic dropped, every non-loopback interface held down, all radios soft-blocked and USB data blocked. Apply it from the local console; it disconnects an SSH session.
 
 `grintion-security set <profile>` applies the firewall, AppArmor and USB policy
-before writing profile state and verifies the running result. Use
-`--config-only` only when staging an image without booting it; that flag does
-not activate any control.
+before writing profile state and verifies the running result. For
+`air-gapped`, it also starts the supervised `airgap` service, which keeps the
+interfaces down and the radios blocked, and verification checks the live link
+state instead of trusting the profile file. Use `--config-only` only when
+staging an image without booting it; that flag does not activate any control.
 
 ### Application Sandboxing
 Run untrusted software in an isolated Bubblewrap container:

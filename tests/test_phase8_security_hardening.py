@@ -255,6 +255,15 @@ def test_grintion_security_profiles_and_report_integration(tmp_path: Path):
     assert "PROFILE=server" in conf_file.read_text()
     assert "USB_DATA_BLOCK=1" in conf_file.read_text()
 
+    # Staging an air-gapped image records the policy but does not create a
+    # live service link without a booting target.
+    res_air = run_bin("grintion-security", "set", "air-gapped", "--config-only", env=env)
+    assert res_air.returncode == 0
+    assert prof_file.read_text().strip() == "air-gapped"
+    assert "ALLOW_NETWORK=0" in conf_file.read_text()
+    assert "FIREWALL_POLICY=drop_all" in conf_file.read_text()
+    assert not (tmp_path / "service" / "airgap").exists()
+
 
 def test_grintion_security_applies_and_verifies_controls(tmp_path: Path):
     prof_file = tmp_path / "security-profile"
@@ -310,6 +319,164 @@ def test_grintion_security_applies_and_verifies_controls(tmp_path: Path):
     assert "input_grintion_strict_drop" in firewall_file.read_text()
     assert (tmp_path / "usb.log").read_text().strip() == "block-data"
     assert prof_file.read_text().strip() == "server"
+
+
+def test_air_gap_profile_locks_down_network_and_rolls_back(tmp_path: Path):
+    prof_file = tmp_path / "security-profile"
+    conf_file = tmp_path / "security.conf"
+    usb_conf = tmp_path / "usb.conf"
+    firewall_file = tmp_path / "firewall.nft"
+    nft_state = tmp_path / "nft.state"
+    sv_log = tmp_path / "sv.log"
+    rfkill_log = tmp_path / "rfkill.log"
+    airgap_status = tmp_path / "run" / "airgap"
+    service_dir = tmp_path / "service"
+    service_dir.mkdir()
+
+    nft = tmp_path / "nft"
+    nft.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "list" ]; then\n'
+        f'  cat "{nft_state}" 2>/dev/null\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-f" ]; then\n'
+        f'  cat > "{nft_state}"\n'
+        "  exit 0\n"
+        "fi\n"
+        "cat >/dev/null\n"
+        "exit 0\n"
+    )
+    nft.chmod(0o755)
+
+    apparmor = tmp_path / "apparmor"
+    apparmor.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "verify" ]; then\n'
+        "  echo '{\"compliant\": true, \"kernel_enforce\": 7, \"issues\": []}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    apparmor.chmod(0o755)
+
+    usb = tmp_path / "usb"
+    usb.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = block-data ]; then printf 'data_block=1\\n' > \"$GRINTION_USB_CONF\"; fi\n"
+        "if [ \"$1\" = allow-data ]; then printf 'data_block=0\\n' > \"$GRINTION_USB_CONF\"; fi\n"
+        "exit 0\n"
+    )
+    usb.chmod(0o755)
+
+    sv = tmp_path / "sv"
+    sv.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{sv_log}"\n'
+        'if [ "$1" = "up" ] && [ "$2" = "airgap" ]; then\n'
+        f'  mkdir -p "{airgap_status.parent}"\n'
+        f'  printf "active=1\\n" > "{airgap_status}"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    sv.chmod(0o755)
+
+    ip = tmp_path / "ip"
+    ip.write_text(
+        "#!/bin/sh\n"
+        "cat <<'EOF'\n"
+        "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n"
+        "2: eth0: <BROADCAST,MULTICAST> mtu 1500\n"
+        "EOF\n"
+    )
+    ip.chmod(0o755)
+
+    rfkill = tmp_path / "rfkill"
+    rfkill.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{rfkill_log}"\n'
+        "exit 0\n"
+    )
+    rfkill.chmod(0o755)
+
+    env = {
+        "GRINTION_SECURITY_PROFILE": str(prof_file),
+        "GRINTION_SECURITY_CONF": str(conf_file),
+        "GRINTION_USB_CONF": str(usb_conf),
+        "GRINTION_FIREWALL_FILE": str(firewall_file),
+        "GRINTION_SERVICE_DIR": str(service_dir),
+        "GRINTION_AIRGAP_SERVICE": str(REPO_ROOT / "etc" / "sv" / "airgap"),
+        "GRINTION_AIRGAP_STATUS": str(airgap_status),
+        "GRINTION_AIRGAP_RFKILL": str(tmp_path / "rfkill.state"),
+        "GRINTION_NFT_BIN": str(nft),
+        "GRINTION_APPARMOR_BIN": str(apparmor),
+        "GRINTION_USB_BIN": str(usb),
+        "GRINTION_SV_BIN": str(sv),
+        "GRINTION_IP_BIN": str(ip),
+        "GRINTION_RFKILL_BIN": str(rfkill),
+        "GRINTION_AUDITD_BIN": "/nonexistent/auditd",
+    }
+
+    res = run_bin("grintion-security", "set", "air-gapped", env=env)
+    assert res.returncode == 0, res.stderr
+    assert "applied and verified" in res.stdout
+    assert prof_file.read_text().strip() == "air-gapped"
+    assert "ALLOW_NETWORK=0" in conf_file.read_text()
+    assert (service_dir / "airgap").is_symlink()
+    assert airgap_status.is_file()
+    log = sv_log.read_text()
+    assert "up airgap" in log
+    assert "down network" in log
+    assert "chain input_grintion_drop_all" in firewall_file.read_text()
+    assert "policy drop;" in nft_state.read_text()
+    assert "data_block=1" in usb_conf.read_text()
+
+    # A live interface that comes back up must fail verification, even though
+    # the ruleset and the service state are otherwise correct.
+    ip.write_text(
+        "#!/bin/sh\n"
+        "cat <<'EOF'\n"
+        "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n"
+        "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"
+        "EOF\n"
+    )
+    res_verify = run_bin("grintion-security", "verify", "--json", env=env)
+    assert res_verify.returncode == 1
+    checks = json.loads(res_verify.stdout)["checks"]
+    assert any(
+        check["item"] == "network-interfaces" and check["status"] == "fail"
+        for check in checks
+    )
+
+    # Switching back stops the service and restores the network service path.
+    res_back = run_bin("grintion-security", "set", "workstation", env=env)
+    assert res_back.returncode == 0, res_back.stderr
+    assert not (service_dir / "airgap").is_symlink()
+    assert not (service_dir / "airgap").exists()
+    assert not airgap_status.exists()
+    assert "down airgap" in sv_log.read_text()
+    assert "unblock all" in rfkill_log.read_text()
+
+    # Re-applying the profile while an interface is still up must fail and roll
+    # back to the previous networked profile instead of claiming success.
+    res_fail = run_bin("grintion-security", "set", "air-gapped", env=env)
+    assert res_fail.returncode != 0
+    assert "was not applied" in res_fail.stderr
+    assert prof_file.read_text().strip() == "workstation"
+    assert not (service_dir / "airgap").is_symlink()
+    assert not airgap_status.exists()
+
+    airgap_run = REPO_ROOT / "etc" / "sv" / "airgap" / "run"
+    assert airgap_run.is_file()
+    assert os.access(airgap_run, os.X_OK)
+    run_text = airgap_run.read_text()
+    assert "rfkill block all" in run_text
+    assert "ip link set" in run_text
+    assert "ip addr flush" in run_text
+
+    install_text = (REPO_ROOT / "bin" / "install").read_text()
+    assert "ln -sfn /etc/sv/airgap" in install_text
+    assert "ALLOW_NETWORK=$SEC_NETWORK" in install_text
 
 
 def test_grintion_security_rolls_back_when_a_control_fails(tmp_path: Path):

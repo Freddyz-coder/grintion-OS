@@ -11,10 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 PROFILE_FILE = Path(
@@ -31,6 +33,16 @@ SERVICE_DIR = Path(os.environ.get("GRINTION_SERVICE_DIR", "/var/service"))
 APPARMOR_SERVICE = Path(
     os.environ.get("GRINTION_APPARMOR_SERVICE", "/etc/sv/apparmor")
 )
+AIRGAP_SERVICE = Path(
+    os.environ.get("GRINTION_AIRGAP_SERVICE", "/etc/sv/airgap")
+)
+AIRGAP_STATUS = Path(
+    os.environ.get("GRINTION_AIRGAP_STATUS", "/run/grintion/airgap")
+)
+AIRGAP_RFKILL_STATE = Path(
+    os.environ.get("GRINTION_AIRGAP_RFKILL", "/run/grintion/airgap-rfkill")
+)
+NETWORK_SERVICES = ("network", "wpa_supplicant", "NetworkManager", "timesync")
 
 PROFILES = {
     "workstation": {
@@ -151,6 +163,18 @@ def usb_binary() -> str | None:
 
 def auditd_binary() -> str | None:
     return _tool("GRINTION_AUDITD_BIN", "auditd", "auditd")
+
+
+def sv_binary() -> str | None:
+    return _tool("GRINTION_SV_BIN", "sv", "sv")
+
+
+def ip_binary() -> str | None:
+    return _tool("GRINTION_IP_BIN", "ip", "ip")
+
+
+def rfkill_binary() -> str | None:
+    return _tool("GRINTION_RFKILL_BIN", "rfkill", "rfkill")
 
 
 def run(argv: list[str], timeout: int = 60, input_text: str | None = None):
@@ -327,6 +351,161 @@ def auditd_service(enabled: bool, spec: dict) -> None:
         link.symlink_to(target)
 
 
+def sv_up(binary: str, service: str, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        result = run([binary, "up", service], timeout=10)
+        if result.returncode == 0:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def airgap_service(enabled: bool, live: bool) -> None:
+    """Enable or disable the supervised interface/radio lockdown.
+
+    The firewall policy is the first line of defence. This service is the
+    second: it brings every non-loopback interface down, flushes addresses,
+    blocks radios and keeps checking. A missing ip/sv in live mode is an
+    error, not a reason to call the profile applied.
+    """
+    link = SERVICE_DIR / "airgap"
+
+    if enabled:
+        run_script = AIRGAP_SERVICE / "run"
+        if not run_script.is_file():
+            raise SecurityError(f"airgap service is missing: {run_script}")
+        SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            if link.resolve() != AIRGAP_SERVICE.resolve():
+                raise SecurityError(
+                    f"{link} points to {link.resolve()}, not {AIRGAP_SERVICE}"
+                )
+        elif link.exists():
+            raise SecurityError(f"{link} exists and is not managed by this profile")
+        else:
+            link.symlink_to(AIRGAP_SERVICE)
+        if not live:
+            return
+        binary = sv_binary()
+        if not binary:
+            raise SecurityError("sv is not installed; cannot start the airgap service")
+        # Stop the services that would otherwise fight the lockdown. They are
+        # left linked so a profile switch back to a networked policy can bring
+        # the configured one back up.
+        for service in NETWORK_SERVICES:
+            run([binary, "down", service])
+        if not sv_up(binary, "airgap"):
+            raise SecurityError("airgap service did not start")
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if AIRGAP_STATUS.is_file():
+                return
+            time.sleep(0.2)
+        raise SecurityError("airgap service did not publish its runtime state")
+
+    # Disable path. Do nothing when this profile never enabled the service; a
+    # plain `set workstation` on a normal system must not touch the network.
+    if not (link.is_symlink() or link.exists() or AIRGAP_STATUS.is_file()):
+        return
+    binary = sv_binary() if live else None
+    if binary:
+        run([binary, "down", "airgap"])
+    if link.is_symlink():
+        if link.resolve() == AIRGAP_SERVICE.resolve():
+            link.unlink()
+        else:
+            print(f"[!] leaving {link}: it is not managed by this profile", file=sys.stderr)
+    elif link.exists():
+        print(f"[!] leaving {link}: it is not managed by this profile", file=sys.stderr)
+    AIRGAP_STATUS.unlink(missing_ok=True)
+    if not live:
+        return
+
+    radio = rfkill_binary()
+    if radio:
+        if AIRGAP_RFKILL_STATE.is_file():
+            for line in read_text(AIRGAP_RFKILL_STATE).splitlines():
+                fields = line.split()
+                if len(fields) == 2 and fields[1] == "0":
+                    run([radio, "unblock", fields[0]])
+            AIRGAP_RFKILL_STATE.unlink(missing_ok=True)
+        else:
+            # Older images and tests may not have recorded the previous state.
+            run([radio, "unblock", "all"])
+
+    if binary:
+        for service in ("network", "NetworkManager", "timesync", "wpa_supplicant"):
+            if (SERVICE_DIR / service).exists():
+                sv_up(binary, service, timeout=1.0)
+
+
+def interface_up_names() -> list[str]:
+    binary = ip_binary()
+    if not binary:
+        raise SecurityError("ip is not installed; cannot verify the air gap")
+    result = run([binary, "-o", "link", "show"], timeout=10)
+    if result.returncode != 0:
+        raise SecurityError(
+            result.stderr.strip() or "cannot list network interfaces"
+        )
+    names: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        name = parts[1].strip()
+        if not name or name == "lo":
+            continue
+        flags = re.search(r"<([^>]*)>", parts[2])
+        if flags and "UP" in flags.group(1).split(","):
+            names.append(name)
+    return names
+
+
+def nft_chain_block(ruleset: str, name: str) -> str:
+    depth = 0
+    block: list[str] = []
+    for line in ruleset.splitlines():
+        if not block:
+            if re.match(rf"^\s*chain\s+{re.escape(name)}\s*\{{", line):
+                block.append(line)
+                depth = line.count("{") - line.count("}")
+                if depth <= 0:
+                    return "\n".join(block)
+            continue
+        block.append(line)
+        depth += line.count("{") - line.count("}")
+        if depth <= 0:
+            break
+    return "\n".join(block)
+
+
+def firewall_output_drop() -> tuple[bool, str]:
+    binary = nft_binary()
+    if not binary:
+        return False, "nftables is not installed"
+    try:
+        result = subprocess.run(
+            [binary, "list", "ruleset"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"cannot query nftables: {exc}"
+    if result.returncode != 0:
+        return False, result.stderr.strip() or "nftables ruleset is unavailable"
+    block = nft_chain_block(result.stdout, "output")
+    if not block:
+        return False, "active ruleset has no output chain"
+    if not re.search(r"policy\s+drop\s*;", block):
+        return False, "output chain does not drop traffic"
+    return True, "output chain drops all traffic"
+
+
 def firewall_check(policy: str) -> tuple[bool, str]:
     binary = nft_binary()
     if not binary:
@@ -409,6 +588,58 @@ def check_compliance(name: str) -> dict:
         spec["firewall_default"],
     )
 
+    if spec["firewall_default"] == "drop_all":
+        # A chain marker alone only proves the right ruleset was generated. An
+        # air gap must also prove output is dropped and the links are down.
+        output_ok, output_detail = firewall_output_drop()
+        add(
+            "firewall-output",
+            "ok" if output_ok else "fail",
+            output_detail,
+            spec["firewall_default"],
+        )
+        service_ok = (SERVICE_DIR / "airgap").is_symlink() or (SERVICE_DIR / "airgap").exists()
+        add(
+            "airgap-service",
+            "ok" if service_ok else "fail",
+            (
+                "airgap network-lockdown service is enabled"
+                if service_ok
+                else "airgap service link is missing"
+            ),
+            service_ok,
+        )
+        state_ok = AIRGAP_STATUS.is_file()
+        add(
+            "airgap-state",
+            "ok" if state_ok else "fail",
+            (
+                "airgap runtime state is present"
+                if state_ok
+                else "airgap service has not published runtime state"
+            ),
+            state_ok,
+        )
+        try:
+            up = interface_up_names()
+        except (SecurityError, OSError) as exc:
+            add("network-interfaces", "fail", str(exc), [])
+        else:
+            if up:
+                add(
+                    "network-interfaces",
+                    "fail",
+                    "interfaces are still up: " + ", ".join(up),
+                    up,
+                )
+            else:
+                add(
+                    "network-interfaces",
+                    "ok",
+                    "every non-loopback interface is down",
+                    up,
+                )
+
     apparmor = apparmor_status()
     if apparmor.get("compliant"):
         add(
@@ -474,7 +705,15 @@ def apply_profile(name: str, config_only: bool = False) -> bool:
     previous_conf = read_text(CONF_FILE) if CONF_FILE.exists() else None
     previous_usb = read_text(USB_CONF) if USB_CONF.exists() else None
     previous_firewall = read_text(FIREWALL_FILE) if FIREWALL_FILE.exists() else None
+    airgap_link = SERVICE_DIR / "airgap"
+    previous_airgap_linked = airgap_link.is_symlink() or airgap_link.exists()
     firewall_applied = False
+    if name == "air-gapped" and not config_only:
+        print(
+            "[!] applying air-gapped disables every network interface and radio; "
+            "use the local console, not SSH",
+            file=sys.stderr,
+        )
     try:
         if not config_only:
             apply_usb(spec)
@@ -484,6 +723,7 @@ def apply_profile(name: str, config_only: bool = False) -> bool:
             # needs the rollback path.
             firewall_applied = True
             apply_firewall(spec["firewall_default"])
+            airgap_service(not spec["allow_network"], live=True)
         atomic_write(PROFILE_FILE, profile_text)
         atomic_write(CONF_FILE, conf_text)
         if not config_only:
@@ -517,6 +757,14 @@ def apply_profile(name: str, config_only: bool = False) -> bool:
                         run([binary, "-f", str(default)])
             except (SecurityError, OSError):
                 print("[!] firewall rollback was incomplete", file=sys.stderr)
+        if not config_only:
+            try:
+                airgap_service(previous_airgap_linked, live=True)
+            except (SecurityError, OSError) as rollback_exc:
+                print(
+                    f"[!] airgap rollback was incomplete: {rollback_exc}",
+                    file=sys.stderr,
+                )
         print(f"[-] security profile {name} was not applied: {exc}", file=sys.stderr)
         return False
     if config_only:

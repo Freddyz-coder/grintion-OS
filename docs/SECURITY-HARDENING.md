@@ -11,7 +11,7 @@ Grintion-OS supports four system security profiles managed via `grintion-securit
 | **`workstation`** | Desktop / Workstation | Drop unsolicited inbound | Enforce shipped daemon profiles | Allowed | Enabled | Enabled (`auditd`) |
 | **`server`** | Hardened Headless Server | Strict inbound drop; no service ports opened by default | Enforce all | Data-block enabled | Enabled | Enabled (`auditd`) |
 | **`kiosk`** | Display / Single-app Kiosk | Strict inbound drop | Enforce all | Data-block enabled | Enabled | Enabled (`auditd`) |
-| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled | Enabled (`auditd`) |
+| **`air-gapped`** | Offline / Classified | Drop all network traffic | Enforce all | Data-block enabled | Disabled (interfaces held down, radios blocked) | Enabled (`auditd`) |
 
 The security profile can be chosen during installation via `grintion-install --security-profile <PROF>` and inspected at any time with `grintion-security status` or `grintion-security-report`.
 
@@ -23,6 +23,18 @@ Use `--config-only` when staging an image or in tests that cannot load kernel
 policy. `verify` checks the active `nft list ruleset` chain marker, AppArmor
 enforcement, the USB config, and auditd availability instead of trusting the
 configuration file alone.
+
+For `air-gapped`, `set` additionally enables the supervised
+`/etc/sv/airgap` service. The service puts every non-loopback interface down,
+flushes its addresses, soft-blocks all radios and re-checks the links every
+five seconds so dhcpcd or NetworkManager cannot revive one. `verify`
+additionally requires the output chain to have `policy drop`, the service link
+and runtime state to exist, and every non-loopback interface to be down.
+Switching to a networked profile stops the service, restores the radios that
+were unblocked before the air gap and brings the linked network service back
+up. An install created with `--security-profile air-gapped` links the service
+in the target, so the first boot is already locked down. Apply the profile
+from the local console: it disconnects an SSH session.
 
 **Auditd is shipped and enabled in the base image.** The image includes
 `auditd`, `auditctl`, `ausearch` and `aureport` with their library closure,
