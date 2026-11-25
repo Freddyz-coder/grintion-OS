@@ -1,5 +1,6 @@
 # Grintion linux .gitignore
 build/work/
+.runner/
 build/cache/
 output/
 *.tmp

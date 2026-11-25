@@ -63,6 +63,20 @@ jobs:
           test -f /usr/share/edk2/x64/OVMF_CODE.4m.fd \
             || { echo "::error::edk2-ovmf is not installed"; exit 1; }
 
+      - name: Stage AppArmor for the rootfs build
+        run: |
+          if command -v apparmor_parser >/dev/null 2>&1; then
+            echo "apparmor_parser is installed on the runner"
+            exit 0
+          fi
+          pkg_url=$(pacman -Sp --noconfirm --print-format '%n %l' apparmor \
+            | awk '$1 == "apparmor" { print $2; exit }')
+          test -n "$pkg_url" || { echo "::error::cannot resolve the apparmor package"; exit 1; }
+          mkdir -p build/work/apparmor-root
+          curl -fL --retry 3 -o build/work/apparmor.pkg.tar.zst "$pkg_url"
+          bsdtar -xf build/work/apparmor.pkg.tar.zst -C build/work/apparmor-root
+          echo "GRINTION_APPARMOR_ROOT=$PWD/build/work/apparmor-root" >> "$GITHUB_ENV"
+
       - name: Build the ISO
         run: make iso
 

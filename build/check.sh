@@ -124,8 +124,8 @@ PY
 pass "documentation links"
 
 log "checking for accidental home-directory paths"
-if grep -rnI --exclude-dir=.git --exclude-dir=.venv --exclude-dir=build \
-        --exclude-dir=output --exclude-dir=tools \
+if grep -rnI --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.runner \
+        --exclude-dir=build --exclude-dir=output --exclude-dir=tools \
         --exclude=handoff.md --exclude=nexthandoff.md --exclude=featureAdding.md --exclude=NEXT-AI-PROMPT.md \
         -E '/home/[A-Za-z0-9._-]+/' . >/tmp/grintion-home-paths 2>/dev/null; then
     cat /tmp/grintion-home-paths >&2

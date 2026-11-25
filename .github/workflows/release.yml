@@ -17,17 +17,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Require the offline signing key
+      - name: Check the release signing key
+        id: signing
         env:
           RELEASE_KEY: ${{ secrets.GRINTION_RELEASE_KEY }}
         run: |
-          if [ -z "$RELEASE_KEY" ]; then
-            echo "::error::GRINTION_RELEASE_KEY must contain the offline Ed25519 private key"
-            exit 1
+          # The project has no offline release key at the moment. A tag must
+          # still be able to publish an unsigned ISO and its SHA-256, exactly
+          # like the manual releases, instead of leaving the job queued and
+          # then failing at the first step.
+          if [ -n "$RELEASE_KEY" ]; then
+            install -m 600 /dev/null "$RUNNER_TEMP/grintion-release.pem"
+            printf '%s' "$RELEASE_KEY" > "$RUNNER_TEMP/grintion-release.pem"
+            echo "GRINTION_RELEASE_KEY=$RUNNER_TEMP/grintion-release.pem" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GRINTION_RELEASE_KEY is not set; publishing an unsigned release"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
-          install -m 600 /dev/null "$RUNNER_TEMP/grintion-release.pem"
-          printf '%s' "$RELEASE_KEY" > "$RUNNER_TEMP/grintion-release.pem"
-          echo "GRINTION_RELEASE_KEY=$RUNNER_TEMP/grintion-release.pem" >> "$GITHUB_ENV"
 
       - name: Require a container engine for the pinned rootfs
         run: command -v podman || command -v docker
@@ -41,19 +48,23 @@ jobs:
           ./build/test-install.sh --uefi
 
       - name: Sign the tested artifacts
+        if: steps.signing.outputs.signed == 'true'
         run: |
           make sign-release
           openssl pkey -in "$GRINTION_RELEASE_KEY" -pubout -out output/grintion-release-public.pem
 
       - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            output/grintion-os-x86_64.iso \
-            output/SHA256SUMS \
-            output/SHA256SUMS.sig \
-            output/BUILD-INFO \
-            output/grintion-release-public.pem \
-            output/junit.xml \
-            --verify-tag --generate-notes
+          assets=(
+            output/grintion-os-x86_64.iso
+            output/grintion-os-x86_64.iso.sha256
+            output/BUILD-INFO
+            output/junit.xml
+          )
+          if [ -f output/SHA256SUMS.sig ]; then
+            assets+=(output/SHA256SUMS output/SHA256SUMS.sig output/grintion-release-public.pem)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes

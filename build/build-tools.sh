@@ -75,6 +75,11 @@ if [ ! -x "$BIN/busybox" ]; then
     log "building busybox 1.37.0 (static)"
     make -C "$SRC/busybox-1.37.0" defconfig >/dev/null
     sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' "$SRC/busybox-1.37.0/.config"
+    # busybox 1.37.0's tc applet uses the CBQ UAPI, which linux-api-headers
+    # 7.x no longer provides. A fresh checkout on a current Arch host fails
+    # in networking/tc.c; the image never uses the tc applet, so disable it
+    # instead of depending on the build host's header version.
+    sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' "$SRC/busybox-1.37.0/.config"
     make -C "$SRC/busybox-1.37.0" -j"$(nproc)" >/dev/null
     install -D -m 0755 "$SRC/busybox-1.37.0/busybox" "$BIN/busybox"
 fi
