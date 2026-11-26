@@ -149,6 +149,17 @@ if [ "$FIX_MODE" -eq 1 ]; then
         fi
     fi
 
+    PACMAN_LOCK="${ROOT}/var/lib/pacman/db.lck"
+    if [ -e "$PACMAN_LOCK" ]; then
+        if ! pgrep -x pacman >/dev/null 2>&1; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                planned "remove stale pacman database lock ($PACMAN_LOCK)"
+            else
+                rm -f "$PACMAN_LOCK" && fixed "removed stale pacman database lock ($PACMAN_LOCK)"
+            fi
+        fi
+    fi
+
     RESOLV="${ROOT}/etc/resolv.conf"
     if [ ! -f "$RESOLV" ] || [ ! -s "$RESOLV" ]; then
         if [ "$DRY_RUN" -eq 1 ]; then

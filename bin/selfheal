@@ -93,6 +93,23 @@ def plan() -> list[Repair]:
         if holder and not Path(f"/proc/{holder}").exists():
             repairs.append(Repair("stale-garb-lock", f"remove stale garb lock held by dead pid {holder}"))
 
+    pacman_lock = path("/var/lib/pacman/db.lck")
+    if pacman_lock.exists():
+        pacman_alive = False
+        try:
+            for entry in Path("/proc").iterdir():
+                if entry.name.isdigit():
+                    try:
+                        if (entry / "comm").read_text(encoding="utf-8", errors="replace").strip() == "pacman":
+                            pacman_alive = True
+                            break
+                    except OSError:
+                        continue
+        except OSError:
+            pacman_alive = True
+        if not pacman_alive:
+            repairs.append(Repair("stale-pacman-lock", "remove stale pacman lock /var/lib/pacman/db.lck"))
+
     resolv = path("/etc/resolv.conf")
     if not resolv.is_file() or not read("/etc/resolv.conf"):
         repairs.append(Repair("resolver", "write fallback nameservers to /etc/resolv.conf"))
@@ -159,6 +176,9 @@ def apply(repair: Repair, dry_run: bool) -> None:
         repair.applied = True
     elif repair.name == "stale-garb-lock":
         path("/var/lib/garb/lock").unlink(missing_ok=True)
+        repair.applied = True
+    elif repair.name == "stale-pacman-lock":
+        path("/var/lib/pacman/db.lck").unlink(missing_ok=True)
         repair.applied = True
     elif repair.name == "resolver":
         target = path("/etc/resolv.conf")

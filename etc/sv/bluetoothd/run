@@ -1,6 +1,7 @@
 #!/bin/sh
 # Grintion-OS runit service: bluetoothd (BlueZ daemon)
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/bluetoothd.log 2>&1
 if [ -x /usr/lib/bluetooth/bluetoothd ]; then
     exec /usr/lib/bluetooth/bluetoothd -n
 elif [ -x /usr/libexec/bluetooth/bluetoothd ]; then

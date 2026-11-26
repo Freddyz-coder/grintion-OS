@@ -1,4 +1,5 @@
 #!/bin/sh
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/watchdog.log 2>&1
 exec grintion-watchdog loop --interval 10
 

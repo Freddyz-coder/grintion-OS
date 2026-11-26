@@ -44,10 +44,12 @@ wait_for_peers() {
     return 1
 }
 
+trap 'exit 0' TERM INT
 while :; do
     if ! wait_for_peers; then
         echo "timesync: no configured NTP peer is resolvable yet; retrying in 60 seconds"
-        sleep 60
+        sleep 60 &
+        wait "$!" 2>/dev/null || true
         continue
     fi
 
@@ -58,5 +60,6 @@ while :; do
     /usr/bin/busybox ntpd -n -N
     rc=$?
     echo "timesync: ntpd exited with status $rc; retrying in 60 seconds"
-    sleep 60
+    sleep 60 &
+    wait "$!" 2>/dev/null || true
 done

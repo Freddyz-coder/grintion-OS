@@ -111,7 +111,14 @@ else
 fi
 [ -b "$ROOTDEV" ] || rescue "root device is not a block device: $ROOTDEV"
 
+# BusyBox blkid ignores -o value -s TYPE and prints key="value" pairs; handle both forms.
 ROOTFSTYPE="$(blkid -o value -s TYPE "$ROOTDEV" 2>/dev/null || true)"
+case "$ROOTFSTYPE" in
+    *TYPE=\"*\"*)
+        ROOTFSTYPE=${ROOTFSTYPE#*TYPE=\"}
+        ROOTFSTYPE=${ROOTFSTYPE%%\"*}
+        ;;
+esac
 case "$ROOTFSTYPE" in
     ext2|ext3|ext4)
         msg "checking $ROOTDEV ($ROOTFSTYPE)"

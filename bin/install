@@ -384,17 +384,41 @@ run_guided_tui() {
     mode_choice=${mode_choice:-1}
     if [ "$mode_choice" = "2" ]; then
         CUSTOM_PARTITIONS=1
-        echo "Available partitions:"
-        lsblk -lnpo NAME,SIZE,FSTYPE,MOUNTPOINT | grep -v 'loop' || true
-        printf "ESP partition (e.g. /dev/vda1): "
-        read -r ESP_PART_SPEC
-        printf "Root partition (e.g. /dev/vda2): "
-        read -r ROOT_PART_SPEC
-        printf "Swap partition (optional, e.g. /dev/vda3, or enter for none): "
-        read -r SWAP_PART_SPEC
-        printf "Home partition (optional, e.g. /dev/vda4, or enter for none): "
-        read -r HOME_PART_SPEC
-        [ -n "$HOME_PART_SPEC" ] && SEPARATE_HOME=1
+        local part_list
+        part_list=$(lsblk -lnpo NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null \
+            | awk '$3 == "part" || $3 == "crypt" || $3 == "lvm" || $3 == "md" {print}' || true)
+        if [ -z "$part_list" ]; then
+            warn "no disk partitions were found (custom mode requires pre-created partitions such as /dev/sda1 and /dev/sda2)."
+            echo "Available disks:"
+            lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
+            echo "Options:"
+            echo "  [1] Switch to Entire disk (automatic layout) [Recommended]"
+            echo "  [2] Exit now so you can partition manually (e.g. with cfdisk or parted)"
+            printf "Choose option [1]: "
+            read -r empty_part_choice
+            if [ "${empty_part_choice:-1}" = "1" ]; then
+                CUSTOM_PARTITIONS=0
+                echo "Available disks:"
+                lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
+                printf "Target disk (e.g. /dev/vda): "
+                read -r DISK
+            else
+                echo "Create partitions first (for example: cfdisk /dev/sda), then rerun grintion-install."
+                exit 0
+            fi
+        else
+            echo "Available partitions:"
+            printf '%s\n' "$part_list"
+            printf "ESP partition (e.g. /dev/vda1): "
+            read -r ESP_PART_SPEC
+            printf "Root partition (e.g. /dev/vda2): "
+            read -r ROOT_PART_SPEC
+            printf "Swap partition (optional, e.g. /dev/vda3, or enter for none): "
+            read -r SWAP_PART_SPEC
+            printf "Home partition (optional, e.g. /dev/vda4, or enter for none): "
+            read -r HOME_PART_SPEC
+            [ -n "$HOME_PART_SPEC" ] && SEPARATE_HOME=1
+        fi
     else
         echo "Available disks:"
         lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E 'disk|nvme' || true
@@ -426,24 +450,41 @@ run_guided_tui() {
 
     echo
     echo "4. Swap Configuration:"
-    echo "   [1] No swap"
-    echo "   [2] Swap partition (e.g. 2048 MiB)"
-    echo "   [3] Swap file on root (e.g. 2048 MiB)"
-    printf "Choose swap option [1]: "
-    read -r swap_choice
-    case "${swap_choice:-1}" in
-        2)
-            printf "Swap partition size in MiB [2048]: "
-            read -r sz
-            SWAP_SIZE_MIB=${sz:-2048}
-            ;;
-        3)
-            printf "Swap file size in MiB [2048]: "
-            read -r sz
-            SWAP_FILE_MIB=${sz:-2048}
-            ;;
-        *) SWAP_SIZE_MIB=0; SWAP_FILE_MIB=0 ;;
-    esac
+    if [ "$CUSTOM_PARTITIONS" -eq 1 ] && [ -n "$SWAP_PART_SPEC" ]; then
+        echo "   Using custom swap partition: $SWAP_PART_SPEC"
+    elif [ "$CUSTOM_PARTITIONS" -eq 1 ]; then
+        echo "   [1] No swap"
+        echo "   [2] Swap file on root (e.g. 2048 MiB)"
+        printf "Choose swap option [1]: "
+        read -r swap_choice
+        case "${swap_choice:-1}" in
+            2|swapfile)
+                printf "Swap file size in MiB [2048]: "
+                read -r sz
+                SWAP_FILE_MIB=${sz:-2048}
+                ;;
+            *) SWAP_SIZE_MIB=0; SWAP_FILE_MIB=0 ;;
+        esac
+    else
+        echo "   [1] No swap"
+        echo "   [2] Swap partition (e.g. 2048 MiB)"
+        echo "   [3] Swap file on root (e.g. 2048 MiB)"
+        printf "Choose swap option [1]: "
+        read -r swap_choice
+        case "${swap_choice:-1}" in
+            2)
+                printf "Swap partition size in MiB [2048]: "
+                read -r sz
+                SWAP_SIZE_MIB=${sz:-2048}
+                ;;
+            3)
+                printf "Swap file size in MiB [2048]: "
+                read -r sz
+                SWAP_FILE_MIB=${sz:-2048}
+                ;;
+            *) SWAP_SIZE_MIB=0; SWAP_FILE_MIB=0 ;;
+        esac
+    fi
 
     echo
     echo "5. Desktop Environment:"
@@ -455,10 +496,10 @@ run_guided_tui() {
     printf "Choose desktop [1]: "
     read -r dt_choice
     case "${dt_choice:-1}" in
-        2) DESKTOP="xfce" ;;
-        3) DESKTOP="i3" ;;
-        4) DESKTOP="sway" ;;
-        5) DESKTOP="kde" ;;
+        2|xfce) DESKTOP="xfce" ;;
+        3|i3) DESKTOP="i3" ;;
+        4|sway) DESKTOP="sway" ;;
+        5|kde|plasma) DESKTOP="kde" ;;
         *) DESKTOP="none" ;;
     esac
 
@@ -543,15 +584,64 @@ if [ "$ENCRYPT" -eq 1 ] || [ "$ENCRYPT_HOME" -eq 1 ]; then
     command -v cryptsetup >/dev/null 2>&1 || die "encryption requires cryptsetup"
 fi
 
+validate_custom_partition() {
+    local role="$1" dev="$2" dev_type dev_ro dev_fs real_dev
+    [ -b "$dev" ] || die "$role is not a block device: $dev"
+    real_dev=$(readlink -f "$dev" 2>/dev/null || printf '%s' "$dev")
+    case "$real_dev" in
+        /dev/sr*|/dev/zram*|/dev/loop*)
+            die "$role cannot use virtual or optical device $dev"
+            ;;
+    esac
+    dev_type=$(lsblk -ndo TYPE "$dev" 2>/dev/null | head -1 || true)
+    case "$dev_type" in
+        rom|loop) die "$role cannot use optical/loop device $dev ($dev_type)" ;;
+        disk)     die "$role must be a partition (e.g. ${dev}1), not a whole disk ($dev); use automatic disk mode (--disk $dev) to wipe and partition a whole disk" ;;
+    esac
+    dev_ro=$(blockdev --getro "$dev" 2>/dev/null || echo 0)
+    [ "$dev_ro" != "1" ] || die "$role cannot use read-only device $dev"
+    dev_fs=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+    [ "$dev_fs" != "iso9660" ] || die "$role cannot use live ISO media $dev"
+    if findmnt -rn -S "$dev" >/dev/null 2>&1; then
+        die "$role ($dev) is currently mounted; unmount it first"
+    fi
+    if command -v swapon >/dev/null 2>&1 \
+        && swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$dev"; then
+        die "$role ($dev) is an active swap device; run swapoff $dev first"
+    fi
+}
+
+USE_SWAP_PART=0
 if [ "$CUSTOM_PARTITIONS" -eq 1 ]; then
     [ -n "$ROOT_PART_SPEC" ] || die "--root-part is required with --custom"
     [ -n "$ESP_PART_SPEC" ]  || die "--esp-part is required with --custom"
     if [ "$DRY_RUN" -ne 1 ]; then
-        [ -b "$ROOT_PART_SPEC" ] || die "not a block device: $ROOT_PART_SPEC"
-        [ -b "$ESP_PART_SPEC" ]  || die "not a block device: $ESP_PART_SPEC"
+        validate_custom_partition "ESP partition" "$ESP_PART_SPEC"
+        validate_custom_partition "Root partition" "$ROOT_PART_SPEC"
+        [ -n "$SWAP_PART_SPEC" ] && validate_custom_partition "Swap partition" "$SWAP_PART_SPEC"
+        [ -n "$HOME_PART_SPEC" ] && validate_custom_partition "Home partition" "$HOME_PART_SPEC"
+        declare -A _seen_parts=()
+        for _spec in "$ESP_PART_SPEC" "$ROOT_PART_SPEC" "$SWAP_PART_SPEC" "$HOME_PART_SPEC"; do
+            [ -n "$_spec" ] || continue
+            _canon=$(readlink -f "$_spec" 2>/dev/null || printf '%s' "$_spec")
+            if [ -n "${_seen_parts[$_canon]:-}" ]; then
+                die "duplicate partition specified in custom layout: $_spec"
+            fi
+            _seen_parts[$_canon]=1
+        done
+        unset _seen_parts _spec _canon
+    fi
+    if [ -n "$SWAP_PART_SPEC" ]; then
+        USE_SWAP_PART=1
+        if [ "$DRY_RUN" -ne 1 ] && [ "$SWAP_SIZE_MIB" -eq 0 ]; then
+            SWAP_SIZE_MIB=$(( $(blockdev --getsize64 "$SWAP_PART_SPEC" 2>/dev/null || echo 0) / 1048576 ))
+        fi
     fi
     if [ -z "$DISK" ]; then
-        DISK="$(lsblk -no PKNAME "$ROOT_PART_SPEC" 2>/dev/null | head -1 || true)"
+        DISK="$(lsblk -no PKNAME "$ESP_PART_SPEC" 2>/dev/null | head -1 || true)"
+        if [ -z "$DISK" ]; then
+            DISK="$(lsblk -no PKNAME "$ROOT_PART_SPEC" 2>/dev/null | head -1 || true)"
+        fi
         if [ -n "$DISK" ] && [ -b "/dev/$DISK" ]; then
             DISK="/dev/$DISK"
         else
@@ -569,7 +659,13 @@ else
         printf "Target disk (e.g. /dev/vda): "
         read -r DISK
     fi
-    [ -b "$DISK" ] || [ "$DRY_RUN" -eq 1 ] || die "not a block device: $DISK"
+    if [ "$DRY_RUN" -ne 1 ]; then
+        [ -b "$DISK" ] || die "not a block device: $DISK"
+        case "$(readlink -f "$DISK" 2>/dev/null || printf '%s' "$DISK")" in
+            /dev/sr*|/dev/zram*) die "target cannot be optical or zram device: $DISK" ;;
+        esac
+        [ "$(blockdev --getro "$DISK" 2>/dev/null || echo 0)" != "1" ] || die "target disk is read-only: $DISK"
+    fi
     DISK_SIZE="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 10737418240)"
     [ "$DISK_SIZE" -ge 4294967296 ] || [ "$DRY_RUN" -eq 1 ] || die "target disk must be at least 4 GiB"
 fi
@@ -583,8 +679,11 @@ esac
 case "$HOME_SIZE_MIB" in
     ''|*[!0-9]*) die "invalid --home-size: $HOME_SIZE_MIB" ;;
 esac
+if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+    USE_SWAP_PART=1
+fi
 DISK_MIB=$((DISK_SIZE / 1048576))
-if [ "$SWAP_SIZE_MIB" -gt 0 ] && [ "$SWAP_SIZE_MIB" -gt "$((DISK_MIB - 1024))" ]; then
+if [ "$CUSTOM_PARTITIONS" -eq 0 ] && [ "$SWAP_SIZE_MIB" -gt 0 ] && [ "$SWAP_SIZE_MIB" -gt "$((DISK_MIB - 1024))" ]; then
     die "--swap-size must leave at least 1 GiB for the ESP and root"
 fi
 
@@ -605,9 +704,23 @@ if [ "$SKIP_SMART" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && command -v smartctl >/dev/
     rm -f "$SMART_LOG"
 fi
 
-# Refuse to overwrite a mounted disk.
-if findmnt -rn -S "$DISK" >/dev/null 2>&1 || findmnt -rn -S "${DISK}1" >/dev/null 2>&1; then
-    die "a partition of $DISK is mounted; unmount it first"
+# Refuse to overwrite a mounted disk or active swap device.
+if [ "$DRY_RUN" -ne 1 ] && [ "$CUSTOM_PARTITIONS" -eq 0 ]; then
+    if lsblk -lnpo MOUNTPOINT "$DISK" 2>/dev/null | grep -q '[^[:space:]]'; then
+        die "a partition of $DISK is mounted; unmount it first"
+    fi
+    if command -v swapon >/dev/null 2>&1; then
+        _active_swaps=$(swapon --show=NAME --noheadings 2>/dev/null || true)
+        if [ -n "$_active_swaps" ]; then
+            for _child in $(lsblk -lnpo NAME "$DISK" 2>/dev/null || true); do
+                [ -n "$_child" ] || continue
+                if printf '%s\n' "$_active_swaps" | grep -qx "$_child"; then
+                    die "swap is active on $_child; run swapoff $_child first"
+                fi
+            done
+        fi
+        unset _active_swaps _child
+    fi
 fi
 
 if [ -z "$USER_NAME" ]; then
@@ -959,8 +1072,8 @@ fi
 
 [ -b "$ESP" ] || die "ESP did not appear: ${ESP:-<none>}"
 [ -b "$ROOT_PART" ] || die "root partition did not appear: ${ROOT_PART:-<none>}"
-if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
-    [ -b "$SWAP_PART" ] || die "swap partition did not appear: ${SWAP_PART:-<none>}"
+if [ "$USE_SWAP_PART" -eq 1 ]; then
+    [ -b "${SWAP_PART:-}" ] || die "swap partition did not appear: ${SWAP_PART:-<none>}"
 fi
 
 step "Creating filesystems"
@@ -1047,7 +1160,7 @@ fi
 
 SWAP_UUID=""
 SWAP_CRYPT_UUID=""
-if [ "$SWAP_SIZE_MIB" -gt 0 ]; then
+if [ "$USE_SWAP_PART" -eq 1 ]; then
     if [ "$ENCRYPT" -eq 1 ]; then
         log "creating encrypted swap on $SWAP_PART"
         SWAP_KEY_FILE="$(mktemp /run/grintion-swap-key.XXXXXX)"
@@ -1203,7 +1316,11 @@ UUID=$ROOT_UUID  /          $FILESYSTEM  $ROOT_FS_OPTS  0 $ROOT_PASS
 UUID=$ESP_UUID   /boot/efi  vfat  umask=0077,noatime  0 2
 EOF
 if [ -n "$HOME_UUID" ]; then
-    printf 'UUID=%s  /home  %s  defaults,noatime  0 2\n' "$HOME_UUID" "$FILESYSTEM" >> "$TARGET/etc/fstab"
+    HOME_FSTYPE="$FILESYSTEM"
+    if [ "$KEEP_HOME" -eq 1 ]; then
+        HOME_FSTYPE="$(blkid -s TYPE -o value "$HOME_DEV" 2>/dev/null || printf '%s' "$FILESYSTEM")"
+    fi
+    printf 'UUID=%s  /home  %s  defaults,noatime  0 2\n' "$HOME_UUID" "$HOME_FSTYPE" >> "$TARGET/etc/fstab"
 elif [ "$FILESYSTEM" = "btrfs" ] && [ "$SEPARATE_HOME" -eq 1 ]; then
     printf 'UUID=%s  /home  btrfs  defaults,noatime,subvol=@home  0 0\n' "$ROOT_UUID" >> "$TARGET/etc/fstab"
 fi
@@ -1565,13 +1682,23 @@ EOF
 
     cp "$TARGET/boot/efi/limine.conf" "$TARGET/boot/efi/EFI/BOOT/limine.conf"
 
+    BOOT_DISK="$DISK"
+    ESP_PARENT="$(lsblk -no PKNAME "$ESP" 2>/dev/null | head -1 || true)"
+    if [ -n "$ESP_PARENT" ] && [ -b "/dev/$ESP_PARENT" ]; then
+        BOOT_DISK="/dev/$ESP_PARENT"
+    fi
+    ESP_PART_NUM="$(lsblk -ndo PARTN "$ESP" 2>/dev/null | head -1 || true)"
+    case "$ESP_PART_NUM" in
+        ''|*[!0-9]*) ESP_PART_NUM=1 ;;
+    esac
+
     if [ -x /usr/share/limine/limine ]; then
         log "writing the Limine BIOS boot record"
-        /usr/share/limine/limine bios-install "$DISK" || warn "BIOS boot record was not written; UEFI boot is still installed"
+        /usr/share/limine/limine bios-install "$BOOT_DISK" || warn "BIOS boot record was not written; UEFI boot is still installed"
     fi
 
     if [ "$REMOVABLE" -eq 0 ] && [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null 2>&1; then
-        efibootmgr -c -d "$DISK" -p 1 -L "Grintion-OS" \
+        efibootmgr -c -d "$BOOT_DISK" -p "$ESP_PART_NUM" -L "Grintion-OS" \
             -l '\EFI\BOOT\BOOTX64.EFI' >/dev/null 2>&1 || true
     fi
 fi

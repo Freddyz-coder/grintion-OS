@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.3] - 2026-11-26
+
+### Fixed
+
+- **Installed `tty1` login prompt no longer gets pushed to wrong lines or
+  corrupted by boot/service output.** `etc/sv/agetty-tty1/run` now resets
+  `tty1` line discipline (`stty sane opost onlcr`), clears early boot/LUKS
+  output and sets UTF-8 mode on its first start per boot, `etc/runit/1` passes
+  `-e` to `sysctl -p` so unsupported optional keys in `99-grintion.conf` do
+  not emit warnings onto `tty1`, and stage-2 services (`boot-health`, `local`,
+  `grintion-shield`, `cryptswap`, `watchdog`, `bluetoothd`, `usbguard`, `cupsd`)
+  redirect output to `/var/log/` instead of writing to `/dev/console`.
+  `boot-health`, `timesync`, and `airgap` also trap `TERM`/`INT` around `sleep`
+  so `poweroff`/`reboot` exits cleanly without stalling `etc/runit/3`.
+- **Desktop and package installs no longer stall or fail with `unable to lock
+  database`.** `bin/garblib/progress.py` now recurses into pacman 7's
+  `download-*` temporary subdirectories and tracks `/var/lib/pacman/sync`
+  database growth so active downloads are never misclassified as stalled, and
+  clears stale `var/lib/pacman/db.lck` if the watchdog stops a stuck child.
+  `grintion-desktop`, `grintion-driver-select`, `garb`, `grintion-selfheal`,
+  and `grintion-doctor --fix` also remove stale `db.lck` files when no `pacman`
+  process is running, and `grintion-desktop` normalizes root-joined log/cache
+  paths (fixing `//var/log/grintion-desktop.log`).
+- **LUKS2 installer self-test now passes for zstd-compressed initramfs
+  images.** `bin/verify-install` used `gzip.open()` on `initramfs-install.img`,
+  which is compressed with `zstd`, causing every LUKS2 install to report
+  `self-test: FAILED`. `initramfs_has_cryptsetup` now detects zstd, gzip, xz,
+  and raw cpio images.
+- **Installed `ext4` filesystem check (`e2fsck`) no longer gets skipped in
+  early boot.** BusyBox `blkid` inside `initramfs-install.img` ignores
+  `-o value -s TYPE` and outputs `TYPE="..."` pairs; `init/install-init` now
+  parses both forms reliably.
+- **Custom / manual partitioning (`grintion-install --custom` / `--tui`)
+  validates devices before formatting.** The guided TUI now filters out whole
+  disks, optical media, and zram when listing available partitions (offering to
+  switch to automatic disk mode when no partitions exist), validates all custom
+  partition paths (rejecting `/dev/sr*`, `/dev/zram*`, `/dev/loop*`, whole disks,
+  non-block paths, read-only/mounted devices, and duplicates) before Step 2,
+  activates custom swap partitions even when `--swap-size` is `0`, detects
+  existing `/home` filesystem types under `--keep-home`, and passes the ESP's
+  actual parent disk and partition number to Limine and `efibootmgr`.
+
+### Tests
+
+- Added regression coverage in `tests/test_progress.py` and
+  `tests/test_system_tools.py` for pacman 7 `download-*` tracking, stale
+  `db.lck` cleanup on stall, zstd LUKS2 `verify-install`, `tty1` console
+  hygiene, `sysctl -e -p`, custom partition validation, and BusyBox `blkid`
+  parsing.
+
 ## [0.22.2] - 2026-11-26
 
 ### Fixed

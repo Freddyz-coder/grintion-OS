@@ -31,6 +31,7 @@ if ! mountpoint -q /dev; then
     mount -t devtmpfs dev /dev -o mode=0755,nosuid
 fi
 mkdir -p /dev/pts /dev/shm
+[ -e /dev/fd ] || ln -sfn /proc/self/fd /dev/fd 2>/dev/null || true
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o mode=0620,gid=5,nosuid,noexec
 mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm -o mode=1777,nosuid,nodev,noexec
 
@@ -77,7 +78,7 @@ fi
 if [ -d /etc/sysctl.d ]; then
     for file in /etc/sysctl.d/*.conf; do
         [ -f "$file" ] || continue
-        if ! sysctl -p "$file" >>/var/log/sysctl.log 2>&1; then
+        if ! sysctl -e -p "$file" >>/var/log/sysctl.log 2>&1; then
             printf '[!] sysctl profile %s did not apply cleanly; see /var/log/sysctl.log\n' "$file" >&2
         fi
     done

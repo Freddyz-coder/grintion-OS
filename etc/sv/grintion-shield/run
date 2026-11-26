@@ -1,5 +1,6 @@
 #!/bin/sh
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/grintion-shield.log 2>&1
 echo "Starting Grintion Shield service"
 while true; do
     if [ -f /var/log/auth.log ]; then

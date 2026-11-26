@@ -77,13 +77,45 @@ mode_is() { [ "$(stat -c %a "$ROOT/$1" 2>/dev/null || echo missing)" = "$2" ]; }
 initramfs_has_cryptsetup() {
     python3 - "$1" <<'PY'
 import gzip
+import lzma
+import shutil
+import subprocess
 import sys
 
+path = sys.argv[1]
 try:
-    with gzip.open(sys.argv[1], "rb") as handle:
-        sys.exit(0 if b"cryptsetup" in handle.read() else 1)
+    with open(path, "rb") as handle:
+        magic = handle.read(6)
 except OSError:
     sys.exit(1)
+
+data = b""
+try:
+    if magic.startswith(b"\x28\xb5\x2f\xfd"):
+        try:
+            from compression import zstd  # Python 3.14+
+            with open(path, "rb") as handle:
+                data = zstd.decompress(handle.read())
+        except ImportError:
+            if shutil.which("zstd"):
+                proc = subprocess.run(["zstd", "-dc", path], capture_output=True, check=False)
+                data = proc.stdout if proc.returncode == 0 else b""
+            elif shutil.which("bsdtar"):
+                proc = subprocess.run(["bsdtar", "-tf", path], capture_output=True, check=False)
+                data = proc.stdout if proc.returncode == 0 else b""
+    elif magic.startswith(b"\x1f\x8b"):
+        with gzip.open(path, "rb") as handle:
+            data = handle.read()
+    elif magic.startswith(b"\xfd7zXZ\x00"):
+        with lzma.open(path, "rb") as handle:
+            data = handle.read()
+    else:
+        with open(path, "rb") as handle:
+            data = handle.read()
+except OSError:
+    sys.exit(1)
+
+sys.exit(0 if b"cryptsetup" in data else 1)
 PY
 }
 

@@ -1,5 +1,6 @@
 #!/bin/sh
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/local.log 2>&1
 if grep -qs ' /boot/efi ' /etc/fstab; then
     mkdir -p /boot/efi
     mountpoint -q /boot/efi || mount /boot/efi 2>/dev/null || true

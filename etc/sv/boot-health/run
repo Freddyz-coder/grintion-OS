@@ -1,9 +1,12 @@
 #!/bin/sh
 # Record this boot and mark it good only after a 60-second stability window.
 # A boot that crashes before the window leaves the attempt count raised.
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/boot-health.log 2>&1
+trap 'exit 0' TERM INT
 
 grintion-boot-health record || true
-sleep 60
+sleep 60 &
+wait "$!" 2>/dev/null || true
 grintion-boot-health mark-good || true
 exec sleep 86400

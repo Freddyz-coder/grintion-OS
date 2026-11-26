@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .common import GarbError, log, warn
-from .progress import run_transaction
+from .progress import clear_stale_pacman_lock, run_transaction
 
 PACMAN_VERSION_RE = re.compile(r"Pacman v(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
 APK_VERSION_RE = re.compile(r"apk-tools\s+(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
@@ -395,6 +395,9 @@ def run_external_backend(backend: str, binary: str, args: argparse.Namespace) ->
         )
     if backend == "pacman" and getattr(args, "command", "") in ("install", "remove", "upgrade"):
         _repair_mtab(root)
+    if backend == "pacman" and getattr(args, "command", "") in ("install", "remove", "update", "upgrade"):
+        if clear_stale_pacman_lock(root):
+            warn(f"removed stale pacman database lock: {root / 'var/lib/pacman/db.lck'}")
     if backend == "pacman" and getattr(args, "command", "") in (
         "install",
         "update",

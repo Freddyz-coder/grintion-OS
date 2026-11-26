@@ -1,7 +1,8 @@
 #!/bin/sh
 # Open the encrypted swap partition created by grintion-install.
 # The key is root-only and lives on the encrypted root filesystem.
-exec 2>&1
+mkdir -p /var/log
+exec >>/var/log/cryptswap.log 2>&1
 
 [ -r /etc/grintion/swap.conf ] || exit 0
 # shellcheck disable=SC1091

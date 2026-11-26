@@ -1,5 +1,11 @@
 #!/bin/sh
 exec 2>&1
+if [ ! -e /run/agetty-tty1.init ] && [ -c /dev/tty1 ]; then
+    stty sane opost onlcr < /dev/tty1 2>/dev/null || true
+    printf '\033[H\033[2J\033[3J\033%%G' > /dev/tty1 2>/dev/null || true
+    mkdir -p /run
+    : > /run/agetty-tty1.init 2>/dev/null || true
+fi
 if [ -f /etc/grintion/live ]; then
     exec agetty --noclear --skip-login --login-program /usr/bin/live-shell tty1 38400 linux
 fi

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Grintion-OS runit service: cupsd (CUPS printing daemon)
-exec 2>&1
 mkdir -p /var/log/cups /var/run/cups /var/spool/cups
+exec >>/var/log/cupsd.log 2>&1
 if [ -x /usr/bin/cupsd ]; then
     exec /usr/bin/cupsd -f
 elif [ -x /usr/sbin/cupsd ]; then

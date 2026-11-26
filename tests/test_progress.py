@@ -229,3 +229,38 @@ def test_garb_uses_progress_ui_when_forced(tmp_path: Path) -> None:
     assert "Resolving package transaction..." in combined
     assert "Downloading" in combined
     assert "package(s), 1.00 MiB download" in combined
+
+
+def test_progress_counts_pacman7_download_subdirs(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    dl_dir = cache / "download-abc123"
+    dl_dir.mkdir(parents=True)
+    plan = progress.PacmanPlan(
+        packages=[
+            progress.PlannedPackage(
+                repo="extra",
+                name="plasma-meta",
+                version="6.8-1",
+                size=16384,
+                filename="plasma-meta-6.8-1-any.pkg.tar.zst",
+            )
+        ],
+        total_download=16384,
+    )
+    (dl_dir / "plasma-meta-6.8-1-any.pkg.tar.zst.part").write_bytes(b"x" * 8192)
+    assert progress.measured_download(plan, cache) == 8192
+    assert progress.directory_size(cache) == 8192
+
+
+def test_progress_clears_stale_pacman_lock_on_stall(tmp_path: Path) -> None:
+    (tmp_path / "var/lib/pacman").mkdir(parents=True)
+    lock_file = tmp_path / "var/lib/pacman/db.lck"
+    lock_file.write_text("")
+    result = _run_cli(
+        tmp_path,
+        "--stall-seconds",
+        "0.5",
+        stall=True,
+    )
+    assert result.returncode == 124
+    assert not lock_file.exists()

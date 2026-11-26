@@ -1210,3 +1210,83 @@ def test_rootfs_strips_inherited_setid_and_ssh_host_keys() -> None:
     assert 'chroot "$TARGET" /usr/bin/ssh-keygen -A' in installer
     assert 'chmod 0600 "$TARGET"/etc/ssh/ssh_host_*_key' in installer
 
+
+def test_verify_install_accepts_zstd_luks2_initramfs(tmp_path: Path) -> None:
+    root = tmp_path / "installed"
+    (root / "etc/grintion").mkdir(parents=True)
+    (root / "etc/os-release").write_text("ID=grintion\n")
+    (root / "etc/hostname").write_text("ferhinand\n")
+    (root / "etc/machine-id").write_text("0123456789abcdef0123456789abcdef\n")
+    (root / "etc/fstab").write_text(
+        "UUID=1111  /  btrfs  defaults,noatime,compress=zstd:1,subvol=@  0 0\n"
+        "UUID=2222  /boot/efi  vfat  umask=0077,noatime  0 2\n"
+        "UUID=1111  /.snapshots  btrfs  defaults,noatime,subvol=@snapshots  0 0\n"
+    )
+    (root / "etc/passwd").write_text("testuser:x:1000:1000::/home/testuser:/bin/bash\n")
+    (root / "etc/group").write_text("wheel:x:998:testuser\n")
+    (root / "etc/shadow").write_text("testuser:$y$hash:20000:0:99999:7:::\n")
+    for rel in ("usr/bin/btrfs", "usr/bin/cryptsetup"):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("#!/bin/sh\n")
+        p.chmod(0o755)
+    esp = root / "boot/efi/EFI/grintion"
+    esp.mkdir(parents=True)
+    (esp / "vmlinuz-grintion").write_bytes(b"kernel")
+    (root / "boot/efi/EFI/BOOT").mkdir(parents=True)
+    (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_bytes(b"efi")
+    (root / "boot/efi/limine.conf").write_text(
+        "/Grintion-OS\n"
+        "    cmdline: cryptdevice=UUID=aaaa:grintion root=UUID=1111 rootflags=subvol=@\n"
+        "    module_path: boot():/EFI/grintion/initramfs-install.img\n"
+    )
+    initrd = esp / "initramfs-install.img"
+    subprocess.run(
+        ["zstd", "-q", "-f", "-", "-o", str(initrd)],
+        input=b"cpio-header\x00cryptsetup\x00trailer",
+        check=True,
+    )
+    res = subprocess.run(
+        [
+            str(REPO_ROOT / "bin/verify-install"),
+            "--root", str(root),
+            "--user", "testuser",
+            "--filesystem", "btrfs",
+            "--encrypted",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "[ ok ] LUKS2 initramfs" in res.stdout
+
+
+def test_tty1_agetty_and_services_keep_console_clean() -> None:
+    agetty = (REPO_ROOT / "etc/sv/agetty-tty1/run").read_text()
+    assert "stty sane opost onlcr" in agetty
+    assert "/run/agetty-tty1.init" in agetty
+    assert "sysctl -e -p" in (REPO_ROOT / "etc/runit/1").read_text()
+    for svc in ("boot-health", "local", "grintion-shield", "cryptswap", "watchdog", "bluetoothd", "usbguard", "cupsd"):
+        text = (REPO_ROOT / f"etc/sv/{svc}/run").read_text()
+        assert f"/var/log/{svc}.log" in text, svc
+
+
+def test_desktop_normalizes_paths_and_clears_stale_pacman_lock() -> None:
+    desktop = (REPO_ROOT / "bin/desktop").read_text()
+    assert "root_join" in desktop
+    assert "clear_stale_pacman_lock" in desktop
+    assert "unable to lock database" in desktop
+    for rel in ("bin/driver-select", "bin/garblib/backends.py", "bin/selfheal", "bin/doctor"):
+        assert "db.lck" in (REPO_ROOT / rel).read_text(), rel
+
+
+def test_installer_custom_validation_and_blkid_parsing() -> None:
+    installer = (REPO_ROOT / "bin/install").read_text()
+    assert "validate_custom_partition" in installer
+    assert "USE_SWAP_PART" in installer
+    assert "BOOT_DISK" in installer
+    assert "ESP_PART_NUM" in installer
+    install_init = (REPO_ROOT / "init/install-init").read_text()
+    assert '*TYPE=\\"*\\"*)'.replace("\\\\", "\\") in install_init or "TYPE=" in install_init
+

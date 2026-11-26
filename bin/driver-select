@@ -557,10 +557,34 @@ def _pacman_run(command: list[str], packages: list[str]) -> subprocess.Completed
     )
 
 
+def _pacman_running() -> bool:
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if (entry / "comm").read_text(encoding="utf-8", errors="replace").strip() == "pacman":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _clear_stale_pacman_lock(root: Path) -> None:
+    lock_path = root / "var/lib/pacman/db.lck"
+    if not lock_path.exists() or _pacman_running():
+        return
+    try:
+        lock_path.unlink()
+        print(f"[!] removed stale pacman database lock: {lock_path}", file=sys.stderr)
+    except OSError:
+        pass
+
+
 def install_packages(packages: list[str], root: Path) -> tuple[bool, str]:
     packages = sorted(dict.fromkeys(packages))
     if not packages:
         return True, "no packages needed"
+    _clear_stale_pacman_lock(root)
     command, mirror_command, error = _pacman_command(root)
     if command is None:
         return False, error

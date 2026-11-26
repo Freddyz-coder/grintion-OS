@@ -35,6 +35,7 @@ else
     echo "airgap: rfkill is not available; radios are not soft-blocked"
 fi
 
+trap 'exit 0' TERM INT
 STATUS=/run/grintion/airgap
 while :; do
     interfaces=""
@@ -48,5 +49,6 @@ while :; do
     done
     printf 'active=1\ninterfaces=%s\nupdated=%s\n' \
         "${interfaces# }" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS"
-    sleep 5
+    sleep 5 &
+    wait "$!" 2>/dev/null || true
 done

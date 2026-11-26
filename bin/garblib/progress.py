@@ -369,19 +369,40 @@ def _path_size(path: Path) -> int:
         return 0
 
 
+def _download_subdirs(cache_dir: Path) -> list[Path]:
+    subdirs: list[Path] = []
+    try:
+        with os.scandir(cache_dir) as entries:
+            for entry in entries:
+                if entry.name.startswith("download-") and entry.is_dir(follow_symlinks=False):
+                    subdirs.append(Path(entry.path))
+    except OSError:
+        pass
+    return subdirs
+
+
 def measured_download(plan: PacmanPlan | None, cache_dir: Path) -> int:
     """Bytes already on disk for the planned packages.
 
     A known size only clamps a package that is complete. A plan whose sizes
     could not be resolved must still report the bytes pacman actually wrote,
     otherwise the progress line stays at "0 B" while a download is running.
+    Pacman 7 downloads partial files inside ``download-*`` subdirectories of
+    the cache directory, so check those as well as the cache root.
     """
     if plan is None:
         return 0
     downloaded = 0
+    subdirs = _download_subdirs(cache_dir)
     for package in plan.packages:
         complete = _path_size(cache_dir / package.filename)
         partial = _path_size(cache_dir / f"{package.filename}.part")
+        for subdir in subdirs:
+            partial = max(
+                partial,
+                _path_size(subdir / package.filename),
+                _path_size(subdir / f"{package.filename}.part"),
+            )
         actual = max(complete, partial)
         if package.size > 0:
             actual = min(package.size, actual)
@@ -397,11 +418,45 @@ def directory_size(path: Path) -> int:
                 try:
                     if entry.is_file(follow_symlinks=False):
                         total += entry.stat().st_size
+                    elif entry.is_dir(follow_symlinks=False):
+                        total += directory_size(Path(entry.path))
                 except OSError:
                     continue
     except OSError:
         return 0
     return total
+
+
+def _pacman_running() -> bool:
+    proc_root = Path("/proc")
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            if comm == "pacman":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def clear_stale_pacman_lock(root: str | Path) -> bool:
+    """Remove var/lib/pacman/db.lck when no pacman process is running."""
+    lock_path = Path(root) / "var/lib/pacman/db.lck"
+    if not lock_path.exists():
+        return False
+    if _pacman_running():
+        return False
+    try:
+        lock_path.unlink()
+        return True
+    except OSError:
+        return False
 
 
 class _Renderer:
@@ -765,6 +820,8 @@ def run_transaction(
     started = time.monotonic()
     last_activity = started
     last_sample = started
+    sync_dir = root_path / "var/lib/pacman/sync"
+    last_sync_size = directory_size(sync_dir)
     initial_cache_size = directory_size(cache_path)
     initial_download = measured_download(plan, cache_path) if plan is not None else 0
     last_download = initial_download
@@ -869,6 +926,10 @@ def run_transaction(
             # directory growing. The fallback keeps the counter (and the stall
             # watchdog) moving when the plan cannot name every file, for
             # example when a database sync changes a package version.
+            sync_size = directory_size(sync_dir)
+            if sync_size != last_sync_size:
+                last_sync_size = sync_size
+                last_activity = now
             downloaded = max(
                 measured_download(plan, cache_path) if plan is not None else 0,
                 max(0, directory_size(cache_path) - initial_cache_size),
@@ -917,6 +978,8 @@ def run_transaction(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+            if clear_stale_pacman_lock(root_path):
+                renderer.warn(f"removed stale pacman lock: {root_path / 'var/lib/pacman/db.lck'}")
             break
 
     if not stalled:
@@ -960,6 +1023,7 @@ __all__ = [
     "PacmanPlan",
     "PlannedPackage",
     "build_plan",
+    "clear_stale_pacman_lock",
     "directory_size",
     "format_bytes",
     "format_duration",
