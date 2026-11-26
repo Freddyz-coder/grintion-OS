@@ -1,6 +1,6 @@
 # Building Grintion-OS
 
-This document covers building the 0.22.1 ISO from source. Installation is in
+This document covers building the 0.22.2 ISO from source. Installation is in
 [INSTALL.md](INSTALL.md); the boot flow is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The build is **offline after the first fetch**. `make tools` and `make kernel`
@@ -26,7 +26,7 @@ irrelevant. The plain `make rootfs` path remains available for fast local
 iteration but is not the release path.
 
 ```sh
-sudo pacman -S --needed base-devel bc bison flex kmod cpio gzip curl \
+sudo pacman -S --needed base-devel bc bison flex ed kmod cpio gzip curl \
     openssl parted dosfstools e2fsprogs rsync xorriso \
     pacman gnupg archlinux-keyring apparmor audit \
     python python-pytest python-pexpect \
@@ -60,6 +60,7 @@ What each group is for:
 | `audit` | `make rootfs`: supplies `auditd`, `auditctl`, `ausearch` and `aureport`; the build fails without them. `make check` does not require it. |
 | `base-devel`, `bison`, `flex`, `kmod` | kernel build, `depmod` |
 | `bc` | kernel build (a pinned copy is also built into `tools/bin/bc`) |
+| `ed` | `make tools`: bc 1.07.1 generates `libmath.h` through `ed` |
 | `cpio`, `gzip` (>= 1.12) | live rootfs staging checks; older gzip fails the build |
 | `curl` | `build/build-tools.sh` downloads |
 | `openssl` | `garb` signatures and installer |

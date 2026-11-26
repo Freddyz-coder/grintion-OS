@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.2] - 2026-11-26
+
+### Fixed
+
+- **KDE Plasma and the other desktop profiles now appear immediately after
+  `grintion-desktop install`.** SDDM's Wayland session drop-in is written
+  before `display-manager` is enabled, seatd is enabled first, and a display
+  manager that is already running (LightDM from XFCE/LXQt, or SDDM) is
+  restarted once the install succeeds, so it no longer keeps the session
+  configuration it read at startup. Installing KDE on a system running LightDM
+  previously kept the old greeter and KDE never appeared until a manual
+  reboot; the same ordering bug affected every profile that switches the
+  display manager.
+- **The installer no longer enables a display manager after a failed desktop
+  pre-install.** A partial KDE transaction could leave SDDM on disk without
+  the Wayland wrapper; enabling the service booted into a greeter whose
+  session died with `Could not create wayland socket`. The system now stays
+  console-only and tells the user to finish with `grintion-desktop`.
+- **The live and installer chroot always has a resolver.** `/etc/resolv.conf`
+  now ships fallback nameservers and `grintion-install` copies a nameserver
+  from `/etc/resolv.conf.head` when the live file has none. A live boot whose
+  DHCP lease is not written yet no longer fails the KDE download with
+  `Resolving timed out after 10000 milliseconds`.
+
+### Tests
+
+- Desktop-profile and installer tests cover SDDM-before-service ordering, the
+  display-manager restart, failed-pre-install gating and the chroot resolver
+  fallback.
+
 ## [0.22.1] - 2026-11-25
 
 ### Fixed

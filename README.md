@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.22.1 — *correct package download progress · verified desktop pre-install*
+- **Version:** 0.22.2 — *display-manager session repair · reliable desktop downloads*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,14 +17,13 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack, starts a private session bus when needed and unmutes every detected ALSA card plus the default PipeWire sink; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture; see [docs/VM-GUEST.md](docs/VM-GUEST.md) for VM host-audio setup
 
-0.22.1 fixes package download progress and the desktop pre-install. pacman 7
-reports `%s` as zero for packages that come from a sync database, which made the
-progress renderer show `0 B / <total>` for a transaction that was transferring
-data and blinded the no-progress watchdog. The plan now recovers the download
-size from the seeded sync databases and counts bytes that actually arrive. The
-installer also checks the target's display-manager runit link after a desktop
-pre-install, so a system that would boot to a console is no longer reported as
-desktop-ready. See [CHANGELOG.md](CHANGELOG.md).
+0.22.2 fixes installing a desktop from the live image or from a booted system.
+The display manager is configured before its service starts and restarted after
+`grintion-desktop install`, so KDE Plasma and the other profiles appear without
+a manual reboot; the installer no longer enables a display manager after a
+failed desktop pre-install; and the chroot gets fallback resolvers so the KDE
+download no longer fails with `Resolving timed out`. See
+[CHANGELOG.md](CHANGELOG.md).
 
 0.22.0 adds a real network lockdown to the `air-gapped` security profile.
 `grintion-security set air-gapped` now enables a supervised service that holds
@@ -79,7 +78,7 @@ the default. See [CHANGELOG.md](CHANGELOG.md) and
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.22.1 is built from this tree. Release ISO images are published on
+Grintion-OS 0.22.2 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -333,11 +332,11 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.22.1 |
+| Feature | 0.22.2 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
-| Bare-metal hardware | No new bare-metal probe was run for 0.22.1. A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| Bare-metal hardware | No new bare-metal probe was run for 0.22.2. A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |

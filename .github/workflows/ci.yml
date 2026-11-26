@@ -77,6 +77,20 @@ jobs:
           bsdtar -xf build/work/apparmor.pkg.tar.zst -C build/work/apparmor-root
           echo "GRINTION_APPARMOR_ROOT=$PWD/build/work/apparmor-root" >> "$GITHUB_ENV"
 
+      - name: Stage ed for the bc build
+        run: |
+          if command -v ed >/dev/null 2>&1; then
+            echo "ed is installed on the runner"
+            exit 0
+          fi
+          pkg_url=$(pacman -Sp --noconfirm --print-format '%n %l' ed \
+            | awk '$1 == "ed" { print $2; exit }')
+          test -n "$pkg_url" || { echo "::error::cannot resolve the ed package"; exit 1; }
+          mkdir -p build/work/build-tools-root
+          curl -fL --retry 3 -o build/work/ed.pkg.tar.zst "$pkg_url"
+          bsdtar -xf build/work/ed.pkg.tar.zst -C build/work/build-tools-root
+          echo "$PWD/build/work/build-tools-root/usr/bin" >> "$GITHUB_PATH"
+
       - name: Build the ISO
         run: make iso
 

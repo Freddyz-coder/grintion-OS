@@ -96,8 +96,11 @@ fi
 # ---------------------------------------------------------------- bc
 if [ ! -x "$BIN/bc" ]; then
     log "building bc 1.07.1"
+    # bc 1.07.1 generates libmath.h with ed; a minimal Arch host does not
+    # install it. Fail with the package name instead of a make error.
+    need_cmd ed
     ( cd "$SRC/bc-1.07.1" && ./configure --prefix=/usr >/dev/null && make -j"$(nproc)" >/dev/null )
-    install -D -m 0755 "$SRC/bc-1.07.1/bc" "$BIN/bc"
+    install -D -m 0755 "$SRC/bc-1.07.1/bc/bc" "$BIN/bc"
 fi
 
 # ---------------------------------------------------------------- dhcpcd
