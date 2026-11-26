@@ -1,9 +1,54 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.22.1,
-0.22.0, 0.21.0, 0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3,
+This document records what was actually executed for Grintion-OS 0.22.2,
+0.22.1, 0.22.0, 0.21.0, 0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3,
 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.22.2 display-manager session and desktop download repair (2026-11-26)
+
+0.22.2 fixes installing a desktop from the live image or from a booted system.
+`grintion-desktop` now writes SDDM's Wayland session configuration before it
+enables `display-manager`, enables seatd first, and restarts a display manager
+that is already running once the install succeeds, so KDE Plasma and the other
+profiles no longer require a manual reboot. The installer leaves the
+display-manager link disabled when the desktop pre-install failed, and every
+chroot gets a nameserver from the live resolver or `/etc/resolv.conf.head`.
+The final ISO was built from release commit `7d27a1e`.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,918,016 bytes (146 MiB) |
+| SHA-256 | `5499822f0c067997b1aa7e494988cbfaf885b7eb097ecd906c1be657bd1ad896` |
+| `BUILD-INFO` source commit | `7d27a1e` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,530,063 bytes, SHA-256 `07f1fccf3cc9e188364b9a3d669dea66957850d1d2471411c5d0079a4e861f10`; `/etc/grintion/version` = `0.22.2`; 9,557 entries |
+| Installed initramfs | 5,979,328 bytes, SHA-256 `d933e12f2a74ca90a25a093cfd1e37b9b369d287fc80259b22ed5cd21b7716de` |
+| Limine entries | `Grintion-OS 0.22.2 (live, RAM)` and `Grintion-OS 0.22.2 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `./build/check.sh` | **285 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| Live rootfs | Built with the staged Arch AppArmor parser (`GRINTION_APPARMOR_ROOT`); 0.22.2 identity, 9,557 entries, 129.3 MiB live initramfs |
+| ISO checksum | The artifact audit matched `grintion-os-x86_64.iso.sha256` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit `7d27a1e`, kernel and initramfs hashes, 0.22.2 boot entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence path verified |
+| BIOS live boot | Passed: root shell, `6.12.114-grintion`, DHCP `10.0.2.15`, network service, `LIVE`, nftables input chain, six loaded AppArmor profiles, sudo, `DOCTOR_RC=0`, `AUDIT_RC=0` and framebuffer console |
+| UEFI live boot | The same test passed with OVMF |
+| BIOS installer / installed reboot | Passed on the final ISO: the installer completed, the target booted from its disk, login, DHCP, `INSTALLED`, yescrypt shadow entry, sudo, seatd, udev and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Desktop pre-install | Not run end-to-end in QEMU for this release. The ordering, restart, failed-pre-install gating and resolver fallback are covered by `tests/test_desktop_profiles.py` and code inspection; no graphical KDE session was rendered in a VM |
+| Bare-metal installation / reboot | Not performed; the host cannot be repartitioned without destroying its working disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+The installer test's final `poweroff -f` is issued as the unprivileged test user
+and is denied; the harness closes QEMU after the installed-system assertions
+pass. No release signing key was available, so verify the SHA-256 before use.
+
+---
 
 ## 0.22.1 package download progress and desktop pre-install repair (2026-11-25)
 
