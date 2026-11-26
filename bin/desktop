@@ -630,6 +630,28 @@ enable_dm_service() {
     log "Enabled $dm as runit display-manager service"
 }
 
+# runsvdir does not restart a supervised service when grintion-desktop rewrites
+# /etc/grintion/display-manager or a session drop-in, and a running display
+# manager keeps the configuration it read at startup. Installing KDE on a
+# system that already runs LightDM therefore kept showing the old greeter and
+# XFCE, so the new desktop never appeared until a manual reboot. Restart the
+# service once the new configuration is in place.
+restart_display_manager() {
+    [ "$TARGET_ROOT" = "/" ] || return 0
+    command -v sv >/dev/null 2>&1 || return 0
+    [ -L "$TARGET_ROOT/var/service/display-manager" ] || return 0
+    if ! sv status /var/service/display-manager 2>/dev/null | grep -q '^run:'; then
+        # runsvdir has not scanned the new link yet; it will start the service
+        # with the configuration that was just written.
+        return 0
+    fi
+    if sv restart /var/service/display-manager >/dev/null 2>&1; then
+        log "Restarted display-manager to apply the $NAME session configuration"
+    else
+        warn "could not restart display-manager; run: sudo sv restart display-manager"
+    fi
+}
+
 # Without logind there is no udev/pam ACL pass that grants the logged-in user
 # access to graphics, sound and input nodes. /dev/dri/card0 is root:video,
 # /dev/input/* is root:input and /dev/snd/* is root:audio, so a human account
@@ -1187,16 +1209,24 @@ EOF
         fi
     fi
 
-    # 3. Configure Display Manager if applicable
-    if [ -n "$dm_bin" ]; then
-        enable_dm_service "$dm_bin"
-        if [ "$dm_bin" = "/usr/bin/sddm" ] && [ "$wayland" -eq 1 ]; then
-            configure_sddm_wayland
-        fi
-    fi
+    # A Wayland session needs seatd and the user's seat group before the
+    # display manager can hand it a DRM/input seat. Enable the seat first so the
+    # first SDDM process never races the seat socket.
     if [[ "${DISPLAY_SERVER:-}" == *wayland* ]]; then
         [ -x "$TARGET_ROOT/usr/bin/seatd" ] || die "Wayland profile did not provide seatd"
         enable_wayland_seat
+    fi
+
+    # 3. Configure Display Manager if applicable
+    if [ -n "$dm_bin" ]; then
+        # SDDM reads /etc/sddm.conf.d only when the daemon starts. Write the
+        # Wayland session wrapper first, so the first SDDM process can start
+        # Plasma with a private XDG_RUNTIME_DIR instead of failing with
+        # "Could not create wayland socket".
+        if [ "$dm_bin" = "/usr/bin/sddm" ] && [ "$wayland" -eq 1 ]; then
+            configure_sddm_wayland
+        fi
+        enable_dm_service "$dm_bin"
     fi
 
     # 4. Configure .xinitrc fallback from the profile
@@ -1232,6 +1262,11 @@ EOF
     log "=============================================================="
     local dm_running=0
     if [ -n "$dm_bin" ]; then
+        # A display manager that was already running (for example LightDM from
+        # an earlier XFCE profile) keeps the configuration it read at startup,
+        # so the new desktop would not appear until a manual reboot. Restart it
+        # after the success message to apply the new session configuration.
+        restart_display_manager
         if [ "$TARGET_ROOT" = "/" ]; then
             # runsvdir picks the new service up by itself; give the manager a
             # moment to settle and report the truth instead of a start command

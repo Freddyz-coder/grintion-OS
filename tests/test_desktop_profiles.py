@@ -189,6 +189,59 @@ def test_udev_service_is_the_standalone_device_manager() -> None:
     assert "GROUP=" in rootfs and "udev group" in rootfs
 
 
+def test_sddm_is_configured_before_the_service_starts() -> None:
+    # SDDM reads /etc/sddm.conf.d only when the daemon starts. Enabling the
+    # runit service first left a running SDDM on the packaged wayland-session
+    # script, which does not create XDG_RUNTIME_DIR; KWin then exited with
+    # "Could not create wayland socket" and the KDE desktop never appeared.
+    desktop = DESKTOP.read_text()
+    deploy = desktop[
+        desktop.index("# 3. Configure Display Manager"):
+        desktop.index("# 4. Configure .xinitrc")
+    ]
+    assert deploy.index("configure_sddm_wayland") < deploy.index("enable_dm_service")
+    assert "restart_display_manager" in desktop
+    assert "sv restart /var/service/display-manager" in desktop
+
+
+def test_installing_a_desktop_switches_a_running_display_manager() -> None:
+    # Installing KDE on a system that already runs LightDM kept the old greeter
+    # until a manual reboot, because runsvdir does not restart the service when
+    # /etc/grintion/display-manager or a drop-in changes.
+    desktop = DESKTOP.read_text()
+    assert "restart_display_manager() {" in desktop
+    assert "Restarted display-manager to apply" in desktop
+    assert "sv status /var/service/display-manager" in desktop
+
+
+def test_installer_does_not_enable_a_display_manager_after_a_failed_desktop_install() -> None:
+    # A partial KDE transaction can leave sddm installed without the Wayland
+    # session wrapper. Force-enabling display-manager then booted into a
+    # greeter whose session died, so the desktop never appeared.
+    installer = INSTALL.read_text()
+    block = installer[
+        installer.index("grintion_dm_installed=0"):
+        installer.index('step "Installing the bootloader"')
+    ]
+    assert 'if [ "$DESKTOP_READY" -ne 1 ]' in block
+    assert "leaving the display manager disabled" in block
+
+
+def test_installer_gives_the_chroot_a_nameserver() -> None:
+    # The desktop pre-install runs in a chroot. A live /etc/resolv.conf without
+    # a nameserver (dhcpcd has not written its lease yet, or a static setup has
+    # no DNS) made pacman fail with "Resolving timed out" before the first KDE
+    # package was downloaded, so the installer must use the fallback resolvers.
+    installer = INSTALL.read_text()
+    assert "copy_resolver_config() {" in installer
+    assert installer.count('copy_resolver_config "$TARGET"') == 4
+    live = (REPO_ROOT / "etc" / "resolv.conf").read_text()
+    assert "nameserver 1.1.1.1" in live
+    assert "nameserver 8.8.8.8" in live
+    head = (REPO_ROOT / "etc" / "resolv.conf.head").read_text()
+    assert "nameserver 1.1.1.1" in head
+
+
 def test_sddm_wayland_session_gets_a_runtime_directory() -> None:
     # Without logind/pam_systemd SDDM's Wayland session had no writable
     # XDG_RUNTIME_DIR and KWin exited with "Could not create wayland socket".
