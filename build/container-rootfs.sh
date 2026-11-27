@@ -27,6 +27,7 @@ IMAGE="grintion-rootfs:${ALA_DATE//\//-}"
 log "building rootfs toolchain from ALA snapshot $ALA_DATE"
 "$ENGINE" build \
     --build-arg "ALA_DATE=$ALA_DATE" \
+    -f "$GRINTION_REPO_ROOT/build/rootfs-container/Containerfile" \
     -t "$IMAGE" \
     "$GRINTION_REPO_ROOT/build/rootfs-container"
 
