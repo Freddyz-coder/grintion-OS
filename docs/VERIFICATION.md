@@ -5,6 +5,50 @@ This document records what was actually executed for Grintion-OS 0.23.0,
 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
 
+## 0.23.0 privacy and anti-forensic defaults (2026-11-27)
+
+0.23.0 broadens the privacy defaults beyond MAC randomization. Vim's viminfo
+and swap files, shell history and the history files of Python (3.13+), Node,
+SQLite, psql, mysql, redis-cli and gdb live in one per-user tmpfs directory and
+fail closed when `/dev/shm` is not tmpfs. DHCP stops advertising the hostname,
+IPv6 uses RFC 7217 stable-privacy interface identifiers, and wpa_supplicant no
+longer writes SSIDs to its service log. `grintion-security-report` includes a
+read-only `privacy-defaults` check.
+
+The final ISO was built from source commit `8efb838` with the host-rootfs path
+and the staged Arch AppArmor parser (`GRINTION_APPARMOR_ROOT`). The pinned
+`make iso-pinned` path was attempted first but `archive.archlinux.org` timed out
+from both the host and the container; the build-system fixes for the shipped
+`Containerfile` and the ALA mirrorlist remain in this release.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,928,256 bytes (146 MiB) |
+| SHA-256 | `34e8ded0b65adb5c8807568bcc07dfea8a9480bd97016a24dd236b2f388042f7` |
+| `BUILD-INFO` source commit | `8efb838` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,538,765 bytes, SHA-256 `3b1e8e5879df7d40fcace0540d40a3a78b2a65b759155c0b062e37e1054192b1`; `/etc/grintion/version` = `0.23.0`; 9,559 entries |
+| Installed initramfs | 5,978,687 bytes, SHA-256 `af009881e75c7b8ce882ab540046a9ede1dae23e2565085cc6a5c2ba1d2d54f3` |
+| Limine entries | `Grintion-OS 0.23.0 (live, RAM)` and `Grintion-OS 0.23.0 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `./build/check.sh` | **305 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| `tests/test_privacy_defaults.py` | **14 passed**; RAM shell/tool/Vim state, fail-closed disk override, MAC policy, Wi-Fi config, DHCP hostname, IPv6 identifiers and ICMP narrowing |
+| ISO checksum | The artifact audit matched `grintion-os-x86_64.iso.sha256` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit `8efb838`, kernel and initramfs hashes, 0.23.0 boot entries, 9,559 initramfs entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence path verified |
+| BIOS live boot | Passed on the final ISO: `6.12.114-grintion`, DHCP `10.0.2.15`, `SUDO_OK`, `DOCTOR_RC=0`, `AUDIT_RC=0`, `FBCON_OK`, clean `poweroff` |
+| UEFI live boot | Passed on the final ISO with OVMF and `e1000` |
+| BIOS installer / installed reboot | Passed on the final ISO: install completed, the target booted from disk, login, DHCP, `INSTALLED`, yescrypt shadow entry and `sudo id` succeeded |
+| UEFI installer / installed reboot | Not run for 0.23.0; the live UEFI boot passed and the 0.22.3 UEFI installer result remains historical |
+| Pinned rootfs (`make iso-pinned`) | Not completed: `archive.archlinux.org` timed out; the host-rootfs path was used with the staged AppArmor parser |
+| Bare-metal installation / reboot | Not performed |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
 ## 0.22.3 console hygiene, pacman lock/download recovery, and LUKS2/custom-partition fixes (2026-11-26)
 
 0.22.3 resolves the issues reported in `ProblemsWhenInstalling.txt`:
