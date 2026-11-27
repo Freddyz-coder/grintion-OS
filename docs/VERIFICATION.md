@@ -1,9 +1,55 @@
 # Verification
 
-This document records what was actually executed for Grintion-OS 0.22.2,
-0.22.1, 0.22.0, 0.21.0, 0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3,
+This document records what was actually executed for Grintion-OS 0.22.3,
+0.22.2, 0.22.1, 0.22.0, 0.21.0, 0.20.0, 0.19.0, 0.18.0, 0.17.1, 0.17.0, 0.16.1, 0.16.0, 0.14.3,
 0.14.2, 0.14.1, 0.14.0, 0.13.1, 0.13.0, 0.12.1, 0.12.0 and the earlier work.
 It does not claim coverage of hardware or configurations that were not tested.
+
+## 0.22.3 console hygiene, pacman lock/download recovery, and LUKS2/custom-partition fixes (2026-11-26)
+
+0.22.3 resolves the issues reported in `ProblemsWhenInstalling.txt`:
+`etc/sv/agetty-tty1/run` resets `tty1` line discipline and clears early
+boot output on first start while stage-2 services log to `/var/log/` instead
+of writing to `/dev/console`, `etc/runit/1` passes `-e` to `sysctl -p`,
+`grintion-pkg-progress` tracks pacman 7 `download-*` subdirectories and
+`/var/lib/pacman/sync` growth and clears stale `db.lck` locks on stall or
+retry, `grintion-verify-install` inspects zstd-compressed LUKS2 initramfs
+images, `init/install-init` parses BusyBox `blkid` `TYPE="..."` output, and
+`grintion-install` validates custom partitions before formatting.
+The final ISO was built from release commit `582a7a5`.
+
+### Release artifact
+
+| Artifact | Value |
+| --- | --- |
+| ISO | `output/grintion-os-x86_64.iso`, 152,797,184 bytes (146 MiB) |
+| SHA-256 | `fd155f4a52b790367bf7a91e24de211b219f8bcbbce9fe2ee12c2bbca57b7b33` |
+| `BUILD-INFO` source commit | `582a7a5` |
+| Kernel | `6.12.114-grintion`, 13,530,112 bytes, SHA-256 `0928afb92a4712197f640a8650c54dd3fce80d77d935af48ef53e217a6c6d977` |
+| Live initramfs | 135,409,178 bytes, SHA-256 `34d8ba24c22449cd2d16b42d77054c1b637ce254bbf4c305737489e7f9b70b00`; `/etc/grintion/version` = `0.22.3`; 9,557 entries |
+| Installed initramfs | 5,978,687 bytes, SHA-256 `af009881e75c7b8ce882ab540046a9ede1dae23e2565085cc6a5c2ba1d2d54f3` |
+| Limine entries | `Grintion-OS 0.22.3 (live, RAM)` and `Grintion-OS 0.22.3 (recovery shell)` |
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| `./build/check.sh` | **291 passed**, 0 failures; shellcheck, Python compilation, documentation links, executable bits, provenance and staged-rootfs checks passed |
+| Live rootfs | Built with the staged Arch AppArmor parser (`GRINTION_APPARMOR_ROOT`); 0.22.3 identity, 9,557 entries, 130 MiB live initramfs |
+| ISO checksum | The artifact audit matched `grintion-os-x86_64.iso.sha256` |
+| `bin/release-audit artifact` | **38 ok, 0 warn, 0 fail, 1 info**; checksum, `BUILD-INFO` commit `582a7a5`, kernel and initramfs hashes, 0.22.3 boot entries, 12 set-ID paths, no baked SSH host keys, 42 audit rules, 177 AppArmor files and the LUKS2 persistence path verified |
+| BIOS live boot | Passed: root shell, `6.12.114-grintion`, DHCP `10.0.2.15`, network service, `LIVE`, nftables input chain, six loaded AppArmor profiles, sudo, `DOCTOR_RC=0`, `AUDIT_RC=0`, framebuffer console and clean `poweroff` |
+| UEFI live boot | The same test passed with OVMF |
+| Display framebuffer (`tests/display_test.py`) | Passed: `1280x800`, 36,382 non-black pixels on `/dev/tty1` |
+| BIOS installer / installed reboot | Passed on the final ISO: the installer completed, the target booted from its disk, login, DHCP, `INSTALLED`, yescrypt shadow entry, sudo, seatd, udev and installed-system verification |
+| UEFI installer / installed reboot | The same test passed with OVMF and the installed disk |
+| Btrfs + LUKS2 install + `tty1` probe | Passed on the final ISO (`--no-auto-drivers`): `self-test: passed` (`[ ok ] LUKS2 initramfs`), LUKS2 unlock, clean `tty1` screen with zero leaked sysctl/boot diagnostics, `ferhinand login: sudoferhinand` on the prompt line, and clean `poweroff` |
+| Encrypted persistence (`tests/persist_test.py`) | Passed across 3 boots (LUKS2 `GRINTION_PERSIST` format, unlock, marker survival) |
+| Desktop pre-install (`kde`) | Not run end-to-end against live Arch mirrors in QEMU (sandbox has no network). `download-*` subdir tracking, stale `db.lck` cleanup, and path normalization are covered by `tests/test_progress.py` and `tests/test_system_tools.py` |
+| Bare-metal installation / reboot | Not performed; the host cannot be repartitioned without destroying its working disk |
+| Independent third-party audit | Not performed; `grintion-release-audit` is an automated audit, not external review |
+
+---
 
 ## 0.22.2 display-manager session and desktop download repair (2026-11-26)
 
