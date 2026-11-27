@@ -131,6 +131,7 @@ def test_security_report_json_contract() -> None:
         "mount-hardening",
         "ssh-host-keys",
         "audit-rules",
+        "privacy-defaults",
     } <= identifiers
     assert all(check["status"] in {"ok", "warn", "fail", "info"}
                for check in payload["checks"])

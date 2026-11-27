@@ -190,7 +190,86 @@ same package, and `cmp` is required for `zcmp`.
   temporary filesystems, checks audit rule coverage and validates SSH host-key
   permissions.
 
-## 13. Boot Health and Auto-Revert (`grintion-boot-health`)
+## 13. Privacy and Anti-Forensic Defaults
+
+Privacy is not a mode the user has to enable. The shipped configuration makes
+the following choices for every install:
+
+- **MAC randomization is on and stable by default.** The `network` service
+  derives a locally administered address from a per-install seed
+  (`/var/lib/grintion/privacy/mac-seed`, `0600`) and applies it before DHCP.
+  Each wired interface and each Wi-Fi SSID keeps its own address across
+  reboots, so DHCP reservations, captive portals and switch port-security keep
+  working while the hardware address and vendor OUI stay hidden. On Wi-Fi the
+  service sets that address on the interface before association and enables
+  pre-association scan randomization. This is the interface-level path that
+  works on drivers which allow a MAC change and degrades visibly on those that
+  do not, unlike wpa_supplicant's version-dependent `mac_addr=3` setting. Randomizing on
+  every boot is available with `mac_randomize = true` (or
+  `network set-mac-randomization <iface> random`); `false`/`off` restores the
+  hardware address. A driver that rejects the change logs it and keeps the
+  hardware address; it is not reported as protected. `grintion-security-report`
+  includes a read-only `privacy-defaults` check for the RAM history wiring,
+  the DHCP hostname policy and the live IPv6 `addr_gen_mode`.
+- **Interactive shell history is memory-only and usable.**
+  `etc/grintion/privacy.lib.sh`, sourced by `/etc/profile.d/90-grintion-privacy.sh`
+  and `/etc/bash.bashrc`, keeps one history file per user under `/dev/shm`
+  (`0700` directory, `0600` file). Terminals share it, so history and up-arrow
+  work for the session, but nothing reaches disk and reboot clears it. If
+  `/dev/shm` is not a tmpfs, history is disabled instead of falling back to the
+  root filesystem. Users can override `HISTFILE` in `~/.bashrc`; sudo I/O
+  logging and auditd remain active independently of shell history.
+- **Other tools leave no disk history either.** Vim keeps marks, registers,
+  search/jump history and crash-recovery swap files in a per-user `0700`
+  directory under `/dev/shm` (`/etc/vimrc`), and the environment variables for
+  Python's readline history (3.13+), Node's REPL, `sqlite3`, `psql`, `mysql`,
+  `redis-cli` and `gdb` point at the same RAM directory. The tools keep their normal history within the session;
+  none of it reaches `$HOME`. If `/dev/shm` is not tmpfs, each path is set to
+  `/dev/null` instead of a disk dotfile. User-level configuration can still
+  override an individual tool.
+- **DHCP does not advertise the machine name.** `dhcpcd.conf` no longer sends
+  the system hostname and uses `nohook hostname`, so a server-supplied
+  `host_name` cannot rename the machine either. DHCP reservations continue to
+  work through the stable random MAC rather than through a leaked hostname.
+- **Wi-Fi association details are not written to the service log.**
+  `wpa_supplicant` runs with `-q`, which keeps warnings and errors but drops
+  the info-level SSID/BSSID association lines, and the service logs only the
+  interface name, not the network name.
+- **IPv6 addresses do not embed the hardware MAC.** The sysctl profile selects
+  RFC 7217 stable-privacy interface identifiers (`addr_gen_mode=3`) in addition
+  to temporary addresses, so a SLAAC address on a link configured before
+  `dhcpcd` runs still does not expose the NIC's hardware address.
+- **The base sysctl profile** (`/etc/sysctl.d/99-grintion.conf`) already
+  disables core dumps (`core_pattern=/dev/null`, `suid_dumpable=0`), restricts
+  kernel pointers and unprivileged `dmesg`, keeps Yama `ptrace_scope=2`, blocks
+  unprivileged BPF and enables IPv6 temporary addresses. These apply at every
+  boot, including the live session.
+- **ICMP replies are narrowed.** `drop_inbound` accepts only `echo-request`,
+  `destination-unreachable`, `time-exceeded` and `parameter-problem`. Timestamp
+  and address-mask queries, which disclose uptime and network layout, fall
+  through to the default drop policy.
+-  **Persistence and swap are encrypted by default.** Live persistence is
+  LUKS2 unless `--no-encrypt` is passed, and `--encrypt` encrypts root plus the
+  swap partition it creates. The live root itself is an in-memory overlay, so a
+  live session leaves no root filesystem on disk.
+
+These defaults reduce what is left on disk; they are not an anonymity system.
+The following remain observable by design or by protocol:
+
+- NTP uses unauthenticated UDP 123 to the configured pool, revealing the source
+  address and a coarse time zone. It stays enabled because a wrong clock breaks
+  TLS and package signature checks.
+- DNS is sent to the configured resolvers in plaintext unless the user chooses
+  an encrypted resolver; the DHCP-provided servers are used first.
+- Auditd, sudo I/O logs, service logs, `wtmp` and the firewall counters are
+  retained intentionally as a security trail. They are not cleared at boot.
+- Root can read DMI UUIDs, disk serial numbers and the stable MAC seed. Disk
+  encryption protects those at rest, not from a compromised root session.
+- The stable MAC is linkable across networks by design, so DHCP reservations
+  and captive portals keep working; choose `mac_randomize = true` when
+  unlinkability matters more than a stable lease.
+
+## 14. Boot Health and Auto-Revert (`grintion-boot-health`)
 
 - The `boot-health` service records one attempt at boot and marks the boot good
   after a session is confirmed or a stable window passes.

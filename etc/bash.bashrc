@@ -23,6 +23,17 @@ if [ -n "${BASH_VERSION-}" ]; then
     HISTSIZE=2000
     HISTFILESIZE=4000
     HISTCONTROL=ignoreboth
+    # Privacy default: history lives in RAM for this boot only, so terminals
+    # share it but a reboot (and the disk) does not retain it. Set HISTFILE in
+    # ~/.bashrc to keep a disk-backed history for your account instead.
+    if [ -r /etc/grintion/privacy.lib.sh ]; then
+        . /etc/grintion/privacy.lib.sh
+        grintion_private_history
+    else
+        HISTFILE=/dev/null
+        LESSHISTFILE=-
+        export HISTFILE LESSHISTFILE
+    fi
     shopt -s checkwinsize
     shopt -s histappend
 fi

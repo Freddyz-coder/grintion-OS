@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Privacy is the default, and it is designed to stay usable.**
+  `etc/sv/network/run` now derives a stable random MAC from a per-install seed
+  (`/var/lib/grintion/privacy/mac-seed`) and applies it before DHCP, and
+  `etc/sv/wpa_supplicant/run` sets one derived address per SSID on the
+  interface before association with randomized pre-association scans (the
+  widely supported interface path, not wpa_supplicant's version-dependent
+  `mac_addr=3`). The hardware
+  address and vendor OUI are hidden, but DHCP reservations, captive portals and
+  switch port-security keep working across reboots. `mac_randomize = true` opts
+  into a fresh address every boot and `false` restores the hardware address;
+  `network set-mac-randomization IFACE <stable|random|off>` edits the setting,
+  and now updates `[wifi]` for the wireless interface instead of a dead
+  `[interface wlan0]` section. Interactive history moved to a per-user
+  `/dev/shm` directory (`0700`/`0600`) through the new
+  `etc/grintion/privacy.lib.sh`, sourced by
+  `/etc/profile.d/90-grintion-privacy.sh` and `/etc/bash.bashrc`: terminals
+  share it and `history` works, but nothing is written to disk and reboot
+  clears it; if `/dev/shm` is not a tmpfs, history is disabled. The same
+  RAM-backed directory now holds the state of Vim (including swap files),
+  Python's readline history, Node's REPL, `sqlite3`, `psql`, `mysql`,
+  `redis-cli` and `gdb`, so those tools remain usable without writing history
+  dotfiles or swap files to disk.
+- **DHCP and IPv6 stop leaking stable hardware identifiers.** `dhcpcd` no
+  longer sends the machine hostname and ignores a server-supplied `host_name`;
+  the sysctl profile uses RFC 7217 stable-privacy interface identifiers
+  (`addr_gen_mode=3`) so SLAAC addresses do not embed the hardware MAC. The
+  `wpa_supplicant` service runs with `-q` and logs only the interface, so
+  `/var/log/wpa_supplicant.log` is not a record of every SSID/BSSID used.
+
+### Security
+
+- **`drop_inbound` no longer answers every ICMP type.** It accepts
+  `echo-request`, `destination-unreachable`, `time-exceeded` and
+  `parameter-problem` only, so timestamp and address-mask queries cannot
+  disclose uptime or network layout.
+- **`[interface ...]` sections are read correctly by the boot service.**
+  `network_conf_get` accepts the bare interface name and the `interface <name>`
+  spelling, and `network_interfaces` returns the device name, so per-interface
+  `mode`, `static_ip`, `dns` and `mac_randomize` keys are applied instead of
+  being silently ignored.
+- **`network set-mac-randomization` and `set-metered` no longer drop the rest
+  of the interface section.** Both edit only their own key, so enabling one
+  toggle no longer resets a static address or the other setting.
+
+### Tests
+
+- Added `tests/test_privacy_defaults.py` for the shipped RAM history profile
+  (shell, Vim and common tools), its fail-closed disk fallback, default-on MAC
+  randomization and its opt-out, the DHCP hostname policy, IPv6 stable-privacy
+  identifiers, network config preservation, and the narrowed ICMP rules. The
+  release-tool test now requires the `privacy-defaults` posture check.
+
 ## [0.22.3] - 2026-11-26
 
 ### Fixed

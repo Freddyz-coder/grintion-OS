@@ -24,12 +24,55 @@ if [ ! -e "/sys/class/net/$iface" ]; then
 fi
 
 command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
+
+# Set the association address here rather than with wpa_supplicant's mac_addr:
+# the global mac_addr=3 form is rejected by current releases and the per-network
+# preassoc form is not accepted everywhere. This path works with any driver that
+# allows a MAC change, and a rejection is logged and leaves the hardware address
+# in place instead of failing the association.
+case "$(network_mac_randomization_mode wifi)" in
+    off) wifi_mac="" ;;
+    random)
+        if wifi_mac=$(random_local_mac); then
+            wifi_mac_kind=random
+        else
+            wifi_mac=""
+        fi
+        ;;
+    *)
+        if wifi_mac=$(stable_local_mac "wifi:$ssid"); then
+            wifi_mac_kind=stable-random
+        else
+            # No seed or hash tool: a fresh address still hides the hardware
+            # MAC for this boot, unlike silently falling back to it.
+            echo "wpa_supplicant: no stable MAC seed; using a fresh random address"
+            if wifi_mac=$(random_local_mac); then
+                wifi_mac_kind=random
+            else
+                wifi_mac=""
+            fi
+        fi
+        ;;
+esac
+if [ -n "$wifi_mac" ]; then
+    ip link set "$iface" down 2>/dev/null || true
+    if ip link set "$iface" address "$wifi_mac" 2>/dev/null; then
+        echo "wpa_supplicant: $wifi_mac_kind MAC on $iface"
+    else
+        echo "wpa_supplicant: driver rejected the $wifi_mac_kind MAC on $iface; keeping the hardware address"
+    fi
+fi
 ip link set "$iface" up 2>/dev/null || true
 
 mkdir -p /etc/wpa_supplicant /run/wpa_supplicant
 CONF=/etc/wpa_supplicant/wpa_supplicant.conf
 {
     printf 'ctrl_interface=/run/wpa_supplicant\n'
+    # Stable random address by default (same per network across reboots, so
+    # DHCP and captive portals work); mac_randomize = true uses a fresh one per
+    # boot and false restores the hardware address. Scan frames always use a
+    # random address, so the hardware MAC is not exposed before association.
+    network_wifi_mac_lines
     printf 'network={\n\tssid="%s"\n' "$ssid"
     if [ -z "$psk" ]; then
         printf '\tkey_mgmt=NONE\n'
@@ -49,5 +92,8 @@ CONF=/etc/wpa_supplicant/wpa_supplicant.conf
 } > "$CONF"
 chmod 0600 "$CONF"
 
-echo "wpa_supplicant: connecting $iface to $ssid"
-exec wpa_supplicant -i "$iface" -c "$CONF"
+# Do not write the SSID/BSSID history to /var/log. -q keeps warnings and
+# errors but suppresses the association details wpa_supplicant logs at info
+# level, so the service log does not become a record of every network used.
+echo "wpa_supplicant: starting on $iface"
+exec wpa_supplicant -q -i "$iface" -c "$CONF"

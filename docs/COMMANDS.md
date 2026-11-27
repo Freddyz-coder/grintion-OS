@@ -466,6 +466,33 @@ grintion-firmware status --json
 sudo grintion-firmware apply-capsule vendor.cap
 ```
 
+## Privacy and anti-forensic defaults
+
+Privacy is the shipped posture, not a command to remember:
+
+- **MAC randomization is on and stable by default.** The boot `network`
+  service assigns a locally administered address derived from a per-install
+  seed, so each interface keeps the same randomized MAC across reboots. DHCP
+  reservations, captive portals and switch port-security keep working, but the
+  hardware address and vendor OUI are never exposed. `wpa_supplicant` pins one
+  random address per SSID and randomizes pre-association scans. Set
+  `mac_randomize = true` (or `network set-mac-randomization <iface> random`)
+  for a new address every boot, and `false`/`off` for the hardware address.
+- **Interactive shell history is RAM-backed.** `/dev/shm` holds one history
+  file per user with `0700`/`0600` permissions. Terminals share it, so
+  up-arrow and `history` keep working for the session, but nothing is written
+  to disk and reboot clears it. If `/dev/shm` is not a tmpfs, history is
+  disabled rather than persisted. Override `HISTFILE` in your own `~/.bashrc`
+  to keep a disk-backed history for your account.
+- **Core dumps, kernel-pointer exposure, unprivileged `dmesg`, `ptrace` and
+  unprivileged BPF are restricted** by `/etc/sysctl.d/99-grintion.conf`, and
+  IPv6 temporary addresses are enabled.
+- **`drop_inbound` answers only echo, unreachable, time-exceeded and
+  parameter-problem ICMP.** Timestamp and address-mask queries fall through to
+  the default drop instead of disclosing uptime and network layout.
+- **Live persistence is LUKS2 by default**, `--encrypt` encrypts root and the
+  swap partition, and auditd plus sudo I/O logging stay on in every profile.
+
 ## Related existing tools
 
 | Need | Tool |

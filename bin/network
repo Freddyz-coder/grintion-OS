@@ -36,8 +36,9 @@ Commands:
   reconnect                              Verify link and reconnect if dropped
   disconnect                             Remove the Wi-Fi network and stop wpa_supplicant
   wifi-scan                              Scan for visible Wi-Fi networks
-  set-mac-randomization IFACE <enable|disable>
-                                         Configure per-connection MAC address randomization
+  set-mac-randomization IFACE <stable|random|off>
+                                         stable keeps one random MAC per boot (default),
+                                         random changes it every boot, off uses hardware
   dns-leak-test [--json]                 Test for unencrypted or leaked DNS queries
   set-metered IFACE <yes|no>             Mark network interface as metered
   profile <list|save|apply> [NAME]       Manage per-location network configuration profiles
@@ -150,6 +151,55 @@ replace_section() {
     chmod 0600 "$CONFIG" 2>/dev/null || true
 }
 
+# Set a single key inside a section without dropping its other keys or
+# comments. set-static still rewrites the whole section because it defines a
+# complete static configuration; these two operations only toggle one setting.
+section_set_key() {
+    section="$1"
+    key="$2"
+    value="$3"
+    ensure_config
+    tmp=$(mktemp "${CONFIG}.XXXXXX")
+    awk -v header="[$section]" -v key="$key" -v value="$value" '
+        BEGIN { in_section = 0; found = 0; inserted = 0 }
+        /^[[:space:]]*\[/ {
+            if (in_section && !inserted) {
+                print key " = " value
+                inserted = 1
+            }
+            in_section = ($0 == header)
+            found = found || in_section
+            print
+            next
+        }
+        in_section {
+            line = $0
+            split(line, parts, "=")
+            name = parts[1]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (name == key) {
+                if (!inserted) {
+                    print key " = " value
+                    inserted = 1
+                }
+                next
+            }
+        }
+        { print }
+        END {
+            if (!found) {
+                print ""
+                print header
+                print key " = " value
+            } else if (!inserted) {
+                print key " = " value
+            }
+        }
+    ' "$CONFIG" > "$tmp"
+    mv "$tmp" "$CONFIG"
+    chmod 0600 "$CONFIG" 2>/dev/null || true
+}
+
 remove_section() {
     section="$1"
     ensure_config
@@ -197,13 +247,14 @@ cmd_status() {
                 ssid=$(network_conf_get wifi ssid || true)
                 iface=$(network_conf_get wifi interface || true)
                 ent=$(network_conf_get wifi enterprise || true)
-                echo "  wifi ${iface:-wlan0}: ssid=${ssid:-<not configured>} enterprise=${ent:-0}"
+                echo "  wifi ${iface:-wlan0}: ssid=${ssid:-<not configured>} enterprise=${ent:-0}" \
+                     "mac_randomize=$(network_mac_randomization_mode wifi)"
             else
                 echo "  interface $section: mode=$(network_conf_get "$section" mode || true)" \
                      "address=$(network_conf_get "$section" static_ip || true)" \
                      "gateway=$(network_conf_get "$section" gateway || true)" \
                      "metered=$(network_conf_get "$section" metered || false)" \
-                     "mac_randomize=$(network_conf_get "$section" mac_randomize || false)"
+                     "mac_randomize=$(network_mac_randomization_mode "$section")"
             fi
         done
     fi
@@ -453,12 +504,22 @@ cmd_reconnect() {
 cmd_set_mac_randomization() {
     iface=${1:-}
     state=${2:-}
-    [ -n "$iface" ] && [ -n "$state" ] || die "usage: set-mac-randomization IFACE <enable|disable>"
-    val="false"
-    [ "$state" = "enable" ] && val="true"
-    entries="mode = dhcp
-mac_randomize = $val"
-    replace_section "interface $iface" "$entries"
+    [ -n "$iface" ] && [ -n "$state" ] || die "usage: set-mac-randomization IFACE <stable|random|off>"
+    case "$state" in
+        stable) val="stable" ;;
+        random|enable) val="true" ;;
+        off|disable) val="false" ;;
+        *) die "usage: set-mac-randomization IFACE <stable|random|off>" ;;
+    esac
+    # Wi-Fi policy is read from [wifi], not [interface wlan0]; edit the section
+    # the daemon actually consumes.
+    wifi_iface=$(network_conf_get wifi interface || true)
+    wifi_iface=${wifi_iface:-wlan0}
+    if network_wifi_configured && [ "$iface" = "$wifi_iface" ]; then
+        section_set_key wifi mac_randomize "$val"
+    else
+        section_set_key "interface $iface" mac_randomize "$val"
+    fi
     log "MAC randomization for $iface set to $state"
 }
 
@@ -468,7 +529,7 @@ cmd_set_metered() {
     [ -n "$iface" ] && [ -n "$state" ] || die "usage: set-metered IFACE <yes|no>"
     val="false"
     [ "$state" = "yes" ] && val="true"
-    replace_section "interface $iface" "metered = $val"
+    section_set_key "interface $iface" metered "$val"
     log "metered setting for $iface set to $val"
 }
 

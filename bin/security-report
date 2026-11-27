@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -202,6 +203,60 @@ def ssh_host_keys() -> dict:
         except OSError:
             unsafe.append(str(key))
     return {"keys": [str(key) for key in keys], "modes": modes, "unsafe": unsafe}
+
+
+def privacy_defaults_state() -> list[str]:
+    """Return configured privacy defaults that are missing or unreadable.
+
+    This is a configuration check, not a claim that every tool is currently
+    running with these settings. The live sysctl value is read from /proc.
+    """
+    missing: list[str] = []
+    helper = read_text("/etc/grintion/privacy.lib.sh")
+    if not helper:
+        missing.append("privacy helper is missing")
+    else:
+        if "grintion_private_history" not in helper:
+            missing.append("privacy helper has no history function")
+        for variable in (
+            "SQLITE_HISTORY",
+            "PSQL_HISTORY",
+            "MYSQL_HISTFILE",
+            "REDISCLI_HISTFILE",
+            "GDBHISTFILE",
+            "NODE_REPL_HISTORY",
+            "PYTHON_HISTORY",
+        ):
+            if variable not in helper:
+                missing.append(f"{variable} is not redirected")
+
+    vimrc = Path("/etc/vimrc")
+    if vimrc.is_file():
+        text = read_text(vimrc)
+        if "/dev/shm" not in text or "viminfo" not in text:
+            missing.append("viminfo is not RAM-backed")
+        if "&directory" not in text:
+            missing.append("Vim swap files are not redirected")
+    elif shutil.which("vim"):
+        missing.append("vim is installed but /etc/vimrc is missing")
+
+    dhcpcd = read_text("/etc/dhcpcd.conf")
+    if not dhcpcd:
+        missing.append("dhcpcd.conf is missing")
+    else:
+        if re.search(r"^\s*hostname(?:\s|$)", dhcpcd, re.MULTILINE):
+            missing.append("dhcpcd still sends the hostname")
+        if "nohook hostname" not in dhcpcd:
+            missing.append("dhcpcd can still be renamed by the DHCP server")
+
+    if " /dev/shm tmpfs " not in read_text("/proc/mounts"):
+        missing.append("/dev/shm is not a tmpfs; histories will be disabled")
+
+    addr_gen_mode = read_text("/proc/sys/net/ipv6/conf/all/addr_gen_mode").strip()
+    if addr_gen_mode and addr_gen_mode != "3":
+        missing.append(f"IPv6 addr_gen_mode is {addr_gen_mode}, expected 3")
+
+    return missing
 
 
 def collect() -> dict:
@@ -418,6 +473,16 @@ def collect() -> dict:
         add(checks, "sudo-logging", "ok", "sudo I/O logging is configured")
     else:
         add(checks, "sudo-logging", "warn", "sudo I/O logging is not configured")
+
+    privacy_missing = privacy_defaults_state()
+    if privacy_missing:
+        add(checks, "privacy-defaults", "warn",
+            "privacy defaults are incomplete or differ from the shipped profile",
+            "; ".join(privacy_missing[:12]))
+    else:
+        add(checks, "privacy-defaults", "ok",
+            "privacy defaults are configured: RAM histories, no DHCP hostname, "
+            "stable-privacy IPv6")
 
     repos = sorted(Path("/etc/garb/repos.d").glob("*.conf")) if Path("/etc/garb/repos.d").is_dir() else []
     if repos:

@@ -77,8 +77,8 @@ grintion-network roam
 # Reconnect on link drops
 grintion-network reconnect
 
-# Privacy: MAC address randomization
-grintion-network set-mac-randomization wlan0 enable
+# Privacy: stable random MAC by default; use the hardware address per link
+grintion-network set-mac-randomization wlan0 off
 
 # Privacy: DNS leak test
 grintion-network dns-leak-test --json

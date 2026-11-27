@@ -8,3 +8,49 @@ set incsearch
 set hlsearch
 set number
 syntax on
+
+" Vim normally writes marks, registers and search/jump history to
+" ~/.viminfo, and crash-recovery swap files beside the edited file. Keep both
+" usable but on the per-boot RAM filesystem, in a per-user 0700 directory. If
+" /dev/shm is not tmpfs (or the directory cannot be used), disable viminfo and
+" swap files instead of falling back to disk.
+let s:grintion_viminfo_uid = substitute(system('id -u'), '\n', '', 'g')
+if !empty($GRINTION_VIMINFO_DIR)
+    let s:grintion_viminfo_dir = $GRINTION_VIMINFO_DIR
+else
+    let s:grintion_viminfo_dir = '/dev/shm/.grintion-vim-' . s:grintion_viminfo_uid
+endif
+
+let s:grintion_viminfo_ok = 0
+if s:grintion_viminfo_uid =~# '^[0-9]\+$'
+    let s:grintion_viminfo_parent = fnamemodify(s:grintion_viminfo_dir, ':h')
+    let s:grintion_viminfo_tmpfs = substitute(
+                \ system('stat -f -c %T ' . shellescape(s:grintion_viminfo_parent)),
+                \ '\n', '', 'g')
+    if s:grintion_viminfo_tmpfs ==# 'tmpfs' && !isdirectory(s:grintion_viminfo_dir)
+        call mkdir(s:grintion_viminfo_dir, 'p', 0700)
+    endif
+    let s:grintion_viminfo_meta = substitute(
+                \ system('stat -c %u:%a ' . shellescape(s:grintion_viminfo_dir)),
+                \ '\n', '', 'g')
+    if s:grintion_viminfo_tmpfs ==# 'tmpfs'
+                \ && s:grintion_viminfo_meta ==# s:grintion_viminfo_uid . ':700'
+        let s:grintion_viminfo_ok = 1
+    endif
+endif
+
+if s:grintion_viminfo_ok
+    if has('viminfo')
+        let &viminfo = "'100,<50,s10,h,n" . s:grintion_viminfo_dir . '/viminfo'
+    endif
+    let &directory = s:grintion_viminfo_dir . '//'
+else
+    if has('viminfo')
+        set viminfo=
+    endif
+    set directory=
+endif
+
+unlet! s:grintion_viminfo_uid s:grintion_viminfo_dir s:grintion_viminfo_ok
+            \ s:grintion_viminfo_parent s:grintion_viminfo_tmpfs
+            \ s:grintion_viminfo_meta

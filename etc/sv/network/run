@@ -12,11 +12,63 @@ exec >>/var/log/dhcpcd.log 2>&1
 DHCP_IFACES=""
 STATIC_USED=0
 
+# Replace the hardware address before addresses are assigned. Driver support is
+# not universal; a rejected address leaves the configured MAC in place and is
+# reported instead of silently pretending randomization happened.
+apply_mac() {
+    iface=$1
+    mac=$2
+    kind=$3
+    ip link set dev "$iface" down 2>/dev/null || true
+    if ip link set dev "$iface" address "$mac" 2>/dev/null; then
+        echo "network: $kind MAC on $iface"
+    else
+        echo "network: driver rejected $kind MAC on $iface; keeping the hardware address"
+    fi
+    ip link set dev "$iface" up 2>/dev/null || true
+}
+
+set_random_mac() {
+    iface=$1
+    mac=$(random_local_mac) || {
+        echo "network: cannot generate a random MAC for $iface"
+        return 0
+    }
+    apply_mac "$iface" "$mac" random
+}
+
+set_stable_mac() {
+    iface=$1
+    if mac=$(stable_local_mac "iface:$iface"); then
+        apply_mac "$iface" "$mac" stable-random
+    else
+        echo "network: no stable MAC seed for $iface; using a fresh random address"
+        set_random_mac "$iface"
+    fi
+}
+
+# Apply the configured policy to real NICs only. Bridges, bonds, veth pairs and
+# tunnels either have no firmware node or use their members' addresses;
+# changing them would break the link rather than protect it.
+apply_mac_policy() {
+    iface=$1
+    [ -e "/sys/class/net/$iface/device" ] || [ -e "/sys/class/net/$iface/wireless" ] || return 0
+    case "$(network_mac_randomization_mode "$iface")" in
+        off) ;;
+        random) set_random_mac "$iface" ;;
+        *) set_stable_mac "$iface" ;;
+    esac
+}
+
 if [ -r "$NETWORK_CONF" ] && [ -n "$(network_interfaces)" ]; then
     for iface in $(network_interfaces); do
         if [ ! -e "/sys/class/net/$iface" ]; then
             echo "network: configured interface is not present: $iface"
             continue
+        fi
+        wifi_iface=$(network_conf_get wifi interface)
+        if [ "$iface" != "${wifi_iface:-wlan0}" ]; then
+            apply_mac_policy "$iface"
         fi
         mode=$(network_conf_get "$iface" mode)
         mode=${mode:-dhcp}
@@ -59,6 +111,11 @@ else
         [ -n "$DHCP_IFACES" ] && break
         sleep 1
         i=$((i + 1))
+    done
+    # No explicit sections: DHCP falls back to every wired NIC, so the privacy
+    # default applies here too instead of only to configured interfaces.
+    for iface in $DHCP_IFACES; do
+        apply_mac_policy "$iface"
     done
 fi
 

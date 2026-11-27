@@ -157,6 +157,7 @@ if [ "$PYTEST_READY" -eq 1 ]; then
         tests/test_phase9_validation.py tests/test_phase10_performance_polish.py \
         tests/test_phase11_architecture_recovery.py tests/test_advanced_commands.py \
         tests/test_laptop_hardware_support.py tests/test_progress.py \
+        tests/test_privacy_defaults.py \
         || fail "garb/system/release/network/desktop/phase5-10 tests failed"
 fi
 

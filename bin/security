@@ -219,7 +219,16 @@ def firewall_rules(policy: str) -> str:
             "        ip6 nexthdr ipv6-icmp accept",
         ]
     if policy == "drop_inbound":
-        lines.append("        ip protocol icmp accept")
+        # Accept only the ICMP messages diagnostics need. A blanket
+        # `ip protocol icmp accept` also answered timestamp and address-mask
+        # queries, which reveal uptime and network layout to a passive
+        # fingerprinter. The chain policy drops everything else.
+        lines += [
+            "        icmp type echo-request accept",
+            "        icmp type destination-unreachable accept",
+            "        icmp type time-exceeded accept",
+            "        icmp type parameter-problem accept",
+        ]
     lines += [
         "    }",
         "    chain forward {",

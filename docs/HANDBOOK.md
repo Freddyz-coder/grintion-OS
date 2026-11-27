@@ -127,9 +127,11 @@ use `sv status /var/service/NetworkManager` and `nmcli`, not systemctl:
   ```bash
   grintion-network connect-enterprise CampusWiFi --identity user@univ.edu
   ```
-- **MAC Address Randomization**:
+- **MAC Address Randomization** (stable random address by default; opt into
+  a fresh one each boot or back to the hardware address per link):
   ```bash
-  grintion-network set-mac-randomization on
+  grintion-network set-mac-randomization wlan0 random
+  grintion-network set-mac-randomization wlan0 off
   ```
 - **DNS Leak Testing**:
   ```bash
