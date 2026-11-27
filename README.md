@@ -7,7 +7,7 @@ indexes.
 
 **Minimal - Independent - Secure - Stable** (MISS)
 
-- **Version:** 0.22.3 — *console prompt hygiene · pacman lock/download recovery · LUKS2 & custom-partition fixes*
+- **Version:** 0.23.0 — *RAM-backed editor/tool state · DHCP and IPv6 identity privacy · auditable privacy defaults*
 - **Architecture:** x86_64
 - **Boot:** BIOS and UEFI (Limine 8.7.0)
 - **Kernel:** Linux 6.12.114 built from kernel.org source with a hardening
@@ -17,14 +17,22 @@ indexes.
 - **GUI & Desktop:** Streamlined console prompt for pre-installation, maintenance, and setup. Desktop packages and GPU drivers install with `grintion-desktop` or `garb`. XFCE, i3, KDE Plasma (Wayland/SDDM), LXQt (LightDM/X11) and Sway are verified in QEMU/KVM; GNOME is refused because `gnome-session` 51 requires the systemd user session manager
 - **Audio:** HDA and USB audio are built into the kernel; desktop profiles install PipeWire, WirePlumber, firmware and the PulseAudio compatibility daemon. A shared session helper starts the stack, starts a private session bus when needed and unmutes every detected ALSA card plus the default PipeWire sink; it is used by the X11 hook and by XDG autostart for Wayland desktops. Playback is verified end-to-end on XFCE with QEMU audio capture; see [docs/VM-GUEST.md](docs/VM-GUEST.md) for VM host-audio setup
 
-0.22.3 resolves the installation, package-locking, and login-console issues
+0.23.0 turns privacy into a broader shipped default instead of a networking
+feature. Vim's history and swap files, Python/Node/SQLite/psql/mysql/redis/gdb
+histories and shell history all live in one per-user tmpfs directory and fail
+closed when `/dev/shm` is not tmpfs; DHCP no longer advertises the hostname;
+IPv6 uses RFC 7217 stable-privacy interface identifiers; and `wpa_supplicant`
+no longer records SSIDs in its service log. `grintion-security-report` now
+includes a read-only `privacy-defaults` check. See [CHANGELOG.md](CHANGELOG.md).
+
+0.22.3 resolved the installation, package-locking, and login-console issues
 reported during `ProblemsWhenInstalling.txt` testing: `tty1` resets termios and
 clears early boot output on first start while background services log to
 `/var/log/` instead of the console, `grintion-pkg-progress` tracks pacman 7
 `download-*` subdirectories and clears stale `db.lck` locks on stall or retry,
 `grintion-verify-install` inspects zstd-compressed LUKS2 initramfs images,
 `install-init` parses BusyBox `blkid` output reliably, and `grintion-install`
-validates custom partitions before formatting. See [CHANGELOG.md](CHANGELOG.md).
+validates custom partitions before formatting.
 
 0.22.2 fixes installing a desktop from the live image or from a booted system.
 The display manager is configured before its service starts and restarted after
@@ -87,7 +95,7 @@ the default. See [CHANGELOG.md](CHANGELOG.md) and
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) and [CHANGELOG.md](CHANGELOG.md).
 
-Grintion-OS 0.22.3 is built from this tree. Release ISO images are published on
+Grintion-OS 0.23.0 is built from this tree. Release ISO images are published on
 GitHub Releases; there is no hosted binary package repository. Build the ISO,
 or install the prerequisites and run `make`. Release artifacts can be signed
 with `make sign-release` and verified with `bin/release-verify` (see
@@ -341,11 +349,11 @@ path to a from-source bootstrap later. Do not describe the image as
 
 ## Support matrix
 
-| Feature | 0.22.3 |
+| Feature | 0.23.0 |
 | --- | --- |
 | x86_64 BIOS boot | Yes, tested in QEMU. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | x86_64 UEFI boot | Yes, tested in QEMU with OVMF. Bare-metal lab logs are not published; see [docs/VERIFICATION.md](docs/VERIFICATION.md). |
-| Bare-metal hardware | No new bare-metal probe was run for 0.22.3. A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
+| Bare-metal hardware | No new bare-metal probe was run for 0.23.0. A 0.21.0 host probe on a Lenovo IdeaPad Flex 5 16ABR8 verified DMI detection, HCL coverage and driver/firmware selection without changing disks. No bare-metal install or reboot was performed; the QEMU installer tests exercise the install path. See [docs/VERIFICATION.md](docs/VERIFICATION.md). |
 | 32-bit userspace | Yes on 64-bit machines through `CONFIG_IA32_EMULATION` and `grintion-install --compat32`; 32-bit-only CPUs are refused by the x86_64 image. See [docs/MULTIARCH.md](docs/MULTIARCH.md). |
 | Secure Boot | Supported via local MOK keys (`grintion-secureboot`) & UKI (`grintion-uki`); pre-enrolled Microsoft 3rd-party CA shim is not bundled (see [docs/SECURE-BOOT.md](docs/SECURE-BOOT.md)) |
 | ARM64 | Build scripts are x86_64-only |
