@@ -5,8 +5,8 @@ FROM archlinux:base-devel
 
 ARG ALA_DATE=2026/11/01
 
-RUN printf '[core]\nServer = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n[extra]\nServer = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' \
-        "$ALA_DATE" "$ALA_DATE" > /etc/pacman.d/mirrorlist \
+RUN printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' \
+        "$ALA_DATE" > /etc/pacman.d/mirrorlist \
  && pacman -Syyuu --noconfirm --needed \
         archlinux-keyring base-devel git shellcheck python-pytest python \
         bash coreutils util-linux e2fsprogs btrfs-progs dosfstools parted \
